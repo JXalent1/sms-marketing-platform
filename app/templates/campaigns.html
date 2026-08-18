@@ -1,0 +1,283 @@
+{% extends "base.html" %}
+{% block title %}Campaigns — {{ brand.app_name }}{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+    <h1 class="text-2xl font-bold text-gray-900">Campaigns</h1>
+
+    <div class="bg-white border border-gray-200 rounded-xl px-6 py-6">
+        <h3 class="font-semibold text-gray-900">New Campaign</h3>
+        <form class="mt-5 space-y-5" id="campaignForm">
+            <div class="grid grid-cols-1 gap-5 sm:grid-cols-6">
+                <div class="sm:col-span-3">
+                    <label for="campaignName" class="block text-sm font-medium text-gray-700">Campaign name</label>
+                    <input type="text" id="campaignName" required
+                           class="mt-1.5 block w-full rounded-lg border border-gray-300 py-2.5 px-3 text-sm shadow-sm">
+                </div>
+                <div class="sm:col-span-3">
+                    <label for="audience" class="block text-sm font-medium text-gray-700">Audience</label>
+                    <select id="audience" class="mt-1.5 block w-full rounded-lg border border-gray-300 bg-white py-2.5 px-3 text-sm shadow-sm">
+                        <option>Loading…</option>
+                    </select>
+                </div>
+                <div class="sm:col-span-2">
+                    <label for="batchSize" class="block text-sm font-medium text-gray-700">Batch limit</label>
+                    <input type="number" id="batchSize" min="1" placeholder="All"
+                           class="mt-1.5 block w-full rounded-lg border border-gray-300 py-2.5 px-3 text-sm shadow-sm">
+                    <p class="mt-1 text-xs text-gray-400">Send to the first N only — useful for a staged rollout.</p>
+                </div>
+                <div class="sm:col-span-6">
+                    <label for="message" class="block text-sm font-medium text-gray-700">Message</label>
+                    <textarea id="message" rows="5"
+                              class="mt-1.5 block w-full rounded-lg border border-gray-300 py-2.5 px-3 text-sm shadow-sm"
+                              placeholder="Hi {name}, …"></textarea>
+                    <p class="mt-1.5 text-xs text-gray-400">
+                        Merge tags: <code class="bg-gray-100 px-1 rounded">{name}</code>
+                        <code class="bg-gray-100 px-1 rounded">{first_name}</code>
+                        <code class="bg-gray-100 px-1 rounded">{phone}</code>
+                        plus any contact attribute.
+                    </p>
+                </div>
+            </div>
+
+            {# Cost preview. Shown before sending because a single emoji roughly
+               2.4x's the segment count, and that is invisible in the text box. #}
+            <div class="bg-slate-50 rounded-lg p-4 border border-slate-200 space-y-3">
+                <div class="flex flex-wrap gap-x-6 gap-y-1 text-sm">
+                    <span class="text-gray-500">Encoding: <span class="font-medium text-gray-900" id="pvEncoding">—</span></span>
+                    <span class="text-gray-500">Chars: <span class="font-medium text-gray-900" id="pvChars">0</span></span>
+                    <span class="text-gray-500">Segments/msg: <span class="font-medium text-gray-900" id="pvSegments">0</span></span>
+                    <span class="text-gray-500">Recipients: <span class="font-medium text-gray-900" id="pvRecipients">0</span></span>
+                    <span class="text-gray-500">Total segments: <span class="font-bold text-gray-900" id="pvTotal">0</span></span>
+                </div>
+                <div id="pvUnicodeWarn" class="hidden text-xs bg-amber-50 border border-amber-200 text-amber-800 rounded p-2"></div>
+                <div id="pvLinkWarn" class="hidden text-xs bg-red-50 border border-red-200 text-red-800 rounded p-2"></div>
+                <p class="text-sm text-gray-600 font-mono bg-white p-3 rounded-lg border border-gray-200 whitespace-pre-wrap" id="pvText">Preview appears here…</p>
+            </div>
+
+            <div class="flex flex-wrap items-end gap-3">
+                <button type="submit" class="px-5 py-2.5 rounded-lg text-sm font-medium text-white bg-{{ brand.color }}-600 hover:bg-{{ brand.color }}-700">
+                    Create draft
+                </button>
+                <div class="flex items-end gap-2 ml-auto">
+                    <input type="tel" id="testPhone" placeholder="Test phone"
+                           class="w-40 rounded-lg border border-gray-300 py-2.5 px-3 text-sm shadow-sm">
+                    <button type="button" id="testBtn"
+                            class="px-4 py-2.5 rounded-lg border border-gray-300 bg-white text-sm font-medium text-gray-700 hover:bg-gray-50">
+                        Send test
+                    </button>
+                </div>
+            </div>
+        </form>
+    </div>
+
+    <div class="bg-white border border-gray-200 rounded-xl">
+        <div class="px-6 py-4 border-b border-gray-200">
+            <h3 class="font-semibold text-gray-900">History</h3>
+        </div>
+        <ul class="divide-y divide-gray-200" id="campaignList">
+            <li class="p-6 text-center text-gray-400">Loading…</li>
+        </ul>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const STATUS_STYLES = {
+    draft:     'bg-gray-100 text-gray-700',
+    running:   'bg-blue-100 text-blue-700',
+    completed: 'bg-green-100 text-green-700',
+    aborted:   'bg-amber-100 text-amber-800',
+    failed:    'bg-red-100 text-red-700',
+};
+
+async function loadAudiences() {
+    const data = await api('/api/campaigns/audiences');
+    const select = document.getElementById('audience');
+    if (!data.audiences?.length) {
+        select.innerHTML = '<option value="">No contacts yet</option>';
+        return;
+    }
+    select.innerHTML = data.audiences
+        .map(a => `<option value="${esc(a.selector)}">${esc(a.label)} — ${a.count.toLocaleString()} contacts</option>`)
+        .join('');
+    refreshPreview();
+}
+
+// Debounced so typing doesn't fire a request per keystroke.
+let previewTimer;
+function schedulePreview() {
+    clearTimeout(previewTimer);
+    previewTimer = setTimeout(refreshPreview, 300);
+}
+
+async function refreshPreview() {
+    const template = document.getElementById('message').value;
+    const audience = document.getElementById('audience').value;
+    document.getElementById('pvText').textContent =
+        template.replace(/{name}/g, 'Jane Doe').replace(/{first_name}/g, 'Jane') || 'Preview appears here…';
+
+    if (!template) return;
+    const data = await api('/api/campaigns/preview', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message_template: template, audience }),
+    });
+
+    document.getElementById('pvEncoding').textContent = data.encoding;
+    document.getElementById('pvChars').textContent = data.characters;
+    document.getElementById('pvSegments').textContent = data.segments;
+    document.getElementById('pvRecipients').textContent = data.recipients.toLocaleString();
+    document.getElementById('pvTotal').textContent = data.total_segments.toLocaleString();
+
+    const unicodeWarn = document.getElementById('pvUnicodeWarn');
+    if (data.encoding === 'UCS-2') {
+        unicodeWarn.textContent =
+            `${data.forced_unicode_by.join(' ')} forces Unicode encoding: ${data.segments} segments instead of ` +
+            `${data.gsm7_segments_if_stripped}. Removing it would cut this campaign's carrier cost roughly in half.`;
+        unicodeWarn.classList.remove('hidden');
+    } else {
+        unicodeWarn.classList.add('hidden');
+    }
+
+    const linkWarn = document.getElementById('pvLinkWarn');
+    if (data.risky_links?.length) {
+        linkWarn.textContent =
+            `Link shortener detected (${data.risky_links.join(', ')}). Carriers routinely spam-block these — ` +
+            `the send is accepted and then silently dropped. Use a domain the client owns.`;
+        linkWarn.classList.remove('hidden');
+    } else {
+        linkWarn.classList.add('hidden');
+    }
+}
+
+document.getElementById('message').addEventListener('input', schedulePreview);
+document.getElementById('audience').addEventListener('change', schedulePreview);
+
+document.getElementById('testBtn').addEventListener('click', async function () {
+    const phone = document.getElementById('testPhone').value;
+    const message = document.getElementById('message').value;
+    if (!phone || !message) { showToast('Enter a test number and a message', 'error'); return; }
+
+    this.disabled = true;
+    try {
+        const data = await api('/api/campaigns/test-sms', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                phone,
+                message: message.replace(/{name}/g, 'Test User').replace(/{first_name}/g, 'Test'),
+            }),
+        });
+        showToast(data.success ? 'Test sent' : `Failed: ${data.error || 'unknown'}`,
+                  data.success ? 'success' : 'error');
+    } finally {
+        this.disabled = false;
+    }
+});
+
+document.getElementById('campaignForm').addEventListener('submit', async function (e) {
+    e.preventDefault();
+    const name = document.getElementById('campaignName').value;
+    const audience = document.getElementById('audience').value;
+    const message = document.getElementById('message').value;
+    const batch = document.getElementById('batchSize').value;
+
+    if (!name || !audience || !message) { showToast('Fill in every field', 'error'); return; }
+
+    const btn = e.target.querySelector('button[type=submit]');
+    btn.disabled = true;
+    try {
+        const data = await api('/api/campaigns', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                name, message_template: message, audience,
+                batch_size: batch ? parseInt(batch) : null,
+            }),
+        });
+        if (data.success) {
+            showToast(`Draft created — ${data.campaign.total_recipients.toLocaleString()} recipients, ` +
+                      `est. carrier cost $${(data.campaign.estimated_cost || 0).toFixed(2)}`);
+            this.reset();
+            loadCampaigns();
+            loadAudiences();
+        } else {
+            showToast(data.detail || 'Could not create campaign', 'error');
+        }
+    } finally {
+        btn.disabled = false;
+    }
+});
+
+async function loadCampaigns() {
+    const data = await api('/api/campaigns');
+    const list = document.getElementById('campaignList');
+
+    if (!data.campaigns?.length) {
+        list.innerHTML = '<li class="p-6 text-center text-gray-400">No campaigns yet</li>';
+        return;
+    }
+
+    list.innerHTML = data.campaigns.map(c => {
+        const progress = c.total_recipients ? Math.round((c.sent_count / c.total_recipients) * 100) : 0;
+        return `
+        <li class="px-6 py-4 hover:bg-gray-50">
+            <div class="flex items-center justify-between gap-4">
+                <div class="min-w-0 flex-1">
+                    <div class="flex items-center gap-2">
+                        <h4 class="font-semibold text-gray-900 truncate">${esc(c.name)}</h4>
+                        <span class="px-2 py-0.5 rounded text-xs font-medium ${STATUS_STYLES[c.status] || STATUS_STYLES.draft}">
+                            ${esc(c.status)}
+                        </span>
+                    </div>
+                    <p class="text-sm text-gray-500 mt-0.5">
+                        ${esc(c.audience_label || c.audience)} · ${c.total_recipients.toLocaleString()} recipients
+                        ${c.estimated_cost ? ` · est. $${c.estimated_cost.toFixed(2)}` : ''}
+                    </p>
+                    ${c.abort_reason ? `<p class="text-xs text-amber-700 mt-1">${esc(c.abort_reason)}</p>` : ''}
+                </div>
+                <div class="text-right flex-shrink-0">
+                    ${['completed', 'running'].includes(c.status) ? `
+                        <div class="text-sm">
+                            <span class="text-green-600 font-medium">${c.sent_count.toLocaleString()}</span><span class="text-gray-400">/${c.total_recipients.toLocaleString()}</span>
+                            ${c.failed_count ? `<span class="text-red-500 text-xs ml-1">${c.failed_count.toLocaleString()} failed</span>` : ''}
+                            ${c.skipped_count ? `<span class="text-gray-400 text-xs ml-1">${c.skipped_count.toLocaleString()} skipped</span>` : ''}
+                        </div>
+                        <div class="w-32 bg-gray-200 rounded-full h-1.5 mt-1">
+                            <div class="bg-{{ brand.color }}-600 h-1.5 rounded-full" style="width:${progress}%"></div>
+                        </div>` : ''}
+                    ${c.status === 'draft' ? `
+                        <button onclick="sendCampaign(${c.id})"
+                                class="px-3 py-1.5 rounded-md text-xs font-medium text-white bg-green-600 hover:bg-green-700">
+                            Send now
+                        </button>` : ''}
+                    ${c.failed_count ? `
+                        <button onclick="showFailures(${c.id})"
+                                class="block mt-1 text-xs text-gray-500 hover:text-gray-700 underline">why?</button>` : ''}
+                </div>
+            </div>
+        </li>`;
+    }).join('');
+}
+
+async function sendCampaign(id) {
+    if (!confirm('Send this campaign now? This spends real money and cannot be undone.')) return;
+    const data = await api(`/api/campaigns/${id}/send`, { method: 'POST' });
+    showToast(data.success ? 'Sending started' : (data.detail || 'Failed'),
+              data.success ? 'success' : 'error');
+    loadCampaigns();
+}
+
+async function showFailures(id) {
+    const data = await api(`/api/campaigns/${id}/failures`);
+    const lines = data.reasons.map(r => `${r.count.toLocaleString()}  ${r.reason}`).join('\n');
+    alert(`${data.total.toLocaleString()} failures\n\n${lines}`);
+}
+
+loadAudiences();
+loadCampaigns();
+setInterval(loadCampaigns, 5000);
+</script>
+{% endblock %}

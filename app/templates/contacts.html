@@ -1,0 +1,161 @@
+{% extends "base.html" %}
+{% block title %}Contacts — {{ brand.app_name }}{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+        <h1 class="text-2xl font-bold text-gray-900">Contacts</h1>
+        <div class="bg-white border border-gray-200 rounded-lg px-4 py-2 text-center">
+            <div class="text-2xl font-bold text-gray-900" id="contactTotal">—</div>
+            <div class="text-xs text-gray-500 font-medium">Total contacts</div>
+        </div>
+    </div>
+
+    <div class="bg-white border border-gray-200 rounded-xl p-6">
+        <h3 class="font-semibold text-gray-900">Import CSV</h3>
+        <p class="mt-1 text-sm text-gray-500">
+            Column names are matched loosely — <code class="bg-gray-100 px-1 rounded">Phone</code>,
+            <code class="bg-gray-100 px-1 rounded">Cell</code>,
+            <code class="bg-gray-100 px-1 rounded">Mobile Number</code> all work.
+            Preview first to confirm the mapping before committing.
+        </p>
+
+        <div class="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
+            <input type="file" id="csvFile" accept=".csv"
+                   class="text-sm border border-gray-300 rounded-lg px-3 py-2 sm:col-span-2">
+            <input type="text" id="listName" placeholder="Add to list (optional)"
+                   class="text-sm border border-gray-300 rounded-lg px-3 py-2">
+        </div>
+        <div class="mt-3 flex gap-2">
+            <button id="previewBtn" class="px-4 py-2 rounded-lg border border-gray-300 bg-white text-sm font-medium text-gray-700 hover:bg-gray-50">Preview</button>
+            <button id="importBtn" class="px-4 py-2 rounded-lg text-sm font-medium text-white bg-{{ brand.color }}-600 hover:bg-{{ brand.color }}-700">Import</button>
+        </div>
+
+        <div id="previewBox" class="hidden mt-4 bg-slate-50 border border-slate-200 rounded-lg p-4 text-sm"></div>
+    </div>
+
+    <div class="bg-white border border-gray-200 rounded-xl">
+        <div class="px-6 py-4 border-b border-gray-200 flex flex-col sm:flex-row gap-3 sm:items-center sm:justify-between">
+            <h3 class="font-semibold text-gray-900">All contacts</h3>
+            <div class="flex gap-2">
+                <select id="listFilter" class="text-sm border border-gray-300 rounded-lg px-3 py-2 bg-white">
+                    <option value="">All lists</option>
+                </select>
+                <input type="search" id="search" placeholder="Search name or phone"
+                       class="text-sm border border-gray-300 rounded-lg px-3 py-2">
+            </div>
+        </div>
+        <div class="overflow-x-auto">
+            <table class="min-w-full divide-y divide-gray-200">
+                <thead class="bg-gray-50">
+                    <tr>
+                        <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase">Name</th>
+                        <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase">Phone</th>
+                        <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase">Source</th>
+                        <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase">Last messaged</th>
+                    </tr>
+                </thead>
+                <tbody id="contactBody" class="divide-y divide-gray-200">
+                    <tr><td colspan="4" class="px-4 py-8 text-center text-sm text-gray-400">Loading…</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function loadLists() {
+    const data = await api('/api/lists');
+    const select = document.getElementById('listFilter');
+    select.innerHTML = '<option value="">All lists</option>' + data.lists
+        .filter(l => l.selector.startsWith('list:'))
+        .map(l => `<option value="${l.selector.split(':')[1]}">${esc(l.label)} (${l.count.toLocaleString()})</option>`)
+        .join('');
+}
+
+async function loadContacts() {
+    const q = document.getElementById('search').value.trim();
+    const listId = document.getElementById('listFilter').value;
+    const params = new URLSearchParams();
+    if (q) params.set('q', q);
+    if (listId) params.set('list_id', listId);
+
+    const data = await api('/api/contacts?' + params);
+    document.getElementById('contactTotal').textContent = data.total.toLocaleString();
+
+    const body = document.getElementById('contactBody');
+    if (!data.contacts.length) {
+        body.innerHTML = '<tr><td colspan="4" class="px-4 py-8 text-center text-sm text-gray-400">No contacts found</td></tr>';
+        return;
+    }
+    body.innerHTML = data.contacts.map(c => `
+        <tr class="hover:bg-gray-50">
+            <td class="px-4 py-3 text-sm font-medium text-gray-900">${esc(c.full_name || '—')}</td>
+            <td class="px-4 py-3 text-sm text-gray-600 font-mono">${esc(c.phone)}</td>
+            <td class="px-4 py-3 text-sm text-gray-500">${esc(c.source || '—')}</td>
+            <td class="px-4 py-3 text-sm text-gray-500">${esc(fmtDate(c.last_messaged_at))}</td>
+        </tr>`).join('');
+}
+
+document.getElementById('previewBtn').addEventListener('click', async () => {
+    const file = document.getElementById('csvFile').files[0];
+    if (!file) { showToast('Choose a CSV first', 'error'); return; }
+
+    const form = new FormData();
+    form.append('file', file);
+    const res = await fetch('/api/contacts/import/preview', { method: 'POST', body: form });
+    const data = await res.json();
+
+    const box = document.getElementById('previewBox');
+    box.classList.remove('hidden');
+    if (!res.ok) { box.innerHTML = `<span class="text-red-700">${esc(data.detail)}</span>`; return; }
+
+    const rows = data.sample.map(r =>
+        `<tr><td class="pr-4 py-0.5">${esc(r.name || '—')}</td><td class="pr-4 py-0.5 font-mono">${esc(r.phone || '—')}</td><td class="py-0.5">${esc(r.email || '—')}</td></tr>`
+    ).join('');
+
+    box.innerHTML = `
+        <div class="font-medium text-gray-900 mb-2">Detected mapping</div>
+        <div class="text-xs text-gray-600 mb-3">
+            ${Object.entries(data.mapped).map(([raw, field]) => `<span class="inline-block bg-white border rounded px-2 py-0.5 mr-1 mb-1">${esc(raw)} → ${esc(field)}</span>`).join('')}
+            ${data.unmapped.length ? `<div class="mt-2 text-gray-400">Kept as attributes: ${data.unmapped.map(esc).join(', ')}</div>` : ''}
+        </div>
+        <table class="text-xs"><thead><tr class="text-gray-400"><th class="text-left pr-4">Name</th><th class="text-left pr-4">Phone</th><th class="text-left">Email</th></tr></thead><tbody>${rows}</tbody></table>`;
+});
+
+document.getElementById('importBtn').addEventListener('click', async function () {
+    const file = document.getElementById('csvFile').files[0];
+    if (!file) { showToast('Choose a CSV first', 'error'); return; }
+
+    const form = new FormData();
+    form.append('file', file);
+    const listName = document.getElementById('listName').value.trim();
+    if (listName) form.append('list_name', listName);
+
+    this.disabled = true;
+    try {
+        const res = await fetch('/api/contacts/import', { method: 'POST', body: form });
+        const data = await res.json();
+        if (!res.ok) { showToast(data.detail || 'Import failed', 'error'); return; }
+        showToast(`${data.created.toLocaleString()} new, ${data.updated.toLocaleString()} updated, ` +
+                  `${data.duplicates.toLocaleString()} duplicate, ${data.invalid.toLocaleString()} invalid`);
+        loadContacts();
+        loadLists();
+    } finally {
+        this.disabled = false;
+    }
+});
+
+let searchTimer;
+document.getElementById('search').addEventListener('input', () => {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(loadContacts, 300);
+});
+document.getElementById('listFilter').addEventListener('change', loadContacts);
+
+loadLists();
+loadContacts();
+</script>
+{% endblock %}

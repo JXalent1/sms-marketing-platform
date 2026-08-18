@@ -1,0 +1,170 @@
+{% extends "base.html" %}
+{% block title %}Usage — {{ brand.app_name }}{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+    <h1 class="text-2xl font-bold text-gray-900">Usage &amp; Billing</h1>
+
+    <div class="bg-white border border-gray-200 rounded-xl px-6 py-6">
+        <div class="flex items-center justify-between mb-5">
+            <h3 class="font-semibold text-gray-900" id="cycleLabel">Current cycle</h3>
+            <span class="px-2.5 py-1 rounded-full text-xs font-medium bg-green-100 text-green-700" id="statusBadge">Active</span>
+        </div>
+
+        <div class="grid grid-cols-2 gap-4 lg:grid-cols-4">
+            <div class="bg-gray-50 rounded-xl p-4">
+                <dt class="text-xs font-medium text-gray-500 uppercase">Allowance</dt>
+                <dd class="mt-1 text-2xl font-bold text-gray-900" id="allowance">—</dd>
+            </div>
+            <div class="bg-gray-50 rounded-xl p-4">
+                <dt class="text-xs font-medium text-gray-500 uppercase">Used</dt>
+                <dd class="mt-1 text-2xl font-bold text-gray-900" id="used">—</dd>
+            </div>
+            <div class="bg-gray-50 rounded-xl p-4">
+                <dt class="text-xs font-medium text-gray-500 uppercase">Remaining</dt>
+                <dd class="mt-1 text-2xl font-bold text-green-700" id="remaining">—</dd>
+            </div>
+            <div class="bg-gray-50 rounded-xl p-4">
+                <dt class="text-xs font-medium text-gray-500 uppercase">Due this cycle</dt>
+                <dd class="mt-1 text-2xl font-bold text-gray-900" id="totalDue">—</dd>
+            </div>
+        </div>
+
+        <div class="mt-5">
+            <div class="flex justify-between text-xs text-gray-500 mb-1.5">
+                <span id="progressText">—</span>
+                <span>Resets <span id="resetDate">—</span></span>
+            </div>
+            <div class="w-full bg-gray-200 rounded-full h-2.5">
+                <div id="progressBar" class="bg-{{ brand.color }}-600 h-2.5 rounded-full transition-all duration-500" style="width:0%"></div>
+            </div>
+        </div>
+
+        <div id="overageBox" class="mt-4 hidden bg-red-50 border border-red-200 rounded-lg p-4 text-sm text-red-700"></div>
+    </div>
+
+    <div class="bg-white border border-gray-200 rounded-xl">
+        <div class="px-6 py-4 border-b border-gray-200"><h3 class="font-semibold text-gray-900">History</h3></div>
+        <div class="overflow-x-auto">
+            <table class="min-w-full divide-y divide-gray-200">
+                <thead class="bg-gray-50">
+                    <tr>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Cycle</th>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Segments</th>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Messages</th>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Overage</th>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Total</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-gray-200" id="historyBody">
+                    <tr><td colspan="5" class="px-6 py-4 text-center text-gray-400">Loading…</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    {# Rendered from the API so the page can never contradict what the code bills. #}
+    <details class="bg-white border border-gray-200 rounded-xl">
+        <summary class="px-6 py-4 font-semibold text-gray-900 cursor-pointer hover:bg-gray-50 rounded-xl">Pricing</summary>
+        <div class="px-6 pb-5 space-y-2" id="pricingBody"></div>
+    </details>
+
+    <details class="bg-white border border-gray-200 rounded-xl">
+        <summary class="px-6 py-4 font-semibold text-gray-900 cursor-pointer hover:bg-gray-50 rounded-xl">How segments are counted</summary>
+        <div class="px-6 pb-5 space-y-4 text-sm text-gray-600">
+            <p>Messages are billed in <span class="font-medium text-gray-900">segments</span>, not messages.
+               How many segments a message costs depends on its length
+               <span class="font-medium text-gray-900">and which characters it contains</span>.</p>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div class="border border-gray-200 rounded-lg p-4">
+                    <div class="font-semibold text-gray-900 mb-1">Standard text</div>
+                    <p class="text-xs text-gray-500 mb-2">Letters, digits and basic punctuation (GSM-7).</p>
+                    <ul class="text-xs space-y-1">
+                        <li><span class="font-medium text-gray-900">160</span> characters = 1 segment</li>
+                        <li>Longer messages split every <span class="font-medium text-gray-900">153</span> characters</li>
+                    </ul>
+                </div>
+                <div class="border border-amber-200 bg-amber-50 rounded-lg p-4">
+                    <div class="font-semibold text-gray-900 mb-1">With an emoji or special character</div>
+                    <p class="text-xs text-gray-500 mb-2">One emoji switches the whole message to Unicode (UCS-2).</p>
+                    <ul class="text-xs space-y-1">
+                        <li><span class="font-medium text-gray-900">70</span> characters = 1 segment</li>
+                        <li>Longer messages split every <span class="font-medium text-gray-900">67</span> characters</li>
+                    </ul>
+                </div>
+            </div>
+            <div class="bg-gray-50 rounded-lg p-4 text-xs">
+                <div class="font-medium text-gray-900 mb-1">Example</div>
+                A 300-character message is <span class="font-medium text-gray-900">2 segments</span> as plain text
+                and <span class="font-medium text-gray-900">5 segments</span> with a single emoji added.
+            </div>
+            <p class="text-xs text-gray-500">Usage reflects the actual segment count reported by the carrier for each
+               message, so it always matches what the carrier bills.</p>
+        </div>
+    </details>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function loadUsage() {
+    const d = await api('/api/usage/current');
+    document.getElementById('cycleLabel').textContent = d.month;
+    document.getElementById('allowance').textContent = d.allowance.toLocaleString();
+    document.getElementById('used').textContent = d.used_segments.toLocaleString();
+    document.getElementById('remaining').textContent = d.remaining.toLocaleString();
+    document.getElementById('totalDue').textContent = '$' + d.total_due.toFixed(2);
+    document.getElementById('progressText').textContent =
+        `${d.used_segments.toLocaleString()} / ${d.allowance.toLocaleString()} segments`;
+    document.getElementById('resetDate').textContent = fmtDate(d.reset_date).split(',')[0];
+
+    const bar = document.getElementById('progressBar');
+    bar.style.width = Math.min(100, d.percentage_used) + '%';
+    bar.className = 'h-2.5 rounded-full transition-all duration-500 ' +
+        (d.percentage_used >= 90 ? 'bg-red-600' : d.percentage_used >= 75 ? 'bg-yellow-500' : 'bg-{{ brand.color }}-600');
+
+    const box = document.getElementById('overageBox');
+    if (d.overage > 0) {
+        box.innerHTML = `<span class="font-semibold">${d.overage.toLocaleString()}</span> segments over the allowance — ` +
+                        `additional charge <span class="font-bold">$${d.overage_cost.toFixed(2)}</span>`;
+        box.classList.remove('hidden');
+        const badge = document.getElementById('statusBadge');
+        badge.className = 'px-2.5 py-1 rounded-full text-xs font-medium bg-red-100 text-red-700';
+        badge.textContent = 'Over allowance';
+    } else {
+        box.classList.add('hidden');
+    }
+}
+
+async function loadHistory() {
+    const d = await api('/api/usage/history');
+    const body = document.getElementById('historyBody');
+    if (!d.months?.length) {
+        body.innerHTML = '<tr><td colspan="5" class="px-6 py-4 text-center text-gray-400">No history</td></tr>';
+        return;
+    }
+    body.innerHTML = d.months.map(m => `
+        <tr class="hover:bg-gray-50">
+            <td class="px-6 py-3 text-sm font-medium text-gray-900">${esc(m.month)}${m.status === 'current' ? ' <span class="text-xs text-gray-400">(current)</span>' : ''}</td>
+            <td class="px-6 py-3 text-sm text-gray-500">${m.total_segments.toLocaleString()}</td>
+            <td class="px-6 py-3 text-sm text-gray-500">${m.messages.toLocaleString()}</td>
+            <td class="px-6 py-3 text-sm ${m.overage ? 'text-red-600 font-medium' : 'text-gray-400'}">${m.overage ? m.overage.toLocaleString() : '—'}</td>
+            <td class="px-6 py-3 text-sm font-medium text-gray-900">$${m.total_due.toFixed(2)}</td>
+        </tr>`).join('');
+}
+
+async function loadPricing() {
+    const p = await api('/api/usage/pricing');
+    const row = (label, value) =>
+        `<div class="flex justify-between text-sm p-2 bg-gray-50 rounded-lg"><span class="text-gray-600">${esc(label)}</span><span class="font-medium">${esc(value)}</span></div>`;
+    document.getElementById('pricingBody').innerHTML =
+        row(`Monthly fee (includes ${p.included_segments.toLocaleString()} segments)`, `$${p.base_fee.toFixed(2)}/mo`) +
+        p.tiers.map(t => row(`${t.range} segments`, `$${t.rate.toFixed(3)}/segment`)).join('');
+}
+
+loadUsage();
+loadHistory();
+loadPricing();
+setInterval(loadUsage, 30000);
+</script>
+{% endblock %}

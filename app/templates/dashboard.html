@@ -1,0 +1,136 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — {{ brand.app_name }}{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+    <div class="flex items-center justify-between">
+        <h1 class="text-2xl font-bold text-gray-900">Dashboard</h1>
+        <a href="/campaigns" class="px-3.5 py-2 rounded-lg text-sm font-medium text-white bg-{{ brand.color }}-600 hover:bg-{{ brand.color }}-700 shadow-sm">New campaign</a>
+    </div>
+
+    {# Operator-facing warning. A campaign that outruns the provider balance fails
+       from that point on and cannot be cleanly resumed, so this sits up top. #}
+    <div id="balanceWarning" class="hidden bg-red-50 border border-red-200 rounded-xl p-4 text-sm text-red-800"></div>
+    <div id="dryRunNotice" class="hidden bg-amber-50 border border-amber-200 rounded-xl p-4 text-sm text-amber-800">
+        <span class="font-semibold">Dry-run mode.</span> Messages are logged, not sent.
+    </div>
+
+    <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <div class="bg-white border border-gray-200 rounded-xl p-5">
+            <dt class="text-sm font-medium text-gray-500">Contacts</dt>
+            <dd class="mt-1 text-3xl font-bold text-gray-900" id="statContacts">—</dd>
+        </div>
+        <div class="bg-white border border-gray-200 rounded-xl p-5">
+            <dt class="text-sm font-medium text-gray-500">Campaigns</dt>
+            <dd class="mt-1 text-3xl font-bold text-gray-900" id="statCampaigns">—</dd>
+        </div>
+        <div class="bg-white border border-gray-200 rounded-xl p-5">
+            <dt class="text-sm font-medium text-gray-500">Opted out</dt>
+            <dd class="mt-1 text-3xl font-bold text-gray-900" id="statBlocked">—</dd>
+        </div>
+        <div class="bg-white border border-gray-200 rounded-xl p-5">
+            <dt class="text-sm font-medium text-gray-500">Segments this cycle</dt>
+            <dd class="mt-1 text-3xl font-bold text-gray-900" id="statSegments">—</dd>
+            <dd class="text-xs text-gray-400 mt-0.5" id="statCycle"></dd>
+        </div>
+    </div>
+
+    <div class="bg-white border border-gray-200 rounded-xl">
+        <div class="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
+            <h3 class="font-semibold text-gray-900">Recent campaigns</h3>
+            <a href="/campaigns" class="text-sm text-{{ brand.color }}-600 hover:text-{{ brand.color }}-500 font-medium">View all</a>
+        </div>
+        <div class="overflow-x-auto">
+            <table class="min-w-full divide-y divide-gray-200">
+                <thead class="bg-gray-50">
+                    <tr>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Campaign</th>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Results</th>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">When</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-gray-200" id="recentCampaigns">
+                    <tr><td colspan="4" class="px-6 py-4 text-center text-gray-400">Loading…</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const STATUS_STYLES = {
+    draft:     'bg-gray-100 text-gray-600',
+    running:   'bg-blue-100 text-blue-700',
+    completed: 'bg-green-100 text-green-700',
+    aborted:   'bg-amber-100 text-amber-800',
+    failed:    'bg-red-100 text-red-700',
+};
+
+function timeAgo(iso) {
+    if (!iso) return '—';
+    const seconds = Math.floor((Date.now() - new Date(iso)) / 1000);
+    if (isNaN(seconds)) return iso;
+    if (seconds < 60) return 'just now';
+    if (seconds < 3600) return Math.floor(seconds / 60) + 'm ago';
+    if (seconds < 86400) return Math.floor(seconds / 3600) + 'h ago';
+    if (seconds < 604800) return Math.floor(seconds / 86400) + 'd ago';
+    return new Date(iso).toLocaleDateString();
+}
+
+async function loadDashboard() {
+    const [contacts, campaigns, blocked, usage, system] = await Promise.all([
+        api('/api/contacts?limit=1'),
+        api('/api/campaigns'),
+        api('/api/blocklist/count'),
+        api('/api/usage/current'),
+        api('/api/settings/system'),
+    ]);
+
+    document.getElementById('statContacts').textContent = contacts.total.toLocaleString();
+    document.getElementById('statCampaigns').textContent = campaigns.total.toLocaleString();
+    document.getElementById('statBlocked').textContent = blocked.count.toLocaleString();
+    document.getElementById('statSegments').textContent = usage.used_segments.toLocaleString();
+    document.getElementById('statCycle').textContent =
+        `${usage.month} · ${usage.percentage_used}% of allowance`;
+
+    if (system.dry_run) document.getElementById('dryRunNotice').classList.remove('hidden');
+
+    // Balance is operator-only; skip it silently in dry-run.
+    if (!system.dry_run) {
+        const b = await api('/api/usage/balance');
+        if (b.low && b.balance !== null) {
+            const warn = document.getElementById('balanceWarning');
+            warn.innerHTML = `<span class="font-semibold">Carrier balance is $${b.balance.toFixed(2)}</span>, ` +
+                `below the $${b.threshold.toFixed(0)} alert threshold. Top up before the next campaign — ` +
+                `a blast that drains the balance mid-send fails for every remaining recipient.`;
+            warn.classList.remove('hidden');
+        }
+    }
+
+    const body = document.getElementById('recentCampaigns');
+    const recent = (campaigns.campaigns || []).slice(0, 8);
+    if (!recent.length) {
+        body.innerHTML = `<tr><td colspan="4" class="px-6 py-8 text-center text-gray-400">No campaigns yet. <a href="/campaigns" class="text-{{ brand.color }}-600">Create one</a></td></tr>`;
+        return;
+    }
+
+    body.innerHTML = recent.map(c => `
+        <tr class="hover:bg-gray-50">
+            <td class="px-6 py-3"><span class="px-2 py-0.5 rounded text-xs font-medium ${STATUS_STYLES[c.status] || STATUS_STYLES.draft}">${esc(c.status)}</span></td>
+            <td class="px-6 py-3 text-sm text-gray-900 truncate max-w-[220px]" title="${esc(c.name)}">${esc(c.name)}</td>
+            <td class="px-6 py-3 text-sm text-gray-500">
+                <span class="font-medium text-gray-900">${c.sent_count.toLocaleString()}</span> sent
+                ${c.failed_count ? `<span class="text-xs text-red-600 ml-1">${c.failed_count.toLocaleString()} failed</span>` : ''}
+                ${c.skipped_count ? `<span class="text-xs text-gray-400 ml-1">${c.skipped_count.toLocaleString()} skipped</span>` : ''}
+            </td>
+            <td class="px-6 py-3 text-sm text-gray-400">${esc(timeAgo(c.started_at || c.created_at))}</td>
+        </tr>`).join('');
+}
+
+loadDashboard();
+setInterval(loadDashboard, 15000);
+</script>
+{% endblock %}

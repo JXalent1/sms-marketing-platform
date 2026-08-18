@@ -1,0 +1,114 @@
+{# Shared shell. Nothing client-specific here — everything reads brand.* #}
+<!DOCTYPE html>
+<html lang="en" class="h-full bg-gray-50">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}{{ brand.app_name }}{% endblock %}</title>
+
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <script>
+        tailwind.config = { theme: { extend: { fontFamily: { sans: ['Inter', 'sans-serif'] } } } }
+    </script>
+    <style>body { font-family: 'Inter', sans-serif; }</style>
+    {% block head %}{% endblock %}
+</head>
+<body class="h-full flex flex-col">
+
+{% set nav_items = [
+    ('/dashboard', 'dashboard', 'Dashboard'),
+    ('/campaigns', 'campaigns', 'Campaigns'),
+    ('/contacts',  'contacts',  'Contacts'),
+    ('/usage',     'usage',     'Usage'),
+    ('/blocklist', 'blocklist', 'Blocklist'),
+    ('/settings',  'settings',  'Settings')
+] %}
+
+<nav class="bg-white border-b border-gray-200 sticky top-0 z-50">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div class="flex justify-between h-14">
+            <div class="flex">
+                <div class="flex-shrink-0 flex items-center gap-2">
+                    <div class="bg-{{ brand.color }}-600 text-white p-1.5 rounded-lg">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+                            <path d="M2 5a2 2 0 012-2h12a2 2 0 012 2v10a2 2 0 01-2 2H4a2 2 0 01-2-2V5zm2 0v.5l6 3.5 6-3.5V5H4zm12 2.7l-5.5 3.2a1 1 0 01-1 0L4 7.7V15h12V7.7z"/>
+                        </svg>
+                    </div>
+                    <span class="font-bold text-gray-900 text-sm tracking-tight">{{ brand.short_name }}</span>
+                </div>
+                <div class="hidden sm:ml-6 sm:flex sm:space-x-1">
+                    {% for href, key, label in nav_items %}
+                    <a href="{{ href }}" class="{% if active_page == key %}bg-gray-100 text-gray-900{% else %}text-gray-500 hover:bg-gray-50 hover:text-gray-700{% endif %} inline-flex items-center px-3 py-1 rounded-md text-sm font-medium my-auto transition-colors">{{ label }}</a>
+                    {% endfor %}
+                </div>
+            </div>
+            <div class="flex items-center">
+                <a href="/logout" class="hidden sm:block text-gray-400 hover:text-gray-600 text-sm font-medium mr-2">Logout</a>
+                <button type="button" onclick="document.getElementById('mobileMenu').classList.toggle('hidden')"
+                        class="sm:hidden inline-flex items-center justify-center p-2 rounded-md text-gray-400 hover:bg-gray-100">
+                    <svg class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/>
+                    </svg>
+                </button>
+            </div>
+        </div>
+    </div>
+</nav>
+
+<div id="mobileMenu" class="hidden sm:hidden bg-white border-b border-gray-200 shadow-lg">
+    <div class="px-4 py-3 space-y-1">
+        {% for href, key, label in nav_items %}
+        <a href="{{ href }}" class="block px-3 py-2 rounded-md text-base font-medium {% if active_page == key %}bg-gray-100 text-gray-900{% else %}text-gray-600 hover:bg-gray-50{% endif %}">{{ label }}</a>
+        {% endfor %}
+        <a href="/logout" class="block px-3 py-2 rounded-md text-base font-medium text-red-600 hover:bg-red-50">Logout</a>
+    </div>
+</div>
+
+<main class="flex-1 py-8">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        {% block content %}{% endblock %}
+    </div>
+</main>
+
+<div id="toastContainer" class="fixed bottom-4 right-4 z-50 space-y-2"></div>
+
+<script>
+function showToast(message, type = 'success') {
+    const colors = { success: 'bg-green-600', error: 'bg-red-600', info: 'bg-blue-600' };
+    const toast = document.createElement('div');
+    toast.className = `${colors[type] || colors.info} text-white px-4 py-3 rounded-lg shadow-lg text-sm font-medium max-w-sm transition-all duration-300 translate-y-2 opacity-0`;
+    toast.textContent = message;
+    document.getElementById('toastContainer').appendChild(toast);
+    requestAnimationFrame(() => toast.classList.remove('translate-y-2', 'opacity-0'));
+    setTimeout(() => { toast.classList.add('translate-y-2', 'opacity-0'); setTimeout(() => toast.remove(), 300); }, 4000);
+}
+
+// Always escape values coming from the database before putting them in innerHTML.
+// Contact names arrive from client CSVs and are not trustworthy markup.
+function esc(value) {
+    const div = document.createElement('div');
+    div.textContent = value == null ? '' : String(value);
+    return div.innerHTML;
+}
+
+function fmtDate(iso) {
+    if (!iso) return '—';
+    const d = new Date(iso);
+    return isNaN(d) ? iso : d.toLocaleString('en-US',
+        { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' });
+}
+
+async function api(url, options) {
+    const res = await fetch(url, options);
+    if (res.status === 401) { window.location = '/login'; throw new Error('unauthenticated'); }
+    return res.json();
+}
+</script>
+
+{% block scripts %}{% endblock %}
+</body>
+</html>

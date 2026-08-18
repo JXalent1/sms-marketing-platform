@@ -1,0 +1,117 @@
+{% extends "base.html" %}
+{% block title %}Settings — {{ brand.app_name }}{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+    <h1 class="text-2xl font-bold text-gray-900">Settings</h1>
+
+    <div id="dryRunBanner" class="hidden bg-amber-50 border border-amber-200 rounded-xl p-4 text-sm text-amber-800">
+        <span class="font-semibold">Dry-run mode.</span>
+        Messages are written to the log and never sent. Set <code class="bg-amber-100 px-1 rounded">SMS_PROVIDER</code>
+        in <code class="bg-amber-100 px-1 rounded">.env</code> to go live.
+    </div>
+
+    <div class="bg-white border border-gray-200 rounded-xl px-6 py-6">
+        <h3 class="font-semibold text-gray-900">Auto-reply</h3>
+        <p class="mt-1 text-sm text-gray-500">
+            Sent to anyone who texts <code class="text-xs bg-gray-100 px-1.5 py-0.5 rounded" id="senderNumber">…</code>.
+            STOP and START are handled automatically and do not use this text.
+        </p>
+
+        <form class="mt-5 space-y-5" id="autoReplyForm">
+            <div>
+                <textarea id="autoReply" rows="8"
+                          class="block w-full rounded-lg border border-gray-300 py-2.5 px-3 text-sm font-mono shadow-sm"></textarea>
+                <div class="mt-2 flex flex-wrap items-center gap-4 text-xs text-gray-400">
+                    <span><span id="charCount">0</span> characters</span>
+                    <span><span id="segCount">0</span> segments</span>
+                    <span id="encodingNote"></span>
+                </div>
+            </div>
+
+            <div class="bg-slate-50 rounded-lg p-4 border border-slate-200">
+                <h4 class="text-sm font-medium text-gray-700">Preview</h4>
+                <div class="mt-2 bg-white p-3 rounded-lg border border-gray-200">
+                    <p class="text-sm text-gray-900 whitespace-pre-wrap" id="replyPreview"></p>
+                </div>
+            </div>
+
+            <div class="flex items-center justify-between">
+                <button type="button" id="resetBtn" class="text-sm text-gray-500 hover:text-gray-700 font-medium">Reset to default</button>
+                <button type="submit" class="px-5 py-2.5 rounded-lg text-sm font-medium text-white bg-{{ brand.color }}-600 hover:bg-{{ brand.color }}-700">Save</button>
+            </div>
+        </form>
+    </div>
+
+    <div class="bg-white border border-gray-200 rounded-xl px-6 py-6">
+        <h3 class="font-semibold text-gray-900">System</h3>
+        <dl class="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2" id="systemInfo"></dl>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function applyBreakdown(d) {
+    document.getElementById('charCount').textContent = d.characters;
+    document.getElementById('segCount').textContent = d.segments;
+    document.getElementById('encodingNote').textContent =
+        d.encoding === 'UCS-2'
+            ? `${d.encoding} — ${d.forced_unicode_by.join(' ')} raises the cost to ${d.segments} segments (${d.gsm7_segments_if_stripped} without it)`
+            : d.encoding;
+}
+
+async function loadAutoReply() {
+    const d = await api('/api/settings/auto-reply');
+    document.getElementById('autoReply').value = d.message;
+    document.getElementById('replyPreview').textContent = d.message;
+    applyBreakdown(d);
+}
+
+async function loadSystem() {
+    const d = await api('/api/settings/system');
+    document.getElementById('senderNumber').textContent = d.sender_number || 'not configured';
+    if (d.dry_run) document.getElementById('dryRunBanner').classList.remove('hidden');
+
+    const badge = (ok, yes, no) =>
+        `<span class="inline-flex px-2 py-0.5 rounded text-xs font-medium ${ok ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600'}">${ok ? yes : no}</span>`;
+
+    document.getElementById('systemInfo').innerHTML = `
+        <div><dt class="text-sm text-gray-500">Messaging</dt><dd class="mt-0.5">${badge(d.provider_configured, 'Live', 'Dry run')}</dd></div>
+        <div><dt class="text-sm text-gray-500">Sending number</dt><dd class="mt-0.5 text-sm font-mono text-gray-900">${esc(d.sender_number || '—')}</dd></div>
+        <div><dt class="text-sm text-gray-500">Environment</dt><dd class="mt-0.5 text-sm text-gray-900">${esc(d.environment)}</dd></div>
+        <div><dt class="text-sm text-gray-500">Pre-flight balance check</dt><dd class="mt-0.5">${badge(d.preflight_balance_check, 'On', 'Off')}</dd></div>
+        <div><dt class="text-sm text-gray-500">Skip out-of-region numbers</dt><dd class="mt-0.5">${badge(d.skip_non_us, 'On', 'Off')}</dd></div>
+        <div class="sm:col-span-2"><dt class="text-sm text-gray-500">Webhook URL (set this in the carrier portal)</dt>
+            <dd class="mt-0.5 text-sm font-mono text-gray-900 break-all">${esc(d.webhook_url)}</dd></div>`;
+}
+
+document.getElementById('autoReply').addEventListener('input', function () {
+    document.getElementById('replyPreview').textContent = this.value;
+});
+
+document.getElementById('autoReplyForm').addEventListener('submit', async function (e) {
+    e.preventDefault();
+    const message = document.getElementById('autoReply').value.trim();
+    if (!message) { showToast('Message cannot be empty', 'error'); return; }
+
+    const d = await api('/api/settings/auto-reply', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message }),
+    });
+    if (d.success) { showToast('Saved'); applyBreakdown(d); }
+});
+
+document.getElementById('resetBtn').addEventListener('click', async () => {
+    if (!confirm('Reset the auto-reply to the default text?')) return;
+    const d = await api('/api/settings/auto-reply/reset', { method: 'POST' });
+    document.getElementById('autoReply').value = d.value;
+    document.getElementById('replyPreview').textContent = d.value;
+    showToast('Reset to default');
+});
+
+loadAutoReply();
+loadSystem();
+</script>
+{% endblock %}

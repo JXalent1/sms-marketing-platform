@@ -1,0 +1,35 @@
+# systemd unit.
+#   sudo cp deployment/app.service.template /etc/systemd/system/APP_NAME.service
+#   edit the paths and User below
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now APP_NAME
+#   sudo journalctl -u APP_NAME -f
+
+[Unit]
+Description=SMS Marketing Platform
+After=network.target
+
+[Service]
+Type=simple
+
+# Run as a dedicated unprivileged user, never root. If the app is ever
+# compromised, this is the difference between a bad day and a lost box.
+User=appuser
+Group=appuser
+
+WorkingDirectory=/home/appuser/app
+Environment="PATH=/home/appuser/app/venv/bin"
+ExecStart=/home/appuser/app/venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
+
+Restart=always
+RestartSec=10
+
+# Basic hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=/home/appuser/app/data /home/appuser/app/logs /home/appuser/app/exports
+
+[Install]
+WantedBy=multi-user.target
