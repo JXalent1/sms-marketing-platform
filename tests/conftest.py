@@ -1,0 +1,46 @@
+"""Test-wide environment setup.
+
+Everything in this file runs before the first `from app.main import app` in any
+test module, and that ordering is the entire point. `Settings` is instantiated
+at import of `app.core.config`, and `Base.metadata.create_all()` runs at import
+of `app.main`, so a DATABASE_URL set any later than this is simply ignored.
+
+Why a fresh database file per run rather than a rollback between tests: the
+suite is deliberately one end-to-end story — seed contacts, block a number, run
+a campaign, bill it, then process an inbound STOP — and the later assertions
+lean on the earlier ones. What it must not lean on is the *previous run*.
+`test_inbound_stop_is_persisted` blocklists +15555550102 permanently; on a
+reused database `test_campaign_honors_blocklist_and_bills_correctly` then finds
+two blocked numbers and asserts `skipped_count == 1` where the truth is 2. The
+suite was green exactly once on a fresh database and red forever after.
+
+DATABASE_URL is overridden unconditionally rather than with setdefault: a suite
+that runs against whatever the developer happened to export is the bug being
+fixed here, and the developer's own database is the last thing it should touch.
+"""
+
+import os
+import tempfile
+
+_db_fd, _DB_PATH = tempfile.mkstemp(prefix="sms-test-", suffix=".db")
+os.close(_db_fd)
+os.unlink(_DB_PATH)          # SQLAlchemy creates it; it must not pre-exist as a 0-byte file
+
+os.environ["DATABASE_URL"] = f"sqlite:///{_DB_PATH}"
+
+# Forced, not defaulted: a stray live carrier credential in the environment must
+# never let the suite reach a real handset. Dry run is the only acceptable mode.
+os.environ["SMS_PROVIDER"] = "console"
+
+os.environ.setdefault("SECRET_KEY", "test-secret-key")
+os.environ.setdefault("ADMIN_PASSWORD", "devpassword123")
+os.environ.setdefault("COOKIE_SECURE", "false")
+
+
+def pytest_sessionfinish(session, exitstatus):
+    """Remove the scratch database, pass or fail."""
+    for suffix in ("", "-wal", "-shm"):
+        try:
+            os.unlink(_DB_PATH + suffix)
+        except FileNotFoundError:
+            pass

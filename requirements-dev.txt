@@ -1,0 +1,11 @@
+# Test-only dependencies. Deliberately NOT merged into requirements.txt —
+# production images should not carry a test runner.
+#
+# Pinned because the suite was previously run by "whatever pytest is on PATH".
+# A global conda environment with an unrelated broken plugin took the gate down
+# for a reason that had nothing to do with this repo. Install these into the
+# project venv and run everything inside it.
+
+-r requirements.txt
+
+pytest==9.1.1

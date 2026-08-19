@@ -1,8 +1,8 @@
 """End-to-end smoke test.
 
-Run this after every change and before every deploy:
+Run this after every change and before every deploy, inside the project venv:
 
-    pip install pytest
+    pip install -r requirements.txt -r requirements-dev.txt
     python -m pytest tests/ -v
 
 It exercises the whole stack against the console (dry-run) provider, so it never
@@ -22,10 +22,10 @@ import os
 import time
 import pytest
 
-os.environ.setdefault("SECRET_KEY", "test-secret-key")
-os.environ.setdefault("ADMIN_PASSWORD", "devpassword123")
-os.environ.setdefault("COOKIE_SECURE", "false")
-os.environ.setdefault("SMS_PROVIDER", "console")
+# Environment (DATABASE_URL, dry-run provider, admin credentials) is set in
+# tests/conftest.py, which pytest imports before this module. Setting it here
+# was a race waiting to happen: any future test module importing app.main
+# first would have pinned the settings before this file ran.
 
 from fastapi.testclient import TestClient      # noqa: E402
 from app.main import app                       # noqa: E402
