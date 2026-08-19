@@ -1,4 +1,8 @@
-"""Import every model here so Base.metadata.create_all() sees all tables."""
+"""Import every model here so Base.metadata carries all tables.
+
+Alembic's autogenerate diffs against this, so a model that is not imported here
+is a model Alembic will cheerfully propose dropping.
+"""
 
 from app.models.contact import Contact
 from app.models.contact_list import ContactList, ContactListMember

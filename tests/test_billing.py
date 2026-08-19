@@ -95,7 +95,7 @@ def test_no_odd_segment_count_drifts_below_the_half_cent(a4a_plan):
 
     Every odd billable count lands exactly on a half-cent at $0.015, and about
     a quarter of them used to land just under it in float — 11,782 of the first
-    50,000, every one a cent low, every one in the client's favour. Comparing
+    50,000 odd counts, every one a cent low, every one against us. Comparing
     against Decimal computed independently here means this fails if anyone
     reintroduces a float anywhere in the path.
     """

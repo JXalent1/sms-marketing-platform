@@ -37,7 +37,7 @@ None in progress. Next up: module 2 — Categories & segmented upload.
     boundary, and the three UI strings that quoted it are worded in segments.
   - Billing arithmetic is `Decimal` end to end. `cost_for_segments()` returned a float,
     so every odd billable count landed just under its half-cent and 11,782 of the first
-    50,000 invoiced a cent low. The model, rate, allowance and billable-status set are
+    50,000 odd counts invoiced a cent low. The model, rate, allowance and status set are
     unchanged — this was an arithmetic defect, not a commercial one.
   - Alembic owns the schema. `Base.metadata.create_all()` is gone from `app/main.py`,
     `tests/conftest.py` builds the scratch database with `alembic upgrade head`, and
