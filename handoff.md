@@ -3,108 +3,97 @@
 _Last updated: 2026-08-19_
 
 ## What just happened
-Module 2 — categories and segmented upload. Backend only, no screens. Built in a
-worktree on branch `module-2`, in parallel with session 5a on `deploy-scaffolding`;
-nothing here touches `deployment/`, `scripts/`, `docs/` or `README.md`.
+
+Session 3a — the UI shell. One file of substance (`app/templates/base.html`) plus its
+route wiring (`app/routers/pages.py`), and a one-line edit to each of the six child
+templates that a block change forced. Nothing else was touched.
 
 ## State of the code
-`bash agent/gate.sh` passes. 76 tests green, twice in a row (46 baseline + 30 new).
-`alembic upgrade head` from an empty database produces exactly five categories,
-`alembic check` reports no drift, and the migration round-trips down and back up with
-the seed still at five.
 
-## What you can now do that you could not before
+`bash agent/gate.sh` passes, at the start of the session and at the end. 76 tests, green
+twice in a row. All six pages return 200 and every `href` the shell emits resolves.
 
-**Ask for an audience by niche.** `resolve_audience()` takes four selector shapes now:
+## The block contract — read this before writing a template
 
-    category:food_service                    members of one category
-    category:food_service,equipment          the union
-    category:equipment&list:12                the intersection
-    category:food_service,equipment&list:12  (a ∪ b) ∩ list12
+3b and 4 are written against these names in parallel. Renaming one breaks the other
+session's work, so they are fixed now:
 
-`,` binds tighter than `&`. Exactly one `&` is allowed; two raise. An unknown slug
-raises and names itself, because the alternative — a typo resolving to zero recipients —
-is a campaign that reports success and reaches nobody.
+    {% block title %}          the top-bar heading. A bare page name — "Contacts", not
+                               "Contacts — Auctions4America". base.html builds the
+                               document <title> from it and appends the brand itself.
+    {% block page_actions %}   the top bar's right-hand slot, for this page's primary
+                               buttons. Right-aligned, next to the theme toggle.
+    {% block content %}        the page body. It is already inside the padded content
+                               column — do not add another page frame around it.
+    {% block head %}           extra <head> content. Unchanged.
+    {% block scripts %}        page scripts, after the shared helpers. Unchanged.
 
-Each term contributes an `IN (subquery)`, never a join. That is deliberate: a join
-across `contact_categories` returns a contact in two categories twice, and the send loop
-would text that person twice. `tests/test_categories.py::test_contact_in_two_categories_resolves_exactly_once`
-is the guard.
+`title` is the one that changed meaning. It used to be the document title, so every
+child carried a " — {{ brand.app_name }}" suffix that would now render inside the `<h1>`.
+All six were updated to a bare name; nothing else in them was edited.
 
-Deactivating a category does **not** stop it resolving. A campaign already pointed at it
-keeps working; `list_summaries()` is what hides it from the pickers. Retiring a category
-should not silently empty someone's saved audience.
+`showToast()`, `esc()`, `fmtDate()` and `api()` are all still defined in `base.html` with
+the same signatures. Child templates that call them keep working.
 
-**Import a CSV against a category, see what it will do, and undo it.**
-`/api/imports/preview` → `/api/imports/commit` → `/api/imports/{list_id}/undo`.
-`category_id` is a required form field on preview and commit.
+## What the shell gives you
+
+- **216px sidebar**, `bg-surface`, hairline right border. Brand block reads `brand.*`
+  only. Grouped nav with uppercase section captions. Footer pinned by a `flex-1` spacer
+  on the `<nav>`.
+- **Active state** is `aria-current="page"` plus `bg-brand-soft`, driven by the existing
+  `active_page` context variable. The keys are unchanged: `dashboard`, `campaigns`,
+  `contacts`, `blocklist`, `usage`, `settings`.
+- **`shell_context(db)`** in `pages.py` supplies `segments_this_month`, `sender_number`,
+  `send_mode` and `send_mode_live`. Any new page route must spread it into the template
+  context or the footer renders its empty state. Every shell value goes through a Jinja
+  `default(...)`, so a handler that forgets renders a blank footer rather than a 500.
+- **Below 768px** the sidebar leaves the flow entirely and becomes a drawer over a
+  backdrop, opened by a labelled toggle in a mobile header. Verified at 375px: no
+  horizontal scroll with the drawer open or closed.
 
 ## Three things not to undo
 
-**`color_token` is a token, not a hex.** The four hues passed a colorblind-separation
-and contrast validator as a set, and four is the ceiling. `category_service` validates
-against `COLOR_TOKENS` on every write and the router surfaces the failure as a 400. A
-sixth category takes `neutral`. Changing the palette is on the escalation list.
+**The nav ships six items, not the design's eight.** History and Categories are module 8;
+Prospects is the deferred engine, so there is no badge and no placeholder route. A nav
+item that 404s is worse than an absent one. The template comment says what restores each
+— add its tuple to `nav_groups` and an arm to `nav_icon()`, nothing else.
 
-**A category with members is never hard-deleted.** The FK is `ON DELETE CASCADE`, so the
-delete would take every `contact_categories` row with it and say nothing — the one thing
-in that table that cannot be rebuilt from a CSV. `DELETE /api/categories/{id}`
-deactivates; `?hard=true` is refused with a 409 while anyone is tagged.
+**The status pill says send mode, not uptime.** With `SMS_PROVIDER=console` it reads
+"Dry run" against a `warn` dot. A pill that said "Live" while the app was logging
+messages instead of sending them is exactly the lie you do not want on the morning of a
+sale. It reads `get_provider().name`, not the setting, because the factory falls back to
+console when a carrier fails to initialise — and the name itself never reaches the
+response.
 
-**Undo is subtractive.** It removes only tags this batch created (`created_tag`) that
-are also `source="upload"`, so a hand-added tag survives; it deletes a contact only when
-this batch created it *and* it now has no category, no other list and no message
-history; and it never touches the blocklist. All three are asserted in
-`tests/test_import.py::test_undo_reverses_the_batch_and_nothing_else`.
+**The sender number is masked, and nothing near it names the carrier.** `+1 954 ••• 4120`
+— area code so he recognises it, last four so he can read it out. `mask_sender_number()`
+returns `None` for anything that is not a phone number (including console's "(dry run)"),
+and the footer shows "Not assigned" rather than a mangled string.
 
-## What module 3 needs from this
+## What is still ugly, and whose it is
 
-- `contact_service.list_summaries()` returns every audience the pickers should offer —
-  `all`, then each active category, then each list — each with a live count and a
-  `kind` of `all` / `category` / `list`. That is the dropdown's data source.
-- `GET /api/categories` returns each category with its `color_token`, its
-  `selector` (`category:<slug>`) and its member count, plus the allowed token list. Map
-  the token to the `--s1`…`--s4` CSS variables; do not read a hex from the API, because
-  there isn't one.
-- `audience_label()` gives the human wording for any selector and never raises.
-- Point the Contacts screen's upload at `/api/imports/*`, not `/api/contacts/import` —
-  the latter is the skeleton's uncategorised flow and is noted in `status.md` for
-  retirement.
+The six child templates are on the skeleton's light `bg-white`/`text-gray-*` palette and
+render as white cards on the dark page. This is expected — 3a was scoped to the shell and
+explicitly told not to restyle them. `dashboard.html` is the worst: its own page heading
+is `text-gray-900` on `bg-page` and is nearly invisible. 3b replaces it.
 
-## Two decisions I made rather than escalated
+Two nav labels disagree with their page headings: nav says "Compose" and "Opt-outs", the
+pages still head themselves "Campaigns" and "Blocklist". One word each in
+`{% block title %}`, in the sessions that own those files.
 
-Both are in `status.md` under "Decisions taken inside module 2" with the full reasoning.
-Short version:
+## Two things worth knowing before you screenshot anything
 
-1. **The preview returns `duplicates` and `existing_contacts` on top of the six counts
-   the spec named.** Without them the report does not add up as soon as a file repeats a
-   row or contains a number we already hold but have not tagged. Every count the spec
-   named kept the meaning the spec gave it.
-
-2. **Undo needed `contact_lists.category_id` and
-   `contact_list_members.created_contact` / `created_tag`.** The alternative was parsing
-   the category back out of the list's name, which is the `auction_date` mistake the
-   reference system made. All three are nullable and additive; the downgrade drops them;
-   `ix_contacts_phone` is untouched.
-
-## Where the counts come from
-
-`tests/fixtures/contacts_messy.csv` is built to look like one of his real exports —
-phone column called `Cell`, a second one called `Contact #`, a `Company` column nothing
-maps to, one repeated row, one number that is not a number, one row with no number at
-all. Against the module's fixture state it yields, exactly:
-
-    rows 12 = valid_phones 8 + unusable 3 + duplicates 1
-    valid_phones 8 = opted_out 1 + already_in_category 1 + existing_contacts 1 + new_contacts 5
-
-They are asserted as a dict comparison, not one loose `>=` at a time. If you change the
-fixture, the arithmetic identities in `test_preview_counts_are_exact` will tell you what
-you broke.
+- `app/static/app.css` is a gitignored build artifact. Run `npm run build:css` or every
+  page serves unstyled and `/static/app.css` 404s. That is a missing build step, not a
+  regression.
+- `run.sh` builds a second venv at `venv/` while the project uses `.venv/`. Still noted
+  in `status.md`, still module 8's. Running `python -m uvicorn app.main:app` out of
+  `.venv` is the shortcut, and it does not need a `.env` if you pass `SECRET_KEY`,
+  `ADMIN_PASSWORD` and `COOKIE_SECURE=false` on the command line.
 
 ## Still open
 
-- His real CSVs, one per category. Not blocking any more — the header mapping is
-  covered — but the launch import in module 8 needs them to confirm his actual headers
-  and per-category counts.
-- Sender number strategy, before the first live send.
+- His real CSVs, one per category — needed for the launch import in module 8.
+- Sender number strategy, before the first live send. The shell renders whatever
+  `active_sender_number()` returns; today that is nothing.
 - `SMS_PROVIDER` is still `console`. Flipping it is a human step and stays one.

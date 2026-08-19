@@ -9,14 +9,19 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from slowapi import Limiter
 from slowapi.util import get_remote_address
+from sqlalchemy.orm import Session
 from app.core.auth import (
     require_auth, verify_login, create_session_token, get_current_user,
     get_client_ip, SESSION_COOKIE_NAME, SESSION_MAX_AGE,
 )
 from app.core.config import settings
+from app.core.database import get_db
 from app.core import branding
+from app.services import billing_service
+from app.sms.factory import get_provider, active_sender_number
 import os
 import logging
+import re
 
 logger = logging.getLogger("pages")
 
@@ -87,11 +92,63 @@ async def health():
     return {"status": "healthy"}
 
 
+# ─── The application shell ──────────────────────────────────────────────────
+
+_NON_DIGITS = re.compile(r"\D")
+
+
+def mask_sender_number(raw: str) -> str | None:
+    """"+19545554120" -> "+1 954 ••• 4120". None when no number is assigned.
+
+    Masked because the shell renders it on every page, and the client's own
+    screen is shoulder-surfed in a saleroom. The area code stays because it is
+    how he recognises the number as his; the last four because it is what he
+    reads out to anyone asking. Nothing here identifies who carries the number,
+    and nothing may be added that does.
+
+    Anything that isn't a phone number — the console provider's "(dry run)",
+    an unset value — returns None so the template shows its own empty state
+    rather than a mangled string.
+    """
+    digits = _NON_DIGITS.sub("", raw or "")
+    if len(digits) < 10:
+        return None
+    country = digits[:-10] or "1"
+    return f"+{country} {digits[-10:-7]} ••• {digits[-4:]}"
+
+
+def shell_context(db: Session) -> dict:
+    """The values base.html renders on every authenticated page.
+
+    Here rather than in each handler: six routes duplicating this query is six
+    places to update when the shell gains a figure, and the reason the prior
+    build's nav counts disagreed with its own dashboard.
+    """
+    cycle_start, cycle_end, _, _ = billing_service.get_billing_cycle()
+    _, segments = billing_service.compute_usage(db, cycle_start, cycle_end)
+
+    # Read from the live provider, not from settings: get_provider() falls back
+    # to console when a carrier can't initialise, and the pill has to say what
+    # is actually happening rather than what .env intended. The provider's name
+    # decides the label and never reaches the response.
+    live = get_provider().name != "console"
+
+    return {
+        "segments_this_month": segments,
+        "sender_number": mask_sender_number(active_sender_number()),
+        "send_mode": "Live" if live else "Dry run",
+        "send_mode_live": live,
+    }
+
+
 # ─── Pages (all authenticated) ──────────────────────────────────────────────
 
 def _make_page(template: str, active: str):
-    async def page(request: Request, user: str = Depends(require_auth)):
-        return templates.TemplateResponse(request, template, {"active_page": active})
+    async def page(request: Request, db: Session = Depends(get_db),
+                   user: str = Depends(require_auth)):
+        return templates.TemplateResponse(
+            request, template, {"active_page": active, **shell_context(db)},
+        )
     return page
 
 

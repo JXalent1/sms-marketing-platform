@@ -1,79 +1,249 @@
-{# Shared shell. Nothing client-specific here — everything reads brand.* #}
+{# ─── The application shell ───────────────────────────────────────────────────
+   Every page except login.html extends this file. Nothing client-specific lives
+   here: the brand strings come from brand.*, the colors from the token
+   utilities, and the footer figures from the shell context in routers/pages.py.
+
+   CONTRACT FOR CHILD TEMPLATES — sessions 3b and 4 are written against this.
+   Renaming any of these breaks templates being authored in parallel.
+
+     {% block title %}        the top-bar heading. A bare page name ("Contacts"),
+                              not a sentence — the document <title> appends the
+                              brand name itself.
+     {% block page_actions %} the top bar's right-hand slot, for this page's
+                              primary buttons.
+     {% block content %}      the page body. It is already inside the padded
+                              content column; do not add your own page frame.
+     {% block head %}         extra <head> content.
+     {% block scripts %}      page scripts, after the shared helpers below.
+
+   The child templates still carry the skeleton's light bg-white/text-gray-*
+   classes and read as light cards on a dark page. That is known and deliberate:
+   3b, 4 and module 8 own those files. This session guarantees only that they
+   still render.
+#}
 <!DOCTYPE html>
 {# Dark is the default, not an option: light is opt-in via data-theme="light". #}
 <html lang="en" data-theme="dark" class="h-full bg-page">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{% block title %}{{ brand.app_name }}{% endblock %}</title>
+    {# `title` is the top-bar heading; the document title is derived from it so
+       the two can never drift apart. #}
+    <title>{{ self.title() }} · {{ brand.app_name }}</title>
 
     {# Compiled at build time by `npm run build:css`. Nothing is fetched from a
        CDN: with the Play CDN unreachable the whole app rendered as raw unstyled
        HTML, and Inter now ships from /static/fonts. #}
     <link rel="stylesheet" href="/static/app.css">
     {% include "_brand.html" %}
+
+    {# Applied before first paint. Reading the preference in a deferred script
+       instead flashes the dark shell for a frame on every navigation. #}
+    <script>
+      try {
+        var t = localStorage.getItem('theme');
+        if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t;
+      } catch (e) { /* private mode: keep the default */ }
+    </script>
     {% block head %}{% endblock %}
 </head>
-<body class="h-full flex flex-col bg-page text-ink">
+<body class="h-full bg-page text-ink antialiased">
 
-{% set nav_items = [
-    ('/dashboard', 'dashboard', 'Dashboard'),
-    ('/campaigns', 'campaigns', 'Campaigns'),
-    ('/contacts',  'contacts',  'Contacts'),
-    ('/usage',     'usage',     'Usage'),
-    ('/blocklist', 'blocklist', 'Blocklist'),
-    ('/settings',  'settings',  'Settings')
+{# ─── Navigation ──────────────────────────────────────────────────────────────
+   Only routes that exist. The design shows eight items; four of those screens
+   are not built, and a nav entry that 404s is worse than an absent one.
+
+   Deliberately absent, and what restores each:
+     History    — needs the redesigned campaign-history screen (module 8).
+     Categories — the admin screen for the category tables added in module 2
+                  (module 8). Categories themselves already work.
+     Prospects  — the whole prospecting engine is deferred, so there is no badge,
+                  no route and no placeholder here. It comes back with the
+                  discovery sources and the review queue, not before.
+   Restoring one means adding its (href, key, label, icon) tuple below and an
+   arm to nav_icon(); nothing else in this file needs to change.
+#}
+{% set nav_groups = [
+    ('Send', [
+        ('/dashboard', 'dashboard', 'Today',           'today'),
+        ('/campaigns', 'campaigns', 'Compose',         'compose'),
+    ]),
+    ('Audience', [
+        ('/contacts',  'contacts',  'Contacts',        'contacts'),
+        ('/blocklist', 'blocklist', 'Opt-outs',        'optouts'),
+    ]),
+    ('Account', [
+        ('/usage',     'usage',     'Usage & billing', 'usage'),
+        ('/settings',  'settings',  'Settings',        'settings'),
+    ])
 ] %}
 
-<nav class="bg-surface border-b border-line sticky top-0 z-50">
-    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div class="flex justify-between h-14">
-            <div class="flex">
-                <div class="flex-shrink-0 flex items-center gap-2">
-                    <div class="bg-brand text-on-brand p-1.5 rounded-lg">
-                        <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
-                            <path d="M2 5a2 2 0 012-2h12a2 2 0 012 2v10a2 2 0 01-2 2H4a2 2 0 01-2-2V5zm2 0v.5l6 3.5 6-3.5V5H4zm12 2.7l-5.5 3.2a1 1 0 01-1 0L4 7.7V15h12V7.7z"/>
-                        </svg>
-                    </div>
-                    <span class="font-bold text-ink text-sm tracking-tight">{{ brand.short_name }}</span>
-                </div>
-                <div class="hidden sm:ml-6 sm:flex sm:space-x-1">
-                    {% for href, key, label in nav_items %}
-                    <a href="{{ href }}" class="{% if active_page == key %}bg-surface-2 text-ink{% else %}text-ink-3 hover:bg-surface-2 hover:text-ink-2{% endif %} inline-flex items-center px-3 py-1 rounded-md text-sm font-medium my-auto transition-colors">{{ label }}</a>
-                    {% endfor %}
-                </div>
-            </div>
-            <div class="flex items-center">
-                <a href="/logout" class="hidden sm:block text-ink-3 hover:text-ink text-sm font-medium mr-2">Logout</a>
-                <button type="button" onclick="document.getElementById('mobileMenu').classList.toggle('hidden')"
-                        class="sm:hidden inline-flex items-center justify-center p-2 rounded-md text-ink-3 hover:bg-surface-2">
-                    <svg class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/>
-                    </svg>
-                </button>
-            </div>
-        </div>
-    </div>
-</nav>
+{% macro nav_icon(name) -%}
+<svg class="h-[18px] w-[18px] shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+     stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+  {%- if name == 'today' -%}
+    <rect x="3" y="4.5" width="18" height="16.5" rx="2.5"/><path d="M8 2.5v4M16 2.5v4M3 9.5h18"/>
+  {%- elif name == 'compose' -%}
+    <path d="M20.5 12.2a8 8 0 0 1-11.4 7.2L3.5 20.5l1.7-4.9A8 8 0 1 1 20.5 12.2Z"/>
+  {%- elif name == 'contacts' -%}
+    <circle cx="9" cy="8" r="3.5"/><path d="M2.5 19.5a6.5 6.5 0 0 1 13 0"/>
+    <path d="M16.5 5.2a3.5 3.5 0 0 1 0 6.6M17 14.2a6.5 6.5 0 0 1 4.5 5.3"/>
+  {%- elif name == 'optouts' -%}
+    <circle cx="12" cy="12" r="8.5"/><path d="M6 6l12 12"/>
+  {%- elif name == 'usage' -%}
+    <path d="M3.5 16.5l5-5 3.5 3.5 6.5-7"/><path d="M14.5 8h4.5v4.5"/>
+  {%- elif name == 'settings' -%}
+    <circle cx="12" cy="12" r="3.2"/>
+    <path d="M12 2.6v2.4M12 19v2.4M21.4 12H19M5 12H2.6M18.7 5.3l-1.7 1.7M7 17l-1.7 1.7M18.7 18.7L17 17M7 7L5.3 5.3"/>
+  {%- endif -%}
+</svg>
+{%- endmacro %}
 
-<div id="mobileMenu" class="hidden sm:hidden bg-surface border-b border-line shadow-lg">
-    <div class="px-4 py-3 space-y-1">
-        {% for href, key, label in nav_items %}
-        <a href="{{ href }}" class="block px-3 py-2 rounded-md text-base font-medium {% if active_page == key %}bg-surface-2 text-ink{% else %}text-ink-2 hover:bg-surface-2{% endif %}">{{ label }}</a>
-        {% endfor %}
-        <a href="/logout" class="block px-3 py-2 rounded-md text-base font-medium text-crit hover:bg-crit-soft">Logout</a>
+{% macro nav_link(href, key, label, icon) -%}
+<a href="{{ href }}"
+   {% if active_page == key %}aria-current="page"{% endif %}
+   class="mx-2 flex items-center gap-2.5 rounded-lg px-3 py-2 text-[14px] transition-colors
+          focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 focus-visible:ring-offset-surface
+          {% if active_page == key %}bg-brand-soft font-medium text-brand{% else %}text-ink-2 hover:bg-surface-2 hover:text-ink{% endif %}">
+  {{ nav_icon(icon) }}<span class="truncate">{{ label }}</span>
+</a>
+{%- endmacro %}
+
+<a id="skip-link" href="#main-content"
+   class="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-[60] focus:rounded-lg
+          focus:bg-brand focus:px-4 focus:py-2 focus:text-sm focus:font-semibold focus:text-on-brand">
+  Skip to content
+</a>
+
+<div class="min-h-full md:flex">
+
+  {# ─── Mobile header ─────────────────────────────────────────────────────────
+     Below md (768px) the sidebar leaves the flow entirely and becomes a drawer,
+     so this bar carries the brand and the only way back to the nav. #}
+  <div class="sticky top-0 z-30 flex h-14 items-center gap-3 border-b border-line bg-surface px-4 md:hidden">
+    <button type="button" id="navToggle" aria-label="Open navigation menu"
+            aria-controls="sidebar" aria-expanded="false"
+            class="-ml-1 rounded-lg p-2 text-ink-2 hover:bg-surface-2 hover:text-ink
+                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand">
+      <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+           stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
+        <path d="M4 7h16M4 12h16M4 17h16"/>
+      </svg>
+    </button>
+    <span class="grid h-[26px] w-[26px] shrink-0 place-items-center overflow-hidden rounded-lg bg-brand text-[10px] font-bold text-on-brand">{{ brand.short_name }}</span>
+    <span class="truncate text-[15px] font-semibold tracking-tight">{{ brand.name }}</span>
+  </div>
+
+  <div id="navBackdrop" class="fixed inset-0 z-30 hidden bg-black/60 md:hidden"></div>
+
+  <aside id="sidebar"
+         class="fixed inset-y-0 left-0 z-40 flex w-[216px] -translate-x-full flex-col border-r border-line
+                bg-surface transition-transform duration-200 ease-out
+                md:sticky md:top-0 md:h-screen md:translate-x-0 md:shrink-0">
+
+    {# Brand block — every string reads from brand.*, never a literal. #}
+    <div class="flex items-center gap-3 px-4 py-4">
+      <span class="grid h-[30px] w-[30px] shrink-0 place-items-center overflow-hidden rounded-lg bg-brand text-[11px] font-bold text-on-brand">{{ brand.short_name }}</span>
+      <span class="min-w-0">
+        <span class="block truncate text-[15px] font-semibold leading-tight tracking-tight text-ink">{{ brand.name }}</span>
+        <span class="block truncate text-[11px] leading-tight text-ink-3">Text platform</span>
+      </span>
     </div>
+
+    {# flex-1 here is the spacer that pins the footer to the bottom. #}
+    <nav class="flex-1 overflow-y-auto pb-4" aria-label="Main">
+      {% for caption, items in nav_groups %}
+      <p class="px-5 pb-1.5 pt-4 text-[10px] font-semibold uppercase tracking-[0.08em] text-ink-3">{{ caption }}</p>
+      <div class="space-y-0.5">
+        {% for href, key, label, icon in items %}{{ nav_link(href, key, label, icon) }}{% endfor %}
+      </div>
+      {% endfor %}
+    </nav>
+
+    <div class="space-y-1.5 border-t border-line px-4 py-3">
+      <div class="flex items-baseline justify-between gap-2">
+        <span class="text-[11px] text-ink-3">Segments this month</span>
+        <span class="text-[12px] font-semibold tabular-nums text-ink">{{ '{:,}'.format(segments_this_month | default(0, true)) }}</span>
+      </div>
+      <div class="flex items-baseline justify-between gap-2">
+        <span class="text-[11px] text-ink-3">Your number</span>
+        {# Partially masked. It is the client's own number, so showing it is fine —
+           what must never appear anywhere near it is who carries it. #}
+        <span class="font-mono text-[12px] tracking-tight text-ink-2">{{ sender_number | default('Not assigned', true) }}</span>
+      </div>
+      <a href="/logout" class="inline-block rounded text-[11px] text-ink-3 hover:text-ink
+                               focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand">Sign out</a>
+    </div>
+  </aside>
+
+  <div class="flex min-w-0 flex-1 flex-col">
+
+    <header class="sticky top-0 z-20 flex h-16 items-center gap-3 border-b border-line bg-page px-4 md:px-6">
+      <h1 class="min-w-0 truncate text-[22px] font-semibold tracking-tight">{% block title %}{{ brand.app_name }}{% endblock %}</h1>
+
+      {# Send mode, not uptime. With the provider in dry run the app is running
+         perfectly and sending nothing, and that is exactly the state a "Live"
+         pill would hide on the morning of a sale. Shown at every width for the
+         same reason — it is the answer to "did that campaign actually go out?" #}
+      <span class="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-line bg-surface px-2.5 py-1 text-[12px] font-medium text-ink-2">
+        <span class="h-1.5 w-1.5 rounded-full {% if send_mode_live %}bg-good{% else %}bg-warn-ink{% endif %}"></span>{{ send_mode | default('Dry run', true) }}
+      </span>
+
+      <div class="ml-auto flex shrink-0 items-center gap-2">
+        <button type="button" id="themeToggle"
+                class="hidden h-9 items-center rounded-lg border border-line-strong bg-surface px-3 text-[13px] font-medium text-ink
+                       hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand
+                       focus-visible:ring-offset-2 focus-visible:ring-offset-page sm:inline-flex">
+          <span id="themeToggleLabel">Light</span>
+        </button>
+        {% block page_actions %}{% endblock %}
+      </div>
+    </header>
+
+    <main id="main-content" class="flex-1 px-4 py-6 md:px-6">
+      {% block content %}{% endblock %}
+    </main>
+  </div>
 </div>
-
-<main class="flex-1 py-8">
-    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        {% block content %}{% endblock %}
-    </div>
-</main>
 
 <div id="toastContainer" class="fixed bottom-4 right-4 z-50 space-y-2"></div>
 
 <script>
+(function () {
+    const sidebar  = document.getElementById('sidebar');
+    const toggle   = document.getElementById('navToggle');
+    const backdrop = document.getElementById('navBackdrop');
+
+    function setNav(open) {
+        sidebar.classList.toggle('-translate-x-full', !open);
+        backdrop.classList.toggle('hidden', !open);
+        toggle.setAttribute('aria-expanded', String(open));
+        toggle.setAttribute('aria-label', open ? 'Close navigation menu' : 'Open navigation menu');
+    }
+    toggle.addEventListener('click', () => setNav(sidebar.classList.contains('-translate-x-full')));
+    backdrop.addEventListener('click', () => setNav(false));
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') setNav(false); });
+
+    // The drawer is only ever hidden by a transform, so a resize past the
+    // breakpoint would otherwise leave the backdrop covering the desktop layout.
+    window.matchMedia('(min-width: 768px)').addEventListener('change', (e) => {
+        if (e.matches) setNav(false);
+    });
+
+    const themeToggle = document.getElementById('themeToggle');
+    const themeLabel  = document.getElementById('themeToggleLabel');
+    function paintThemeLabel() {
+        themeLabel.textContent = document.documentElement.dataset.theme === 'light' ? 'Dark' : 'Light';
+    }
+    paintThemeLabel();
+    themeToggle.addEventListener('click', () => {
+        const next = document.documentElement.dataset.theme === 'light' ? 'dark' : 'light';
+        document.documentElement.dataset.theme = next;
+        try { localStorage.setItem('theme', next); } catch (e) { /* private mode */ }
+        paintThemeLabel();
+    });
+})();
+
 function showToast(message, type = 'success') {
     const colors = { success: 'bg-good text-white', error: 'bg-crit text-white', info: 'bg-brand text-on-brand' };
     const toast = document.createElement('div');

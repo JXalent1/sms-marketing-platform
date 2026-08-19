@@ -3,7 +3,12 @@
 _Last updated: 2026-08-19_
 
 ## Where we are
-Module 2 complete. Industry category is now a real concept the whole app understands:
+Module 3a complete — the dark application shell is in, every existing page still
+returns 200 on top of it, and 3b and 4 can now start in parallel against a settled
+`base.html`. The child templates are still on the skeleton's light palette and look
+wrong on the dark page; that is 3b, 4 and module 8's work, not a regression.
+
+Module 2 before it. Industry category is now a real concept the whole app understands:
 two tables, the five seeded categories, a selector grammar that unions and intersects,
 CRUD that will not let anyone silently discard tagging history, and an import flow that
 previews before it commits and can be undone without destroying anything a human added.
@@ -12,12 +17,12 @@ Backend only — no screens; module 3 owns those.
 `bash agent/gate.sh` passes; 76 tests (46 baseline + 30 new), green twice in a row.
 
 ## Current module
-<<<<<<< HEAD
-Module 2 (Categories & segmented upload) in progress in a parallel worktree.
-Module 5a (Deploy scaffolding) complete — see below.
-=======
-None in progress. Next up: module 3 — Contacts & categories UI.
->>>>>>> module-2
+None in progress. Modules 1, 1b, 2, 5a and 3a are done. Next up: **3b (Today +
+Contacts) and 4 (Composer & guardrails)**, which can run in parallel now that the
+shell has landed.
+
+_(The three merge conflicts left in this file by the module-2 merge are resolved as
+of session 3a. Both sides were additions and both were true, so both were kept.)_
 
 ## Done
 - Reviewed skeleton + prior client's production system
@@ -54,7 +59,6 @@ None in progress. Next up: module 3 — Contacts & categories UI.
     discovers routes from the app, so a new client-facing GET route is scanned the day
     it lands, and an unresolvable path parameter fails rather than being skipped.
 
-<<<<<<< HEAD
 - **Module 5a — Deploy scaffolding**
   - `deployment/bootstrap.sh` brings up a fresh Ubuntu box: packages, non-root service
     user, venv, runtime directories, nginx site and systemd unit rendered from the
@@ -79,7 +83,6 @@ None in progress. Next up: module 3 — Contacts & categories UI.
     flight and how to restore yesterday's database.
   - `backups/` added to `.gitignore`. Without it the first cron run leaves client data
     in `git status`.
-=======
 - **Module 2 — Categories & segmented upload**
   - `categories` and `contact_categories`, seeded with the five in one migration.
     The seed is idempotent and `tests/test_categories.py` calls the migration's own
@@ -100,10 +103,26 @@ None in progress. Next up: module 3 — Contacts & categories UI.
     opted-out numbers outright; undo removes only what that batch added.
   - Two decisions worth knowing about, both recorded below under "Decisions taken
     inside module 2".
->>>>>>> module-2
+- **Module 3a — UI shell**
+  - `app/templates/base.html` is the dark application shell from the design file: a
+    216px sidebar, brand block, grouped nav with section captions, and a footer pinned
+    to the bottom by a flex spacer carrying segments-this-month and the masked sender
+    number. Top bar is heading, send-mode pill, and a slot for the page's own buttons.
+  - The nav ships six items, not the design's eight. History and Categories (module 8)
+    and Prospects (engine deferred) are absent rather than 404ing, and the template says
+    so and says what restores them.
+  - Block contract for 3b and 4, documented at the top of the file: `title` (top-bar
+    heading), `page_actions`, `content`, `head`, `scripts`. `title` changed meaning —
+    it used to be the document `<title>` — so each of the six children had its one-line
+    declaration updated to a bare page name. Nothing else in them was touched.
+  - `pages.py` gained `shell_context(db)`: one place computing the footer figures and
+    the send-mode pill, rather than the same query in six handlers.
+  - Below 768px the sidebar leaves the flow and becomes a drawer behind a labelled
+    toggle. Verified at 375px: no horizontal scroll open or closed.
 
 ## Next
-1. Module 3 — Contacts & categories UI
+1. Module 3b — Today + Contacts screens
+2. Module 4 — Composer & campaign guardrails
 
 ## Blocked on
 - A4A logo and brand hex colors. **No longer blocking:** the placeholder palette from
@@ -149,7 +168,6 @@ list. All three are nullable, additive, and dropped by the downgrade. Nothing to
 Real issues outside the current module's scope. Left alone deliberately; each names the
 module that owns the file.
 
-<<<<<<< HEAD
 - **`sessions/session-5a.md` does not exist.** Module 5a was built from its row in
   `modules.md` (scope, file list, "5a stays out of `app/main.py`") plus the acceptance
   criteria in the session prompt. Every other module has a session spec; if one was
@@ -159,7 +177,6 @@ module that owns the file.
   module 1 note below. `deployment/bootstrap.sh` creates the server venv at
   `$APP_DIR/venv`, matching `app.service.template` and `deploy.sh`, so the server side is
   self-consistent; the local mismatch is untouched and still module 8's.
-=======
 - **`sessions/session-2.md` was never committed.** It existed only as an untracked file
   in the primary worktree, so `git worktree add` produced a module-2 branch with no
   spec on it. Committed here alongside the module. Worth checking that session 3's
@@ -174,7 +191,22 @@ module that owns the file.
   and the README both build it. But CLAUDE.md's "How to verify work" lists the 200 as
   though it always holds, which sends the next agent hunting a regression that is not
   there. One sentence in CLAUDE.md would fix it; that file is nobody's module.
->>>>>>> module-2
+  <br>_Fixed 2026-08-19: the repo-level `CLAUDE.md` now says so under "How to verify
+  work". The copy one directory up still carries the old wording._
+- **The six child templates are still on the skeleton's light palette.** They render as
+  white cards on the dark shell — known, expected, and explicitly not session 3a's to
+  fix. `dashboard.html` is the worst of it: its own `text-gray-900` page heading is
+  near-invisible on `bg-page`. 3b owns `dashboard.html`/`today.html` and `contacts.html`,
+  4 owns `campaigns.html`, module 8 owns `blocklist.html`, `usage.html`, `settings.html`.
+- **Nav label and page heading disagree on two screens.** The nav says "Compose" and
+  "Opt-outs" (the design's wording, and the spec's); the pages still head themselves
+  "Campaigns" and "Blocklist". Session 3a changed only `dashboard.html`'s heading, to
+  "Today", because the spec named that rename explicitly. The other two belong to the
+  sessions that own those templates — one word each, in `{% block title %}`.
+- **`status.md` carried three unresolved merge-conflict markers** from the module-2
+  merge (lines 15, 57 and 152 as committed). Resolved in this session, since it is a
+  file 3a is required to update and the markers made the "Current module" section
+  unreadable. Both sides of all three were additions and both were kept.
 
 - **`docs/API.md` and `docs/NEW_CLIENT_CHECKLIST.md` still document the old billing
   model** (`base_fee`, `overage_cost`, `BILLING_OVERAGE_TIERS`) and the removed
