@@ -62,7 +62,7 @@ def get_billing_cycle(for_date: date = None) -> Tuple[date, date, date, str]:
     return cycle_start, cycle_end, next_reset, label
 
 
-def to_money(amount: float) -> float:
+def to_money(amount: Decimal | float) -> float:
     """Round half-up to cents. Call this at the point of display, nowhere else.
 
     Python's round() is banker's rounding: round(0.125, 2) is 0.12, not 0.13.
@@ -70,8 +70,14 @@ def to_money(amount: float) -> float:
     drift, and it disagrees with the number any human writing the invoice by
     hand would produce. Half-up is what a client expects and what an accountant
     checks against.
+
+    A Decimal is passed straight through. Half-up rounding can only be correct
+    if the value still sits exactly on the half-cent boundary when it gets here,
+    and a float that has been through `n * 0.015` no longer does — see
+    cost_for_segments().
     """
-    return float(Decimal(str(amount)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+    exact = amount if isinstance(amount, Decimal) else Decimal(str(amount))
+    return float(exact.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
 
 
 def billable_segments(segments: int) -> int:
@@ -79,15 +85,30 @@ def billable_segments(segments: int) -> int:
     return max(0, segments - settings.BILLING_SEGMENTS_INCLUDED)
 
 
-def cost_for_segments(segments: int) -> float:
-    """Unrounded cost for a cycle's segment total.
+def cost_for_segments(segments: int) -> Decimal:
+    """Unrounded cost for a cycle's segment total, as an exact Decimal.
 
     Deliberately not rounded: callers accumulate first and round once via
     to_money(). Returning cents from here would push rounding into the middle
     of every sum.
+
+    Decimal, not float, and that is the whole point of this function. At
+    $0.015 every odd billable count lands exactly on a half-cent, and in binary
+    floating point about a quarter of them land just *under* it:
+
+        11 * 0.015 -> 0.16499999999999998, so half-up gives 0.16, not 0.17
+
+    11,782 of the first 50,000 odd counts were wrong that way, always one cent
+    low, always in the client's favour and against ours. Rounding half-up in
+    Decimal at the end cannot fix it — by then the boundary is already gone —
+    so the multiplication itself has to be exact. `Decimal(str(rate))` is used
+    rather than `Decimal(rate)` because the settings are floats: str() gives
+    the 0.015 that was written in .env, Decimal() gives the binary expansion of
+    it.
     """
-    return (settings.BILLING_MONTHLY_FEE
-            + billable_segments(segments) * settings.BILLING_PRICE_PER_SEGMENT)
+    fee = Decimal(str(settings.BILLING_MONTHLY_FEE))
+    rate = Decimal(str(settings.BILLING_PRICE_PER_SEGMENT))
+    return fee + billable_segments(segments) * rate
 
 
 def compute_usage(db: Session, cycle_start: date, cycle_end: date) -> Tuple[int, int]:

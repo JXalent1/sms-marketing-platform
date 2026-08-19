@@ -133,9 +133,13 @@ async function refreshPreview() {
 
     const unicodeWarn = document.getElementById('pvUnicodeWarn');
     if (data.encoding === 'UCS-2') {
+        // Worded in segments, not dollars. Segments are the unit he is metered
+        // in, and the ratio is the whole point — a dollar figure here would
+        // either quote our wholesale rate or imply a charge that the monthly
+        // included allowance may well absorb.
         unicodeWarn.textContent =
             `${data.forced_unicode_by.join(' ')} forces Unicode encoding: ${data.segments} segments instead of ` +
-            `${data.gsm7_segments_if_stripped}. Removing it would cut this campaign's carrier cost roughly in half.`;
+            `${data.gsm7_segments_if_stripped}. Removing it would roughly halve the segments this campaign uses.`;
         unicodeWarn.classList.remove('hidden');
     } else {
         unicodeWarn.classList.add('hidden');
@@ -199,7 +203,7 @@ document.getElementById('campaignForm').addEventListener('submit', async functio
         });
         if (data.success) {
             showToast(`Draft created — ${data.campaign.total_recipients.toLocaleString()} recipients, ` +
-                      `est. carrier cost $${(data.campaign.estimated_cost || 0).toFixed(2)}`);
+                      `~${(data.campaign.estimated_segments || 0).toLocaleString()} segments`);
             this.reset();
             loadCampaigns();
             loadAudiences();
@@ -234,7 +238,7 @@ async function loadCampaigns() {
                     </div>
                     <p class="text-sm text-gray-500 mt-0.5">
                         ${esc(c.audience_label || c.audience)} · ${c.total_recipients.toLocaleString()} recipients
-                        ${c.estimated_cost ? ` · est. $${c.estimated_cost.toFixed(2)}` : ''}
+                        ${c.estimated_segments ? ` · ~${c.estimated_segments.toLocaleString()} segments` : ''}
                     </p>
                     ${c.abort_reason ? `<p class="text-xs text-amber-700 mt-1">${esc(c.abort_reason)}</p>` : ''}
                 </div>

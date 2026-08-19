@@ -54,8 +54,15 @@ def seeded():
         db.close()
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def client(seeded):
+    """One logged-in session for the module, not one per test.
+
+    Function-scoped, this logged in eight times in the few seconds the suite
+    takes, and POST /login is capped at 10/minute per IP — the suite sat one
+    test away from a 429 that would have looked like an auth bug. The session
+    is read-only state here; nothing below depends on a fresh one.
+    """
     c = TestClient(app)
     c.post("/login", data={"username": "admin", "password": PASSWORD})
     return c

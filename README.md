@@ -60,10 +60,37 @@ Never write a hex value into a template — set `BRAND_COLOR_HEX` in `.env`.
 
 ### Migrations
 
-Schema changes go through Alembic (`alembic revision --autogenerate -m "..."`,
-then `alembic upgrade head`). `Base.metadata.create_all()` still runs at import
-for local convenience, but it cannot alter an existing table, so it is not a
-substitute for a migration.
+Alembic owns the schema. Nothing else creates a table.
+
+Schema changes go through `alembic revision --autogenerate -m "..."` then
+`alembic upgrade head`. Outside production the app runs `alembic upgrade head`
+itself at startup, so a fresh clone just works; production never migrates on
+startup — `deployment/deploy.sh` runs it explicitly before the restart, because
+two workers coming up together would race each other.
+
+`Base.metadata.create_all()` used to run at import. It built every table and
+wrote no `alembic_version` row, which is why the app would start fine and
+`alembic upgrade head` would then fail with *table app\_settings already
+exists*. Worse, once a new model existed, merely starting the app created its
+table and the migration meant to create it never ran.
+
+**If you have a database from before that change** — anything the app started
+against prior to session 1b — it has the tables and no version row. Stamp it
+once, then upgrade normally forever after:
+
+```bash
+alembic stamp head                   # ONLY for a pre-existing, unversioned database
+alembic upgrade head
+```
+
+Startup detects this case and logs exactly that instruction rather than
+guessing; it will not touch the schema until you have stamped it. Do not run
+`stamp` on a fresh database — that would mark migrations as applied when they
+have not been, and the tables would never be created.
+
+The test suite builds its scratch database with `alembic upgrade head` too, so
+a migration that does not apply, or that disagrees with the models, fails the
+suite (`tests/test_migrations.py`) rather than waiting for production.
 
 `SMS_PROVIDER` defaults to `console`, which logs messages instead of sending
 them. **Nothing can reach a real phone until you change that**, which is

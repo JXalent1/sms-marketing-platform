@@ -59,7 +59,18 @@ class Settings(BaseSettings):
     # Abort a campaign before the first send if the provider balance can't cover it.
     # This is the single most valuable guard in the system — see docs/SMS_LESSONS.md.
     PREFLIGHT_BALANCE_CHECK: bool = True
-    PREFLIGHT_COST_PER_SEGMENT: float = 0.009    # your blended carrier rate, for the estimate
+    # OUR blended wholesale rate — what we pay the carrier, not what the client
+    # pays us. It exists only to convert a carrier balance into a capacity
+    # estimate for the pre-flight check.
+    #
+    # It must never reach a response body, a template, or anything the client
+    # can read, directly or as a figure derived from it. It was named
+    # PREFLIGHT_COST_PER_SEGMENT, and under that name it was quietly used as
+    # "the cost of a campaign" in three places on the client's screen: it
+    # disclosed our margin and under-stated his bill by ~40%, because he is
+    # billed at BILLING_PRICE_PER_SEGMENT below. Any client-facing money figure
+    # comes from billing_service, which reads that setting and only that one.
+    WHOLESALE_COST_PER_SEGMENT: float = 0.009
 
     # ─── Pricing plan (what YOU bill the client) ────────────────────────────
     # Kept as config, not constants in code, because these get renegotiated.

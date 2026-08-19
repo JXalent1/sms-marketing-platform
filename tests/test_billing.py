@@ -7,6 +7,8 @@ config.py actually *is* the agreed plan, because arithmetic that is right about
 the wrong numbers still produces a wrong invoice.
 """
 
+from decimal import Decimal, ROUND_HALF_UP
+
 import pytest
 
 from app.core.config import settings
@@ -72,6 +74,59 @@ def test_rounding_is_half_up_not_bankers():
     assert billing_service.to_money(0.125) == 0.13
     assert billing_service.to_money(0.135) == 0.14
     assert billing_service.to_money(2.005) == 2.01
+
+
+def test_half_cent_does_not_round_down(a4a_plan):
+    """10,011 segments is 11 billable x $0.015 = $0.165, and $0.165 invoices at
+    $0.17.
+
+    It used to invoice at $0.16. `to_money()` was already half-up and already
+    used Decimal; the loss happened before it was called, in
+    `cost_for_segments()`, where 11 * 0.015 is 0.16499999999999998 in binary
+    floating point. Half-up rounding of a number that is no longer on the
+    boundary is just rounding down.
+    """
+    assert billing_service.billable_segments(10011) == 11
+    assert billing_service.to_money(billing_service.cost_for_segments(10011)) == 0.17
+
+
+def test_no_odd_segment_count_drifts_below_the_half_cent(a4a_plan):
+    """The systematic version of the test above.
+
+    Every odd billable count lands exactly on a half-cent at $0.015, and about
+    a quarter of them used to land just under it in float — 11,782 of the first
+    50,000, every one a cent low, every one in the client's favour. Comparing
+    against Decimal computed independently here means this fails if anyone
+    reintroduces a float anywhere in the path.
+    """
+    included = settings.BILLING_SEGMENTS_INCLUDED
+    rate = Decimal(str(settings.BILLING_PRICE_PER_SEGMENT))
+    fee = Decimal(str(settings.BILLING_MONTHLY_FEE))
+
+    wrong = []
+    for billable in range(1, 20000, 2):
+        expected = float((fee + billable * rate).quantize(Decimal("0.01"),
+                                                          rounding=ROUND_HALF_UP))
+        actual = billing_service.to_money(
+            billing_service.cost_for_segments(included + billable))
+        if actual != expected:
+            wrong.append((billable, actual, expected))
+
+    assert not wrong, (
+        f"{len(wrong)} of 10,000 odd counts are wrong, e.g. {wrong[:3]}"
+    )
+
+
+def test_cost_for_segments_returns_exact_decimal(a4a_plan):
+    """The return type is load-bearing, not incidental.
+
+    A float return re-introduces the defect no matter how careful to_money() is,
+    so this pins it: the value must arrive at rounding still sitting exactly on
+    the half-cent.
+    """
+    cost = billing_service.cost_for_segments(10011)
+    assert isinstance(cost, Decimal)
+    assert cost == Decimal("0.165")
 
 
 def test_rounding_happens_once_at_the_end(a4a_plan):

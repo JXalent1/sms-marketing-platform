@@ -41,7 +41,9 @@ async def capacity(user: str = Depends(require_auth)):
     be visible; it just gets shown in his units.
     """
     amount = await get_provider().get_balance()
-    rate = settings.PREFLIGHT_COST_PER_SEGMENT
+    # Wholesale rate, used only as the divisor that turns our carrier balance
+    # into his segment capacity. Neither it nor `amount` is returned.
+    rate = settings.WHOLESALE_COST_PER_SEGMENT
 
     if amount is None or rate <= 0:
         # Console (dry run) and some carriers expose no balance at all.

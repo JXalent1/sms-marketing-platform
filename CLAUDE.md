@@ -118,6 +118,20 @@ change to a live table.
   cost. The UI must warn loudly.
 - **Most scraped business numbers are landlines.** Texts to them fail and cost money.
   Filter on line type before sending, always.
+- **White-label leaks are usually assembled at runtime, not written as literals.** Every
+  leak found so far was an f-string, a URL built from the provider name, a `str(e)` from
+  an SDK exception, or a JS template literal reading an API field. `agent/gate.sh` greps
+  for literals and structurally cannot see any of them. When you add a client-facing
+  surface, ask what the string is *built from*, not just what it contains — and add a case
+  to `tests/test_whitelabel.py`, which runs the code rather than reading it.
+- **`WHOLESALE_COST_PER_SEGMENT` is our cost, not the client's price.** It must never
+  reach a response body, a template, or a log the client can see. The client's rate is
+  `BILLING_PRICE_PER_SEGMENT`. Showing him the wholesale number discloses our margin and
+  under-states his bill by roughly 40%.
+- **Float arithmetic on money drifts below half-cent boundaries.** `n * 0.015` for odd `n`
+  lands on `x.xx5` and about a quarter of the time floats just under, so half-up rounding
+  goes one cent low. Do currency arithmetic in `Decimal` from end to end, not just at the
+  rounding step.
 
 ## Where things live
 

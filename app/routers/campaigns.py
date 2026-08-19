@@ -211,6 +211,20 @@ async def send_test_sms(request: Request, payload: TestSMSRequest,
 
 
 def _campaign_dict(c: Campaign) -> dict:
+    """The client's view of a campaign.
+
+    The campaign's cost estimate is deliberately absent. It is priced at our
+    wholesale carrier rate, so returning it did three wrong things at once: it
+    named the carrier relationship, it disclosed our margin, and — worst — it
+    showed him a figure about 40% below what he is actually invoiced, which is a
+    number he would plan against. He is metered in segments, and
+    `estimated_segments` is the honest field; any money figure comes from
+    billing_service, at his rate. The column stays on the model, for the
+    pre-flight check and our own logs.
+
+    Adding it back is caught by tests/test_whitelabel.py, not by the gate — the
+    gate greps for the carrier's name and this leak never contained one.
+    """
     return {
         "id": c.id,
         "name": c.name,
@@ -223,7 +237,6 @@ def _campaign_dict(c: Campaign) -> dict:
         "failed_count": c.failed_count,
         "skipped_count": c.skipped_count,
         "estimated_segments": c.estimated_segments,
-        "estimated_cost": c.estimated_cost,
         "abort_reason": c.abort_reason,
         "created_at": c.created_at,
         "started_at": c.started_at,

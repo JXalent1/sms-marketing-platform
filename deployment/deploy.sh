@@ -23,12 +23,43 @@ rsync -avz --delete \
     --exclude '__pycache__' --exclude '*.pyc' \
     app/ "$SERVER:$REMOTE_DIR/app/"
 
-rsync -avz requirements.txt scripts/ "$SERVER:$REMOTE_DIR/"
+rsync -avz requirements.txt alembic.ini "$SERVER:$REMOTE_DIR/"
+rsync -avz --delete --exclude '__pycache__' alembic/ "$SERVER:$REMOTE_DIR/alembic/"
+rsync -avz scripts/ "$SERVER:$REMOTE_DIR/"
 
+# Migrations run here, before the restart, and never from the app itself: the
+# app skips its startup upgrade when ENVIRONMENT=production precisely so two
+# workers restarting together cannot race each other into the same migration.
 ssh "$SERVER" bash -s <<REMOTE
 set -euo pipefail
 cd "$REMOTE_DIR"
 ./venv/bin/pip install --quiet -r requirements.txt
+
+# A database from before Alembic has every table and no alembic_version row, so
+# 'upgrade head' fails with "table app_settings already exists". The fix is
+# 'alembic stamp head' — but only for that case. Stamping an EMPTY database
+# marks every migration as applied when none is, and the tables are then never
+# created at all. The two situations look identical to a script that only checks
+# for a missing version, so this one refuses and hands the decision to a human
+# rather than guessing on the client's live data.
+SCHEMA_STATE=\$(./venv/bin/python - <<'PY'
+from sqlalchemy import create_engine, inspect
+from app.core.config import settings
+
+names = set(inspect(create_engine(settings.DATABASE_URL)).get_table_names())
+unversioned = names - {"alembic_version"} and "alembic_version" not in names
+print("legacy" if unversioned else "ok")
+PY
+)
+if [ "\$SCHEMA_STATE" = "legacy" ]; then
+    echo "ABORT: the database has tables but no Alembic version — it predates migrations."
+    echo "Verify the schema matches the initial migration, then run ONCE, by hand:"
+    echo "    cd $REMOTE_DIR && ./venv/bin/alembic stamp head"
+    echo "Do NOT stamp an empty database."
+    exit 1
+fi
+./venv/bin/alembic upgrade head
+
 sudo systemctl restart "$SERVICE"
 sleep 2
 systemctl is-active "$SERVICE"

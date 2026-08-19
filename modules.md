@@ -16,22 +16,37 @@ engine, and the new UI.
 
 ## Build order
 
+**Scope changed 19 Aug 2026: ship the text-marketing platform ASAP.** The prospecting
+engine is deferred, not cancelled. Everything below is the shortest honest path to the
+client sending real campaigns.
+
 | # | Module | Status | Depends on | Touches files |
 |---|--------|--------|------------|---------------|
-| 1 | Foundation, pricing & white-label | Not started | — | `package.json`, `tailwind.config.js`, `app/static/**`, `app/templates/base.html`, `app/templates/login.html`, `app/main.py`, `app/core/config.py`, `app/core/branding.py`, `app/services/billing_service.py`, `app/routers/usage.py`, `app/templates/usage.html`, `.env.example`, `alembic/**`, `tests/test_billing.py` |
-| 2 | Categories & segmented upload | Not started | 1 | `app/models/category.py`, `app/models/__init__.py`, `app/services/category_service.py`, `app/services/contact_service.py`, `app/services/import_service.py`, `app/routers/categories.py`, `app/routers/contacts.py`, `app/sources/csv_source.py`, `alembic/versions/*`, `tests/test_categories.py`, `tests/test_import.py` |
-| 3 | UI: shell, Today, Contacts | Not started | 2 | `app/templates/base.html`, `app/templates/today.html`, `app/templates/contacts.html`, `app/routers/pages.py`, `app/routers/dashboard.py`, `app/services/dashboard_service.py`, `tests/test_dashboard.py`, `tests/test_contacts_api.py` |
-| 4 | Composer & campaign guardrails | Not started | 3 | `app/models/campaign.py`, `app/services/campaign_service.py`, `app/routers/campaigns.py`, `app/templates/campaigns.html`, `alembic/versions/*`, `tests/test_campaign_guardrails.py` |
-| 5 | Prospect engine & review queue | Not started | 3 | `app/models/prospect.py`, `app/models/scrape_job.py`, `app/models/phone_lookup.py`, `app/prospects/**`, `app/services/prospect_service.py`, `app/routers/prospects.py`, `app/templates/prospects.html`, `alembic/versions/*`, `tests/test_prospects.py`, `tests/test_scoring.py` |
-| 6 | Discovery sources | Not started | 5 | `app/prospects/sources/**`, `app/prospects/taxonomy.py`, `app/core/config.py`, `tests/test_sources.py`, `tests/fixtures/**` |
-| 7 | Opt-in page & cold-send guardrails | Not started | 4, 5 | `app/routers/public.py`, `app/templates/optin.html`, `app/models/consent.py`, `app/models/sender_pool.py`, `app/sms/quiet_hours.py`, `app/sms/optout_match.py`, `app/services/export_service.py`, `app/services/campaign_service.py`, `alembic/versions/*`, `tests/test_optin.py`, `tests/test_cold_guardrails.py` |
-| 8 | Remaining screens, scheduling & deploy | Not started | 6, 7 | `app/templates/history.html`, `app/templates/categories.html`, `app/templates/blocklist.html`, `app/templates/usage.html`, `app/routers/pages.py`, `app/main.py`, `app/services/monitoring.py`, `scripts/*`, `deployment/*`, `docs/CLIENT_GUIDE.md` |
+| 1 | Foundation, pricing & white-label | Built | — | see below |
+| 1b | Module 1 review fixes | In progress | 1 | `app/routers/campaigns.py`, `app/templates/campaigns.html`, `app/services/billing_service.py`, `app/services/campaign_service.py`, `app/core/config.py`, `app/main.py`, `tests/**`, `README.md`, `deployment/deploy.sh` |
+| 2 | Categories & segmented upload | Not started | 1b | `app/models/category.py`, `app/models/__init__.py`, `app/services/category_service.py`, `app/services/contact_service.py`, `app/services/import_service.py`, `app/routers/categories.py`, `app/routers/contacts.py`, `app/sources/csv_source.py`, `alembic/versions/*`, `tests/test_categories.py`, `tests/test_import.py` |
+| 3a | UI shell (base.html only) | Not started | 2 | `app/templates/base.html`, `app/routers/pages.py` |
+| 3b | Today + Contacts screens | Not started | 3a | `app/templates/today.html`, `app/templates/contacts.html`, `app/routers/dashboard.py`, `app/services/dashboard_service.py`, `tests/test_dashboard.py`, `tests/test_contacts_api.py` |
+| 4 | Composer & campaign guardrails | Not started | 3a | `app/models/campaign.py`, `app/services/campaign_service.py`, `app/routers/campaigns.py`, `app/templates/campaigns.html`, `alembic/versions/*`, `tests/test_campaign_guardrails.py` |
+| 5a | Deploy scaffolding | Not started | 1b | `deployment/**`, `scripts/backup.sh`, `docs/CLIENT_GUIDE.md`, `README.md` |
+| 5b | **Go live** | Not started | 3b, 4, 5a | `deployment/**`, `scripts/**`, `.env.example`, `docs/CLIENT_GUIDE.md`, `app/main.py` |
 
-**Ship point: after module 4.** He can run category-segmented campaigns off CSVs, on
-the new dark UI, billed correctly. Modules 5–8 add the prospecting engine.
+**That's the launch — six sessions, but only four waves. See "Parallel plan" below.**
 
-Modules 5 and 6 are the two heavy ones. If either runs long, split it at the marked
-seam rather than letting the session sprawl.
+### Deferred until after launch
+
+Not cancelled — descoped so the client can start sending. The plan for each is still in
+`A4A_BUILD_PLAN.md` §4 and the module details below.
+
+- **Prospect engine & review queue** (was 5)
+- **Discovery sources** — Google Places, DBPR, licences, Sunbiz (was 6)
+- **Opt-in landing page & cold-send guardrails** (was 7)
+- **Redesigned History / Categories-admin / Opt-outs / Usage screens** (was 8) — the
+  skeleton's versions of all four already work; they just aren't on the new dark design.
+  Functional beats pretty for launch.
+
+Nothing in modules 1–5 forecloses any of it. `ContactSource` stays as the ingestion seam,
+categories are a real table from module 2, and the prospect tables are additive.
 
 ---
 
@@ -220,51 +235,103 @@ no carrier name. Suite green.
 
 ---
 
-## Parallel-safe work
+### 5. Go live
 
-Default is sequential. These have built dependencies and disjoint file sets, so they can
-run concurrently in separate worktrees:
+**Purpose:** Get it onto a server, loaded with his real contacts, sending real messages.
 
-- **4 + 5** — composer/campaign path vs prospect backend. Only overlap is
-  `campaign_service.py`, which module 5 doesn't touch. Safe.
-- **6 + 7** — discovery sources vs opt-in page and cold guardrails. No overlap.
+**Scope:**
+- **Server bring-up script** for a fresh Ubuntu droplet: non-root service user, Python
+  3.12 venv, Node (for the Tailwind build), nginx, Certbot, systemd unit. The repo
+  already has `deployment/nginx.conf.template` and `app.service.template` — finish them
+  rather than inventing a new shape.
+- **Production `.env`**: brand, billing terms, `PUBLIC_BASE_URL`, carrier credentials,
+  sender number. Generated from a documented checklist, never copied from dev.
+- **Webhook registration** with the carrier — delivery status and inbound STOP — pointed
+  at the live domain. Verify both arrive, because inbound STOP handling is the one thing
+  that must work on day one.
+- `alembic upgrade head` against the production database, from empty.
+- **Import his real CSVs**, one per category, using the module 2 flow.
+- **Nightly off-box backup** of the SQLite file. The prior client's 181 MB database had
+  no backup at all.
+- Low-credit alert and a daily failure digest.
+- `docs/CLIENT_GUIDE.md` — how he uses it, in his language, with no carrier name in it.
+- A written rollback: how to stop a running campaign and how to restore yesterday's DB.
 
-Everything else shares files or dependencies.
+**The provider switch is a human step, not an agent step.** The agent prepares
+everything with `SMS_PROVIDER=console`. A human flips it to the live carrier and sends
+the first real message. This is in the escalation list and it stays there.
 
+**Launch sequence** (in this order, no skipping):
+1. Deploy with `SMS_PROVIDER=console`; click through every screen on the live domain.
+2. Human sets the live provider. Send **one** message to your own phone. Confirm it
+   arrives and the delivery webhook records it.
+3. Send to **one category, capped at 50**. Confirm delivery rate and that nothing is
+   billed that shouldn't be.
+4. Reply STOP from a test handset. Confirm it lands in the blocklist and that a
+   follow-up send skips that number.
+5. Only then hand him the login.
+
+**Acceptance:**
+- App reachable over HTTPS with a valid certificate; every page returns 200
+- `alembic upgrade head` applied to the production DB from empty
+- His real contacts imported, per-category counts matching the source files
+- A real message delivered to a real handset, with the delivery webhook recorded
+- A STOP reply blocklists the number, and a subsequent send skips it — demonstrated
+- Backup script runs and produces a restorable file off-box
+- `grep -rni "telnyx\|twilio" docs/CLIENT_GUIDE.md` returns nothing
 
 ---
 
-## Coverage against the plan
+## Parallel plan
 
-| Plan section | Module |
+Sequential is the default. These pairs are genuinely safe — dependencies built, file sets
+disjoint — and they turn six sessions into four waves.
+
+### Wave 1 (as soon as 1b is green): **2 ‖ 5a**
+
+| | |
 |---|---|
-| Part 1 §3.1 data model · §3.2 selectors · §3.3 upload | 2 |
-| Part 1 §3.4 campaign guardrails | 4 |
-| Part 1 §3.5 per-category reporting | 3 (Today) + 8 (History, Usage) |
-| Part 2 §4.1 buyer types — trade & reseller | 6 |
-| Part 2 §4.1 buyer types — collectors | 7 (opt-in page) |
-| Part 2 §4.2 per-category radius rule | 6 |
-| Part 2 §4.3 sources, tiers 1 & 2 | 6 |
-| Part 2 §4.4 line-type filtering | 5 |
-| Part 2 §4.5 pipeline, scoring, review queue | 5 |
-| §5 cold-send guardrails | 7 |
-| Part 3 UI — shell, Today, Contacts | 3 |
-| Part 3 UI — Compose | 4 |
-| Part 3 UI — Prospects | 5 |
-| Part 3 UI — History, Categories, Opt-outs, Usage | 8 |
-| Front-end pipeline fixes · commercials · white-label | 1 |
+| **2 — Categories & segmented upload** | `app/models/`, `app/services/`, `app/routers/categories.py`, `app/routers/contacts.py`, `app/sources/`, `alembic/versions/`, `tests/` |
+| **5a — Deploy scaffolding** | `deployment/**`, `scripts/backup.sh`, `docs/CLIENT_GUIDE.md`, README deploy section |
 
-## Deliberately not scoped
+Zero file overlap, and 5a depends on nothing but a working app. Front-loading the server
+work means go-live day is "run the script, import, test" rather than "start building a
+deployment." 5a stays out of `app/main.py` — scheduler and monitoring wiring waits for 5b.
 
-Three things from the plan are **not** in any module. Each is a decision, not an oversight.
+### Wave 2: **3a alone**
 
-1. **Owner phone-append enrichment.** The plan (§4.4) calls this "the whole game" — turning
-   a business main line into the owner's mobile. It needs a paid data vendor and a
-   per-lookup budget, which is a commercial decision, not a build one. Pick a vendor and
-   it becomes a small module. Until then module 6 gets as far as the officer's *name* via
-   Sunbiz.
-2. **Competitor marketplace scraping.** Flagged in the plan as likely violating those
-   platforms' terms. Left out on purpose; if it happens it should be a manual occasional
-   job, never the daily cron.
-3. **Invoicing and payment collection.** Module 1 computes what he owes. Nothing sends him
-   a bill or takes money — assumed to stay on your existing process.
+`base.html` is the file every other template extends. Landing the shell on its own — one
+small session — is what makes wave 3 safe. Running 3b and 4 against a shell that is still
+moving is how you get two templates written against different versions of the same
+layout and a merge nobody can review.
+
+### Wave 3: **3b ‖ 4**
+
+| | |
+|---|---|
+| **3b — Today + Contacts** | `app/templates/today.html`, `contacts.html`, `app/routers/pages.py`, `dashboard.py`, `app/services/dashboard_service.py` |
+| **4 — Composer & guardrails** | `app/models/campaign.py`, `app/services/campaign_service.py`, `app/routers/campaigns.py`, `app/templates/campaigns.html`, `alembic/versions/` |
+
+Disjoint, and both build on a settled shell. Both add an Alembic revision, so whichever
+merges second rebases its migration — cheap, but do it deliberately rather than
+discovering it.
+
+### Wave 4: **5b — go live**
+
+Needs everything. Not parallelisable, and the launch sequence inside it is strictly
+ordered on purpose.
+
+### What is *not* safe
+
+- **2 with anything that touches `app/services/contact_service.py`** — 2 rewrites audience
+  resolution and everything downstream reads it.
+- **3b with 4 before 3a lands** — the semantic conflict on `base.html` doesn't show up as
+  a git conflict, which is what makes it dangerous.
+- **Any wave with 5b** — go-live reads the finished state of all of it.
+
+### The honest caveat
+
+Parallelism buys wall-clock, not effort. Two worktrees means two agents' tokens, two
+reviews, and a merge step. On a six-session build the saving is roughly one session of
+elapsed time. Worth it here only because launch speed is the goal — if it weren't, I'd
+run the whole thing sequentially and spend the attention on review instead.

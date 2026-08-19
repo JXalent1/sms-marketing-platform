@@ -113,12 +113,15 @@ class CampaignService:
             ))
 
         campaign.estimated_segments = estimated_segments
-        campaign.estimated_cost = round(estimated_segments * settings.PREFLIGHT_COST_PER_SEGMENT, 2)
+        # Wholesale, i.e. what this campaign costs US. It funds the pre-flight
+        # capacity check below and our own logs, and it is deliberately absent
+        # from the campaign API payload — see _campaign_dict in routers/campaigns.py.
+        campaign.estimated_cost = round(estimated_segments * settings.WHOLESALE_COST_PER_SEGMENT, 2)
         self.db.commit()
 
         logger.info(
             f"Campaign #{campaign.id} '{name}' created | {len(recipients)} recipients "
-            f"| ~{estimated_segments} segments | est. carrier cost "
+            f"| ~{estimated_segments} segments | est. wholesale cost "
             f"${campaign.estimated_cost:.2f}"
         )
         return campaign
@@ -157,7 +160,7 @@ class CampaignService:
         # and it used to quote our carrier account's dollar balance. He is billed
         # in segments and should read the answer in segments; the money view goes
         # to our own log, below, where only we see it.
-        rate = settings.PREFLIGHT_COST_PER_SEGMENT
+        rate = settings.WHOLESALE_COST_PER_SEGMENT
         capacity_segments = int(balance / rate) if rate > 0 else 0
         required_segments = int(round((campaign.estimated_segments or 0) * 1.5))
 
