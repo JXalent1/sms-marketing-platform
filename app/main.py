@@ -22,7 +22,8 @@ from app.core.database import engine
 from app.sms.factory import get_provider
 import app.models                                    # noqa: F401 — registers tables
 
-from app.routers import pages, campaigns, contacts, blocklist, usage, settings as settings_router
+from app.routers import (pages, campaigns, contacts, categories, imports, blocklist,
+                         usage, settings as settings_router)
 from app.routers.webhooks import telnyx as telnyx_webhooks, twilio as twilio_webhooks
 
 logger = logging.getLogger("app")
@@ -148,6 +149,8 @@ app.include_router(pages.router)
 app.include_router(campaigns.router)
 app.include_router(contacts.router)
 app.include_router(contacts.lists_router)
+app.include_router(categories.router)
+app.include_router(imports.router)
 app.include_router(blocklist.router)
 app.include_router(usage.router)
 app.include_router(settings_router.router)

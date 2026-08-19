@@ -3,14 +3,30 @@
 Audience selectors are strings so they can round-trip through a form field and
 be stored on the campaign:
 
-    "all"        every active contact
-    "list:<id>"  members of one list
-    "source:csv" everything a given ContactSource produced
+    "all"                            every active contact
+    "list:<id>"                      members of one list
+    "source:csv"                     everything a given ContactSource produced
+    "category:food_service"          members of one category
+    "category:food_service,equipment"  UNION of two or more
+    "category:equipment&list:12"     INTERSECTION — in the category AND on the list
+
+Grammar, stated so nothing has to be guessed:
+
+  - `&` binds looser than `,`. "category:a,b&list:12" is (a ∪ b) ∩ list12.
+  - Exactly one `&` is supported. Two is a ValueError, not a best guess.
+  - An unknown category slug is a ValueError naming the slug. It is never a
+    silent empty audience: a typo that quietly resolves to zero recipients is
+    how a campaign gets "sent" to nobody and nobody finds out for a week.
+
+Deactivating a category does not stop it resolving. Retiring a category from the
+pickers must not silently empty a campaign already pointed at it — `list_summaries()`
+is what hides it, and that is the honest place for the distinction.
 """
 
 from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy import func, and_
 from app.models.contact import Contact
+from app.models.category import Category, ContactCategory
 from app.models.contact_list import ContactList, ContactListMember
 from app.sms.phone import normalize, is_valid
 from datetime import datetime
@@ -92,12 +108,31 @@ def add_to_list(db: Session, list_id: int, contact_id: int, commit: bool = True)
 
 
 def list_summaries(db: Session) -> List[dict]:
-    """Every list plus the synthetic 'all' audience, for audience dropdowns."""
+    """Every audience a picker can offer: 'all', each active category, each list.
+
+    Categories come before lists because that is the client's primary axis — he
+    picks tonight's niche, not a historical upload. Each carries a live count so
+    a dropdown never shows a stale number.
+    """
     rows = (db.query(ContactList.id, ContactList.name, func.count(ContactListMember.id))
             .outerjoin(ContactListMember, ContactListMember.list_id == ContactList.id)
             .group_by(ContactList.id, ContactList.name)
             .order_by(ContactList.name)
             .all())
+
+    # Active contacts only, so the count matches what a send would actually
+    # reach. The outer join keeps an empty category in the list rather than
+    # dropping it — "Estates: 0" is information; a missing row is confusing.
+    category_rows = (
+        db.query(Category.slug, Category.label, func.count(Contact.id))
+        .outerjoin(ContactCategory, ContactCategory.category_id == Category.id)
+        .outerjoin(Contact, and_(Contact.id == ContactCategory.contact_id,
+                                 Contact.is_active == 1))
+        .filter(Category.is_active == 1)
+        .group_by(Category.id, Category.slug, Category.label)
+        .order_by(Category.sort_order, Category.label)
+        .all()
+    )
 
     total_active = db.query(Contact).filter(Contact.is_active == 1).count()
 
@@ -105,50 +140,139 @@ def list_summaries(db: Session) -> List[dict]:
         "selector": "all",
         "label": "All contacts",
         "count": total_active,
+        "kind": "all",
     }]
+    audiences += [{
+        "selector": f"category:{slug}",
+        "label": label,
+        "count": count,
+        "kind": "category",
+    } for slug, label, count in category_rows]
     audiences += [{
         "selector": f"list:{list_id}",
         "label": name,
         "count": count,
+        "kind": "list",
     } for list_id, name, count in rows]
     return audiences
 
 
 # ─── Audience resolution ────────────────────────────────────────────────────
 
+def _category_ids_for_slugs(db: Session, slugs: List[str]) -> List[int]:
+    """Slugs to ids, raising on the first one that does not exist."""
+    found = {slug: cid for cid, slug in
+             db.query(Category.id, Category.slug).filter(Category.slug.in_(slugs)).all()}
+    missing = [s for s in slugs if s not in found]
+    if missing:
+        raise ValueError(
+            f"Unknown category slug: {', '.join(missing)}. "
+            "A typo must not resolve to an empty audience."
+        )
+    return [found[s] for s in slugs]
+
+
+def _term_ids_query(db: Session, term: str):
+    """A query over Contact.id for one selector term, active contacts only.
+
+    Returned as a query rather than a Python set so an intersection stays in
+    SQL. Materializing 50k ids to feed them back through an IN clause is both
+    slower and, on SQLite, past the bound-parameter limit.
+    """
+    term = term.strip()
+
+    if term == "all":
+        return db.query(Contact.id).filter(Contact.is_active == 1)
+
+    if term.startswith("list:"):
+        return (db.query(Contact.id)
+                .join(ContactListMember, ContactListMember.contact_id == Contact.id)
+                .filter(ContactListMember.list_id == _int_arg(term),
+                        Contact.is_active == 1))
+
+    if term.startswith("source:"):
+        return db.query(Contact.id).filter(
+            Contact.source == term.split(":", 1)[1], Contact.is_active == 1
+        )
+
+    if term.startswith("category:"):
+        slugs = [s.strip() for s in term.split(":", 1)[1].split(",") if s.strip()]
+        if not slugs:
+            raise ValueError(f"Audience selector {term!r} names no category")
+        ids = _category_ids_for_slugs(db, slugs)
+        # IN across several categories is the union; the outer query never
+        # joins, so a contact in two of them still comes back once.
+        return (db.query(Contact.id)
+                .join(ContactCategory, ContactCategory.contact_id == Contact.id)
+                .filter(ContactCategory.category_id.in_(ids), Contact.is_active == 1))
+
+    raise ValueError(f"Unknown audience selector: {term!r}")
+
+
+def _int_arg(term: str) -> int:
+    raw = term.split(":", 1)[1]
+    try:
+        return int(raw)
+    except ValueError:
+        raise ValueError(f"Audience selector {term!r} needs a numeric id, got {raw!r}")
+
+
+def _split_terms(selector: str) -> List[str]:
+    terms = [t for t in (selector or "").split("&")]
+    if len(terms) > 2:
+        raise ValueError(
+            f"Audience selector {selector!r} has more than one '&'. Only one "
+            "intersection is supported — write the union on the left, e.g. "
+            "'category:food_service,equipment&list:12'."
+        )
+    return terms
+
+
 def resolve_audience(db: Session, selector: str) -> List[Contact]:
     """Turn an audience selector into contacts.
 
-    Deduplication is guaranteed by Contact.phone being unique, so a contact on
-    three lists is still texted once.
+    Deduplication is guaranteed by Contact.phone being unique, and reinforced
+    here: each term contributes an IN sub-select rather than a join, so a
+    contact in two categories and on three lists is still a single row.
     """
-    selector = (selector or "").strip()
+    terms = _split_terms((selector or "").strip())
 
-    if selector == "all":
-        return db.query(Contact).filter(Contact.is_active == 1).all()
+    query = db.query(Contact).filter(Contact.is_active == 1)
+    for term in terms:
+        query = query.filter(Contact.id.in_(_term_ids_query(db, term).scalar_subquery()))
+    return query.order_by(Contact.id).all()
 
-    if selector.startswith("list:"):
-        list_id = int(selector.split(":", 1)[1])
-        return (db.query(Contact)
-                .join(ContactListMember, ContactListMember.contact_id == Contact.id)
-                .filter(ContactListMember.list_id == list_id, Contact.is_active == 1)
-                .all())
 
-    if selector.startswith("source:"):
-        source = selector.split(":", 1)[1]
-        return db.query(Contact).filter(
-            Contact.source == source, Contact.is_active == 1
-        ).all()
-
-    raise ValueError(f"Unknown audience selector: {selector!r}")
+def _term_label(db: Session, term: str) -> str:
+    term = term.strip()
+    if term == "all":
+        return "All contacts"
+    if term.startswith("list:"):
+        try:
+            row = db.get(ContactList, _int_arg(term))
+        except ValueError:
+            return term
+        return row.name if row else term
+    if term.startswith("source:"):
+        return f"Source: {term.split(':', 1)[1]}"
+    if term.startswith("category:"):
+        slugs = [s.strip() for s in term.split(":", 1)[1].split(",") if s.strip()]
+        rows = {r.slug: r.label for r in
+                db.query(Category).filter(Category.slug.in_(slugs)).all()}
+        return " + ".join(rows.get(s, s) for s in slugs)
+    return term
 
 
 def audience_label(db: Session, selector: str) -> str:
-    if selector == "all":
-        return "All contacts"
-    if selector.startswith("list:"):
-        row = db.get(ContactList, int(selector.split(":", 1)[1]))
-        return row.name if row else selector
-    if selector.startswith("source:"):
-        return f"Source: {selector.split(':', 1)[1]}"
-    return selector
+    """Human wording for a selector: "Food Service + Equipment ∩ Aug 22 preview".
+
+    Never raises. This renders in page headers and campaign rows, and a label
+    helper that throws turns a typo in a saved selector into a 500 on a screen
+    that was only trying to describe it.
+    """
+    selector = (selector or "").strip()
+    try:
+        terms = _split_terms(selector)
+    except ValueError:
+        return selector
+    return " ∩ ".join(_term_label(db, t) for t in terms)

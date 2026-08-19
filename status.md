@@ -3,14 +3,16 @@
 _Last updated: 2026-08-19_
 
 ## Where we are
-Module 1 complete, and session 1b has closed the five findings from its review. The
-skeleton has real migrations that the test suite actually applies, a compiled stylesheet
-with the dark-first token system from `Auctions4America.pen`, A4A's commercial terms
-priced in exact decimal, and a white-label test that runs the app instead of grepping it.
-`bash agent/gate.sh` passes; 46 tests.
+Module 2 complete. Industry category is now a real concept the whole app understands:
+two tables, the five seeded categories, a selector grammar that unions and intersects,
+CRUD that will not let anyone silently discard tagging history, and an import flow that
+previews before it commits and can be undone without destroying anything a human added.
+Backend only — no screens; module 3 owns those.
+
+`bash agent/gate.sh` passes; 76 tests (46 baseline + 30 new), green twice in a row.
 
 ## Current module
-None in progress. Next up: module 2 — Categories & segmented upload.
+None in progress. Next up: module 3 — Contacts & categories UI.
 
 ## Done
 - Reviewed skeleton + prior client's production system
@@ -47,20 +49,88 @@ None in progress. Next up: module 2 — Categories & segmented upload.
     discovers routes from the app, so a new client-facing GET route is scanned the day
     it lands, and an unresolvable path parameter fails rather than being skipped.
 
+- **Module 2 — Categories & segmented upload**
+  - `categories` and `contact_categories`, seeded with the five in one migration.
+    The seed is idempotent and `tests/test_categories.py` calls the migration's own
+    `_seed_categories()` a second time to prove it rather than reimplementing it.
+    `alembic check` reports no drift; the migration round-trips down and back up.
+  - `resolve_audience()` understands `category:<slug>`, comma-union and one `&`
+    intersection, with `,` binding tighter. Unknown slugs raise and name themselves —
+    a typo must never resolve to an empty audience. Each term contributes an IN
+    sub-select rather than a join, so a contact in two categories resolves once.
+  - `audience_label()` renders "Food Service + Equipment & Machinery ∩ Aug 22 preview"
+    and never raises; `list_summaries()` now offers every active category with a live
+    count, which is what module 3's dropdowns read from.
+  - Category CRUD at `/api/categories`. `color_token` is validated against the five
+    tokens on every write, and a hard delete is refused (409) while anyone is tagged —
+    the FK cascades, so it would drop the tagging history without a word.
+  - `/api/imports/{preview,commit,undo}`. `category_id` is required at every step.
+    Preview writes nothing; commit reports the same numbers as actuals and skips
+    opted-out numbers outright; undo removes only what that batch added.
+  - Two decisions worth knowing about, both recorded below under "Decisions taken
+    inside module 2".
+
 ## Next
-1. Module 2 — Categories & segmented upload
+1. Module 3 — Contacts & categories UI
 
 ## Blocked on
 - A4A logo and brand hex colors. **No longer blocking:** the placeholder palette from
   the design file is in use and the real hex is a one-line `.env` change
   (`BRAND_COLOR_HEX` / `BRAND_ACCENT_HEX`) — verified, no template edit and no CSS
   rebuild required.
-- Sample CSVs, one per category (needed for module 2's header mapping)
+- Sample CSVs, one per category. **No longer blocking module 2:** the header mapping is
+  covered by `tests/fixtures/contacts_messy.csv`, built to look like a real export
+  (`Cell`, `Contact #`, `Company`, a repeated row, a number that is not a number).
+  Still needed before the launch import in module 8, to confirm his actual headers
+  match and the per-category counts come out right.
 - Sender number strategy (needed before the first live send)
 
+## Decisions taken inside module 2
+
+Both are implementation choices, made rather than escalated, and both are visible in
+the schema — flagging them so module 3 does not have to reverse-engineer them.
+
+**The preview reports two counts the spec did not name.** The spec's six figures only
+add up when nothing in the file is a repeat and every number we already hold is already
+in the chosen category. `duplicates` (the same number twice in one file — the number is
+fine, it just imports once) and `existing_contacts` (a number we hold but have not
+tagged with *this* category — it gets the tag without being created) are what make the
+report reconcile:
+
+    rows = valid_phones + unusable + duplicates
+    valid_phones = opted_out + already_in_category + existing_contacts + new_contacts
+
+Every figure the spec named keeps the meaning the spec gave it. `opted_out` takes
+precedence where a number is both blocklisted and already tagged, because "will be
+skipped" is the fact that changes what happens next.
+
+**Undo needed three columns to be subtractive rather than destructive.**
+`contact_lists.category_id` records which category a batch tagged, and
+`contact_list_members.created_contact` / `created_tag` record what that batch actually
+did to each contact. Without them, undo has to parse the category back out of the list
+*name* ("Food Service — 2026-08-19 upload"), which is the overloaded-string mistake the
+reference system made with `auction_date` and which breaks the moment someone renames a
+list. All three are nullable, additive, and dropped by the downgrade. Nothing touches
+`ix_contacts_phone`.
+
 ## Found while working
-Real issues outside module 1's scope. Left alone deliberately; each names the module
-that owns the file.
+Real issues outside the current module's scope. Left alone deliberately; each names the
+module that owns the file.
+
+- **`sessions/session-2.md` was never committed.** It existed only as an untracked file
+  in the primary worktree, so `git worktree add` produced a module-2 branch with no
+  spec on it. Committed here alongside the module. Worth checking that session 3's
+  spec is tracked before its worktree is cut.
+- **The uncategorised import endpoints are still live.** `/api/contacts/import` and
+  `/api/contacts/import/preview` are the skeleton's original flow and take no category,
+  which is the one thing module 2 exists to make impossible. Left alone because
+  `docs/API.md` documents them and module 8 owns the docs; module 3 should point the
+  Contacts screen at `/api/imports/*` and retire them together with the doc entry.
+- **`app/static/app.css` is gitignored, so a fresh worktree serves it as 404** until
+  `npm run build:css` runs. Correct — it is a build artifact, and `deployment/deploy.sh`
+  and the README both build it. But CLAUDE.md's "How to verify work" lists the 200 as
+  though it always holds, which sends the next agent hunting a regression that is not
+  there. One sentence in CLAUDE.md would fix it; that file is nobody's module.
 
 - **`docs/API.md` and `docs/NEW_CLIENT_CHECKLIST.md` still document the old billing
   model** (`base_fee`, `overage_cost`, `BILLING_OVERAGE_TIERS`) and the removed

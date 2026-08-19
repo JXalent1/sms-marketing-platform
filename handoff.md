@@ -3,111 +3,108 @@
 _Last updated: 2026-08-19_
 
 ## What just happened
-Session 1b — corrective work on module 1's review findings. No features, no module 2.
-One commit on top of `43f21f4`, closing four defects and correcting one status note.
+Module 2 — categories and segmented upload. Backend only, no screens. Built in a
+worktree on branch `module-2`, in parallel with session 5a on `deploy-scaffolding`;
+nothing here touches `deployment/`, `scripts/`, `docs/` or `README.md`.
 
 ## State of the code
-`bash agent/gate.sh` passes. 46 tests green, twice in a row. `alembic upgrade head`
-applies to an empty database, and the test suite now builds its own schema that way, so
-a broken migration fails at collection instead of hiding behind `create_all()`.
+`bash agent/gate.sh` passes. 76 tests green, twice in a row (46 baseline + 30 new).
+`alembic upgrade head` from an empty database produces exactly five categories,
+`alembic check` reports no drift, and the migration round-trips down and back up with
+the seed still at five.
 
-## What changed in 1b, and why it matters to you
+## What you can now do that you could not before
 
-**Our wholesale rate is no longer on the client's screen.**
-`PREFLIGHT_COST_PER_SEGMENT` is now `WHOLESALE_COST_PER_SEGMENT` — it is what *we* pay
-the carrier, it feeds the pre-flight capacity check and our logs, and it must never
-reach a response body or a template. The campaign cost estimate no longer crosses the
-API boundary (`_campaign_dict` in `app/routers/campaigns.py`), and the three UI strings
-that quoted it now read in segments. The client's rate is `BILLING_PRICE_PER_SEGMENT`
-and the only thing allowed to price anything for him is `billing_service`.
+**Ask for an audience by niche.** `resolve_audience()` takes four selector shapes now:
 
-When you add a client-facing number, the question is not "is this accurate" but "whose
-number is it". The removed field was accurate — at our cost, which read about 40% below
-the invoice he actually gets.
+    category:food_service                    members of one category
+    category:food_service,equipment          the union
+    category:equipment&list:12                the intersection
+    category:food_service,equipment&list:12  (a ∪ b) ∩ list12
 
-**Billing arithmetic is `Decimal` end to end.** `cost_for_segments()` returns a
-`Decimal`, not a float, and that return type is load-bearing: at $0.015 every odd
-billable count lands exactly on a half-cent, and in float about a quarter of them land
-just below it, so half-up rounding went a cent low on 11,782 of the first 50,000. The
-model, the rate, the allowance and the billable status set `('sent', 'delivered')` are
-unchanged — 1b fixed arithmetic, not terms. Changing any of those four is still an
-escalation.
+`,` binds tighter than `&`. Exactly one `&` is allowed; two raise. An unknown slug
+raises and names itself, because the alternative — a typo resolving to zero recipients —
+is a campaign that reports success and reaches nobody.
 
-**Alembic owns the schema; nothing else creates a table.**
-`Base.metadata.create_all()` is gone from `app/main.py`. Outside production the app runs
-`alembic upgrade head` at startup; production never migrates on startup, and
-`deployment/deploy.sh` runs it explicitly before the restart (and refuses, with
-instructions, if it finds a pre-Alembic database rather than guessing whether to stamp).
+Each term contributes an `IN (subquery)`, never a join. That is deliberate: a join
+across `contact_categories` returns a contact in two categories twice, and the send loop
+would text that person twice. `tests/test_categories.py::test_contact_in_two_categories_resolves_exactly_once`
+is the guard.
 
-This matters directly to module 2. Before 1b, adding `categories` to the models meant
-that merely *starting the app* created the table with no version bump, and the migration
-you then wrote for it failed — whichever order you happened to work in decided whether
-the schema was right. That is no longer possible. `tests/conftest.py` builds the scratch
-database with `alembic upgrade head`, and `tests/test_migrations.py` fails if the
-migrations drift from the models, so your `categories` migration is a tested artifact
-before you write a line of it.
+Deactivating a category does **not** stop it resolving. A campaign already pointed at it
+keeps working; `list_summaries()` is what hides it from the pickers. Retiring a category
+should not silently empty someone's saved audience.
 
-**`tests/test_whitelabel.py` runs the app and scans what comes back.** The gate greps
-for the carrier's name; every leak this project has actually had was assembled at
-runtime — an f-string, a URL built from `provider.name`, `str(e)` from an SDK exception,
-a JS template literal reading an API field — and a grep structurally cannot see any of
-them. The test discovers GET routes from the app itself, so a client-facing route you
-add in module 2 is scanned the day it lands. If it has a path parameter, add a sample
-value to `PATH_VALUES` — the coverage test fails rather than skipping the route, which
-is deliberate: passing by omission is the failure mode being designed out.
+**Import a CSV against a category, see what it will do, and undo it.**
+`/api/imports/preview` → `/api/imports/commit` → `/api/imports/{list_id}/undo`.
+`category_id` is a required form field on preview and commit.
 
-## What the next session needs to know
+## Three things not to undo
 
-**Environment.** Work inside `.venv`, and install from both requirements files:
-`pip install -r requirements.txt -r requirements-dev.txt`. `requirements.txt` has no
-pytest on purpose. `npm install && npm run build:css` before starting the app —
-`app/static/app.css` is a gitignored build artifact, and without it every page renders
-unstyled.
+**`color_token` is a token, not a hex.** The four hues passed a colorblind-separation
+and contrast validator as a set, and four is the ceiling. `category_service` validates
+against `COLOR_TOKENS` on every write and the router surfaces the failure as a 400. A
+sixth category takes `neutral`. Changing the palette is on the escalation list.
 
-**Migrations.** Every schema change is an Alembic revision. `env.py` takes the URL from
-`settings.DATABASE_URL`, so `DATABASE_URL=... alembic upgrade head` works and
-`alembic.ini` holds no URL. `render_as_batch` is on for SQLite, so column alters will
-work on the client's actual database. Autogenerate module 2's migration, then read it
-before applying: it diffs against whatever is in `Base.metadata`, including anything
-half-finished.
+**A category with members is never hard-deleted.** The FK is `ON DELETE CASCADE`, so the
+delete would take every `contact_categories` row with it and say nothing — the one thing
+in that table that cannot be rebuilt from a CSV. `DELETE /api/categories/{id}`
+deactivates; `?hard=true` is refused with a 409 while anyone is tagged.
 
-Build Alembic's `Config` without `alembic.ini` when calling it from Python
-(`Config()` plus `script_location`). Passing the ini file makes `env.py` call
-`fileConfig()`, which disables every existing logger — including the app's.
+**Undo is subtractive.** It removes only tags this batch created (`created_tag`) that
+are also `source="upload"`, so a hand-added tag survives; it deletes a contact only when
+this batch created it *and* it now has no category, no other list and no message
+history; and it never touches the blocklist. All three are asserted in
+`tests/test_import.py::test_undo_reverses_the_batch_and_nothing_else`.
 
-**Styling.** Colors are CSS custom properties in `app/assets/tailwind.css`, exposed as
-Tailwind utilities (`bg-surface`, `text-ink-2`, `border-line`, `bg-brand`,
-`text-on-brand`, `s1`–`s4`). Dark is the default; light is `[data-theme="light"]` on
-`<html>`. Two consequences worth holding on to:
+## What module 3 needs from this
 
-- A class assembled at runtime gets purged by the compiler. `bg-{{ brand.color }}-600`
-  is exactly why the brand color had to move to a variable. Do not build class names
-  from template variables or JS string concatenation of partial names.
-- The brand hex comes from `.env` via `app/templates/_brand.html`. Never write a hex
-  into a template. `--s1`–`--s4` are not brand-configurable — see the note in the
-  stylesheet before touching them.
+- `contact_service.list_summaries()` returns every audience the pickers should offer —
+  `all`, then each active category, then each list — each with a live count and a
+  `kind` of `all` / `category` / `list`. That is the dropdown's data source.
+- `GET /api/categories` returns each category with its `color_token`, its
+  `selector` (`category:<slug>`) and its member count, plus the allowed token list. Map
+  the token to the `--s1`…`--s4` CSS variables; do not read a hex from the API, because
+  there isn't one.
+- `audience_label()` gives the human wording for any selector and never raises.
+- Point the Contacts screen's upload at `/api/imports/*`, not `/api/contacts/import` —
+  the latter is the skeleton's uncategorised flow and is noted in `status.md` for
+  retirement.
 
-**Screens are only half-converted, and that is intentional.** `base.html`, `login.html`
-and `usage.html` are on the dark tokens. `dashboard.html`, `contacts.html`,
-`campaigns.html`, `blocklist.html` and `settings.html` still carry the skeleton's
-light `bg-white`/`text-gray-*` classes and will look like light cards on a dark page.
-They got the mechanical brand-class swap only, so they render and function. Modules 3
-and 8 own their redesign.
+## Two decisions I made rather than escalated
 
-**Billing.** `billable = max(0, segments - BILLING_SEGMENTS_INCLUDED)`,
-`cost = BILLING_MONTHLY_FEE + billable * BILLING_PRICE_PER_SEGMENT`, all in `Decimal`.
-Round with `billing_service.to_money()` and only at display — it is half-up, because
-Python's `round()` is not, and it only stays correct because what reaches it is exact.
+Both are in `status.md` under "Decisions taken inside module 2" with the full reasoning.
+Short version:
 
-**Login is rate-limited at 10/minute per IP** and the whole suite logs in from one
-address inside one window. Test modules take a module-scoped login fixture for that
-reason; if you add a module, do the same and assert the login succeeded. A 429 there
-does not fail loudly — it just makes every later assertion run against a 401 body.
+1. **The preview returns `duplicates` and `existing_contacts` on top of the six counts
+   the spec named.** Without them the report does not add up as soon as a file repeats a
+   row or contains a number we already hold but have not tagged. Every count the spec
+   named kept the meaning the spec gave it.
 
-## Open decisions
-See "Blocked on" in `status.md`. Nothing blocks module 2. The out-of-scope issues found
-while working are logged under "Found while working" there, each tagged with the module
-that owns the file. One of them is a correction: 1b's own spec asked for the
-`scripts/balance_alert.py` note to be deleted because the file does not exist. It does
-exist and is tracked, and the note was accurate, so it stands — with the verification
-recorded next to it.
+2. **Undo needed `contact_lists.category_id` and
+   `contact_list_members.created_contact` / `created_tag`.** The alternative was parsing
+   the category back out of the list's name, which is the `auction_date` mistake the
+   reference system made. All three are nullable and additive; the downgrade drops them;
+   `ix_contacts_phone` is untouched.
+
+## Where the counts come from
+
+`tests/fixtures/contacts_messy.csv` is built to look like one of his real exports —
+phone column called `Cell`, a second one called `Contact #`, a `Company` column nothing
+maps to, one repeated row, one number that is not a number, one row with no number at
+all. Against the module's fixture state it yields, exactly:
+
+    rows 12 = valid_phones 8 + unusable 3 + duplicates 1
+    valid_phones 8 = opted_out 1 + already_in_category 1 + existing_contacts 1 + new_contacts 5
+
+They are asserted as a dict comparison, not one loose `>=` at a time. If you change the
+fixture, the arithmetic identities in `test_preview_counts_are_exact` will tell you what
+you broke.
+
+## Still open
+
+- His real CSVs, one per category. Not blocking any more — the header mapping is
+  covered — but the launch import in module 8 needs them to confirm his actual headers
+  and per-category counts.
+- Sender number strategy, before the first live send.
+- `SMS_PROVIDER` is still `console`. Flipping it is a human step and stays one.

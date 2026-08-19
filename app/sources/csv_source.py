@@ -101,6 +101,30 @@ class CSVContactSource(ContactSource):
             )
 
     @staticmethod
+    def count_data_rows(content: bytes) -> int:
+        """Data rows in the file, header excluded.
+
+        fetch() skips a row with no phone cell at all, so counting what it
+        yields undercounts the file. The import preview's `rows` figure has to
+        match what the client sees when he opens the CSV in Excel, or every
+        other number in the report reads as wrong.
+
+        Entirely blank lines do not count — Excel exports trail them, and he
+        does not count them either.
+        """
+        text = content.decode("utf-8-sig", errors="replace")
+        reader = csv.DictReader(io.StringIO(text))
+        total = 0
+        for row in reader:
+            values = []
+            for value in row.values():
+                # DictReader parks surplus columns under restkey as a list.
+                values.extend(value if isinstance(value, list) else [value])
+            if any((v or "").strip() for v in values):
+                total += 1
+        return total
+
+    @staticmethod
     def preview(content: bytes, limit: int = 5) -> dict:
         """Parse a few rows so the operator can confirm the mapping before committing."""
         text = content.decode("utf-8-sig", errors="replace")
