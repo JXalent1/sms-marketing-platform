@@ -157,8 +157,8 @@ app/
   sources/       ★ pluggable contact ingestion
   routers/       HTTP layer + webhooks
   templates/     white-labeled Jinja pages
-deployment/      nginx, systemd, deploy script
-scripts/         balance alert, password hashing, demo seed
+deployment/      nginx, systemd, bootstrap + deploy scripts
+scripts/         backup, balance alert, password hashing, demo seed
 tests/           end-to-end smoke suite
 ```
 
@@ -179,6 +179,84 @@ BILLING_MONTHLY_FEE=0
 BILLING_SEGMENTS_INCLUDED=10000
 BILLING_PRICE_PER_SEGMENT=0.015
 ```
+
+## Deployment
+
+One small VPS. Ubuntu, nginx in front, systemd keeping uvicorn up, SQLite on
+local disk with a nightly off-box backup.
+
+Both scripts take `--dry-run`, which prints every step and touches nothing. Read
+the dry run before you point either at a real box.
+
+### First time: bring up the server
+
+```bash
+# on the server, as a sudo-capable user
+./deployment/bootstrap.sh --dry-run --domain sms.example.com   # read it first
+./deployment/bootstrap.sh --domain sms.example.com
+```
+
+That installs Python 3.12, Node, nginx and certbot; creates a non-root service
+user; renders `nginx.conf.template` and `app.service.template` with the real
+domain and paths; and installs the nightly backup cron entry.
+
+It deliberately stops short of writing `.env`, running migrations, or issuing a
+certificate. It prints those as remaining steps. `.env` carries the sending
+credentials and `SMS_PROVIDER` stays `console` until a human changes it.
+
+### Every time after: deploy
+
+```bash
+./deployment/deploy.sh --dry-run                               # read it first
+SERVER=appuser@host SERVICE=a4a-sms ./deployment/deploy.sh
+```
+
+Deploys build the stylesheet locally and ship it as a file — the server carries
+no Node toolchain at runtime. The sync excludes `data/` and `.env` on purpose:
+those belong to the server, and overwriting either from a laptop is how you lose
+a client's contact list.
+
+Migrations run from the deploy script before the restart, never from the app on
+startup, so two workers restarting together cannot race into the same migration.
+
+### Backups
+
+```bash
+./scripts/backup.sh --verify        # back up, then restore it and check it
+./scripts/backup.sh --verify-only   # check the newest existing archive
+```
+
+Backups use SQLite's online backup API rather than copying the file, so an
+archive taken mid-campaign is still consistent. `--verify` gunzips the archive,
+runs `PRAGMA integrity_check`, and asserts the restored database actually has
+tables — integrity_check alone passes on an empty file, which is exactly the
+failure worth catching. Cron runs `--verify` nightly for that reason.
+
+Set `BACKUP_REMOTE=user@host:/path` to copy each archive off-box. A backup on
+the same disk as the database survives a bad deploy but not a dead droplet.
+
+### Rollback
+
+**To stop a campaign in flight:** stop the service. `sudo systemctl stop
+a4a-sms`. Sending is in-process, so nothing further goes out. Restart when you
+have worked out what went wrong; a stopped campaign does not resume itself.
+
+**To restore yesterday's database:**
+
+```bash
+sudo systemctl stop a4a-sms
+cp data/app.db data/app.db.before-restore          # keep the bad one
+gunzip -c backups/app-YYYYmmdd-HHMMSS.db.gz > data/app.db
+./scripts/backup.sh --verify-only                   # confirm before restarting
+sudo systemctl start a4a-sms
+```
+
+Keep the database you are replacing. Restoring the wrong archive is recoverable;
+restoring over the only copy is not.
+
+**To roll back code:** deploy from the previous commit. Migrations are the
+exception — if the bad deploy applied one, check whether it has a working
+`downgrade` before assuming a code rollback is enough.
 
 ## Before you ship
 

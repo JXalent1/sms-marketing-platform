@@ -10,7 +10,8 @@ priced in exact decimal, and a white-label test that runs the app instead of gre
 `bash agent/gate.sh` passes; 46 tests.
 
 ## Current module
-None in progress. Next up: module 2 — Categories & segmented upload.
+Module 2 (Categories & segmented upload) in progress in a parallel worktree.
+Module 5a (Deploy scaffolding) complete — see below.
 
 ## Done
 - Reviewed skeleton + prior client's production system
@@ -47,6 +48,31 @@ None in progress. Next up: module 2 — Categories & segmented upload.
     discovers routes from the app, so a new client-facing GET route is scanned the day
     it lands, and an unresolvable path parameter fails rather than being skipped.
 
+- **Module 5a — Deploy scaffolding**
+  - `deployment/bootstrap.sh` brings up a fresh Ubuntu box: packages, non-root service
+    user, venv, runtime directories, nginx site and systemd unit rendered from the
+    existing templates, nightly backup cron, ufw. It stops short of writing `.env`,
+    running migrations and issuing the certificate, and prints those as manual steps —
+    `.env` carries the sending credentials and the provider switch stays a human's.
+  - `deployment/deploy.sh` gained `--dry-run`. Existing behaviour is unchanged; the dry
+    run needs no `SERVER`/`SERVICE` and contacts nothing, so the rsync excludes can be
+    reviewed before they are pointed at a live database.
+  - `scripts/backup.sh` uses SQLite's online backup API rather than `cp`, so an archive
+    taken mid-campaign is consistent. gzip, count-based retention, optional off-box scp
+    via `BACKUP_REMOTE`. `--verify` restores the archive and runs `PRAGMA
+    integrity_check`; cron runs `--verify` nightly, because an unverified backup is a
+    rumour.
+  - The verify step also asserts the restored database has tables. This is not belt and
+    braces: a zero-byte archive returns `integrity_check: ok`, demonstrated during this
+    session. The table count is the assertion that actually catches an empty backup.
+  - `docs/CLIENT_GUIDE.md` written for A4A: the six screens that exist today, segments
+    and the emoji cost multiplier, the commercial terms, opt-out behaviour, and how to
+    read a failed send. No carrier name.
+  - README has a deployment section and a written rollback — how to stop a campaign in
+    flight and how to restore yesterday's database.
+  - `backups/` added to `.gitignore`. Without it the first cron run leaves client data
+    in `git status`.
+
 ## Next
 1. Module 2 — Categories & segmented upload
 
@@ -59,8 +85,18 @@ None in progress. Next up: module 2 — Categories & segmented upload.
 - Sender number strategy (needed before the first live send)
 
 ## Found while working
-Real issues outside module 1's scope. Left alone deliberately; each names the module
-that owns the file.
+Real issues outside the current module's scope. Left alone deliberately; each names the
+module that owns the file.
+
+- **`sessions/session-5a.md` does not exist.** Module 5a was built from its row in
+  `modules.md` (scope, file list, "5a stays out of `app/main.py`") plus the acceptance
+  criteria in the session prompt. Every other module has a session spec; if one was
+  written for 5a it never landed in the repo. Worth knowing before 5b, which depends on
+  5a and has the same risk.
+- **`run.sh` still creates `venv/` while the project uses `.venv/`.** Unchanged from the
+  module 1 note below. `deployment/bootstrap.sh` creates the server venv at
+  `$APP_DIR/venv`, matching `app.service.template` and `deploy.sh`, so the server side is
+  self-consistent; the local mismatch is untouched and still module 8's.
 
 - **`docs/API.md` and `docs/NEW_CLIENT_CHECKLIST.md` still document the old billing
   model** (`base_fee`, `overage_cost`, `BILLING_OVERAGE_TIERS`) and the removed

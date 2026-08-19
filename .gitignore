@@ -9,6 +9,7 @@ venv/
 !.env.example
 *.db
 data/
+backups/
 exports/
 logs/
 .DS_Store
