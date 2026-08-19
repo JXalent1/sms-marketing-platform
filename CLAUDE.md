@@ -143,3 +143,123 @@ change to a live table.
 
 Before starting, read `sessions/session-N.md` where N is the session named in the
 kick-start prompt.
+
+---
+
+## Autonomy and escalation
+
+You are running unattended. No one will approve your tool calls. Behave accordingly.
+
+### Source of truth
+
+The repository is the state, not any chat history. Before starting, read `modules.md`,
+`status.md`, the relevant `sessions/*.md`, and every file in `decisions/`. Answered
+decisions are binding — do not relitigate them.
+
+### What you decide alone
+
+Implementation. File layout, naming, control flow, local refactors, test structure,
+error handling, template markup, dependency upgrades within a major version. Make the
+call and keep moving. Do not ask permission for these.
+
+### What you never decide alone
+
+Stop and escalate on any of the following.
+
+1. **Billing math.** The commercial terms are: no monthly fee, 10,000 segments included
+   per month, $0.015 per segment after. What counts as a billable segment — currently
+   only `sent` and `delivered` — is a commercial decision, not an implementation detail.
+   Do not change the model, the rounding, or the billable-status set.
+
+2. **`count_sms_segments()` in `app/sms/segments.py`.** It matches the carrier's own
+   `parts` value, it is correct, and it was expensive to get right. Do not "simplify" or
+   "fix" it. If a test disagrees with it, the test is probably wrong — escalate.
+
+3. **The pre-flight capacity check in `app/services/campaign_service.py`.** It is the
+   single most valuable safeguard in the codebase: it converts "we lost 4,623 messages
+   mid-blast" into "the campaign refused to start." Never weaken, bypass, or make it
+   advisory.
+
+4. **The unique index on `contacts.phone`.** That constraint *is* the dedup guarantee —
+   it's what stops the same person entering the list five times from five imports. Any
+   migration touching it, or any code path that could insert a duplicate, is an escalation.
+
+5. **Opt-out and suppression behaviour.** The blocklist, the fuzzy opt-out matcher, the
+   recent-contact suppression window, quiet hours, and sender-pool assignment. These
+   decide whether a real person gets a text they didn't want. Implement what the spec
+   says; do not tune the rules yourself.
+
+6. **Anything that could send a real message.** `SMS_PROVIDER` stays `console` (dry run)
+   unless a human changes it. Never set a live carrier credential, never switch the
+   provider, never call a real send endpoint in a test.
+
+7. **Paid third-party APIs and new dependencies.** Google Places, any data vendor, any
+   package not already in `requirements.txt` or the lockfile. Several of these cost money
+   per call — adding one is a budget decision.
+
+8. **Migrations that are not trivially reversible.** Dropped or renamed columns, index
+   changes on `contacts` or `sms_messages`, anything destructive.
+
+9. **The category palette.** `--s1` through `--s4` in the stylesheet were selected by
+   running candidate colors through a colorblind-separation and contrast validator; they
+   pass all-pairs in both light and dark. Four hues is the proven ceiling. Do not add a
+   fifth, and do not adjust them by eye.
+
+10. **Anything the spec does not cover and you are about to guess at.**
+
+### The white-label rule (not negotiable, not an escalation — just never do it)
+
+This is a client-facing product under the Auctions4America brand. The SMS carrier is our
+implementation detail. Its name must never appear in a template, a user-visible string,
+an error message, or an export. Internal module names and `agent/notify.sh` are exempt —
+those are ours, not the client's. The gate enforces this on `app/templates/` and
+`app/routers/`.
+
+### How to escalate
+
+Write `decisions/NNN-short-slug.open.md`:
+
+```markdown
+# <one-line question>
+
+**Blocks:** <module slug>
+**Why this is not mine to decide:** <which category above>
+
+## Context
+<what you found, in 3-6 lines. Cite files and line numbers.>
+
+## Options
+1. **<name>** — <what it does> / cost: <what it forfeits>
+2. **<name>** — <what it does> / cost: <what it forfeits>
+
+## Recommendation
+<your pick and the single reason it wins>
+```
+
+Then stop. Do not implement a placeholder, do not pick the option you like and note it
+for later, do not work around the blocker in an adjacent file. A wrong guess costs more
+to unwind than the wait costs.
+
+### The gate
+
+`GATE_CMD` in `agent.config.sh` decides whether you are done — it runs `agent/gate.sh`.
+You are not the judge of your own work. Run it yourself before you stop:
+`bash agent/gate.sh`.
+
+It checks: the test suite, that migrations apply to a clean database, that no carrier
+name reached a client-facing surface, that no template fetches CSS or fonts at runtime,
+the 500-line rule, and that `app/sms/` still imports nothing from the DB layer.
+
+If the gate fails you will be handed the output and expected to fix the root cause. Never
+make the gate pass by deleting an assertion, marking a test skipped or xfail, widening a
+type, adding a blanket try/except, narrowing a test's input until it agrees with the
+code, or loosening a check in `gate.sh` itself. If the correct fix requires something in
+the escalation list, escalate instead.
+
+### Scope
+
+Stay inside the module named in your session prompt, and inside that module's file list
+in `modules.md`. If you find a real bug elsewhere, write it to `status.md` under "Found
+while working" and leave it alone. Drive-by fixes across module boundaries make review
+impossible, and review is the only thing standing between this loop and a repo of
+confident, plausible, wrong code.

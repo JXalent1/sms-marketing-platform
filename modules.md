@@ -18,7 +18,7 @@ engine, and the new UI.
 
 | # | Module | Status | Depends on | Touches files |
 |---|--------|--------|------------|---------------|
-| 1 | Foundation, pricing & white-label | Not started | — | `package.json`, `tailwind.config.js`, `app/static/**`, `app/templates/base.html`, `app/main.py`, `app/core/config.py`, `app/core/branding.py`, `app/services/billing_service.py`, `app/routers/usage.py`, `app/templates/usage.html`, `.env.example`, `alembic/**`, `tests/test_billing.py` |
+| 1 | Foundation, pricing & white-label | Not started | — | `package.json`, `tailwind.config.js`, `app/static/**`, `app/templates/base.html`, `app/templates/login.html`, `app/main.py`, `app/core/config.py`, `app/core/branding.py`, `app/services/billing_service.py`, `app/routers/usage.py`, `app/templates/usage.html`, `.env.example`, `alembic/**`, `tests/test_billing.py` |
 | 2 | Categories & segmented upload | Not started | 1 | `app/models/category.py`, `app/models/__init__.py`, `app/services/category_service.py`, `app/services/contact_service.py`, `app/services/import_service.py`, `app/routers/categories.py`, `app/routers/contacts.py`, `app/sources/csv_source.py`, `alembic/versions/*`, `tests/test_categories.py`, `tests/test_import.py` |
 | 3 | UI: shell, Today, Contacts | Not started | 2 | `app/templates/base.html`, `app/templates/today.html`, `app/templates/contacts.html`, `app/routers/pages.py`, `app/routers/dashboard.py`, `app/services/dashboard_service.py`, `tests/test_dashboard.py`, `tests/test_contacts_api.py` |
 | 4 | Composer & campaign guardrails | Not started | 3 | `app/models/campaign.py`, `app/services/campaign_service.py`, `app/routers/campaigns.py`, `app/templates/campaigns.html`, `alembic/versions/*`, `tests/test_campaign_guardrails.py` |

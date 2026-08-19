@@ -22,3 +22,4 @@ app/static/app.css
 browser_data/
 agent/logs/
 agent.config.sh
+_to_delete/

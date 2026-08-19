@@ -40,16 +40,15 @@ Do NOT build in this session:
 
 ### 1. Git
 
-`git init` in `sms-marketing-platform/`. A `.gitignore` already exists — extend it with
-`node_modules/`, `app/static/app.css`, `*.db`, `.env`, `browser_data/`.
+**The repo already exists.** It was initialized before this session and commit `a1418d8`
+("Initial: sms-marketing-platform skeleton + A4A planning docs") is the untouched
+baseline — your diff against it is what the review pass reads. `.gitignore` is already
+extended for `node_modules/`, `app/static/app.css`, `*.db`, `.env`, `browser_data/`,
+`agent/logs/`, `agent.config.sh`.
 
-Commit the untouched skeleton **first**, as its own commit, before making any changes.
-That gives a clean diff for the review pass. Then commit this session's work in logical
-chunks.
+There is **no remote yet.** Do not add one; that's a human step.
 
-Rationale worth a comment in the repo: the prior client's production server had no git
-repo and its local checkout silently drifted six files behind production, which meant a
-deploy would have reverted three months of fixes.
+Commit your work in logical chunks as you go.
 
 ### 2. Alembic
 
@@ -79,6 +78,8 @@ Replace it:
 - An input stylesheet (`app/assets/tailwind.css`) with the three `@tailwind` directives
   plus the `@font-face` and `:root` blocks below
 - Output compiled to `app/static/app.css` (gitignored; built as part of deploy)
+- **`login.html` is standalone** — it does not extend `base.html` and carries its own
+  CDN script and Google Fonts link. It needs the same treatment. The gate checks it.
 - Self-host Inter via the `@fontsource/inter` npm package — copy the woff2 files into
   `app/static/fonts/` and declare `@font-face` locally. Remove the `fonts.googleapis.com`
   preconnects and stylesheet link.
@@ -210,12 +211,17 @@ criterion below means: run the command, show the output.
 - [ ] `grep -rni "telnyx" app/templates/ app/routers/` → no output
 - [ ] A screenshot or rendered-HTML excerpt showing the app styled correctly in dark mode
       with the local stylesheet
-- [ ] `git log --oneline` shows the untouched-skeleton commit first, then this session's work
+- [ ] `bash agent/gate.sh` exits 0 — full output shown. This is the same gate the Stop
+      hook runs; it currently fails on the runtime-CDN check, and making it pass is the
+      real definition of done for this session
+- [ ] `git log --oneline` shows `a1418d8` as the base, then this session's commits
 - [ ] No file exceeds 500 lines — show the check
 - [ ] `status.md` updated and `handoff.md` rewritten
 
 ## Constraints
 
+- **`agent/gate.sh` and `agent.config.sh` are human-only.** The PreToolUse hook blocks
+  edits to them. If the gate is wrong, open an escalation explaining why — do not loosen it.
 - No file exceeds 500 lines.
 - Only touch the files listed for module 1 in `modules.md`. If you need something else,
   stop and flag it.
