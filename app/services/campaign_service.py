@@ -151,13 +151,33 @@ class CampaignService:
         # rates vary above it.
         required = needed * 1.5
 
+        # The threshold above is unchanged and deliberately so. What changed is
+        # only how the result is *worded*: this string is stored on the campaign
+        # as abort_reason and rendered straight into the client's campaign list,
+        # and it used to quote our carrier account's dollar balance. He is billed
+        # in segments and should read the answer in segments; the money view goes
+        # to our own log, below, where only we see it.
+        rate = settings.PREFLIGHT_COST_PER_SEGMENT
+        capacity_segments = int(balance / rate) if rate > 0 else 0
+        required_segments = int(round((campaign.estimated_segments or 0) * 1.5))
+
         if balance < required:
-            return False, (
-                f"Provider balance ${balance:.2f} will not cover this campaign "
-                f"(estimated ${needed:.2f}, need ${required:.2f} with headroom). "
-                f"Top up before sending."
+            logger.error(
+                f"Campaign #{campaign.id} pre-flight FAILED | balance ${balance:.2f} "
+                f"< required ${required:.2f} (estimate ${needed:.2f})"
             )
-        return True, f"balance ${balance:.2f} covers estimated ${needed:.2f}"
+            return False, (
+                f"Not enough sending capacity to start this campaign. It needs about "
+                f"{required_segments:,} segments including a safety margin, and about "
+                f"{capacity_segments:,} remain. Nothing was sent."
+            )
+
+        logger.info(
+            f"Campaign #{campaign.id} pre-flight OK | balance ${balance:.2f} "
+            f"covers estimate ${needed:.2f}"
+        )
+        return True, (f"capacity covers the estimated {campaign.estimated_segments or 0:,} "
+                      f"segments")
 
     # ─── Send ───────────────────────────────────────────────────────────────
 
@@ -246,7 +266,11 @@ class CampaignService:
             except Exception as e:
                 logger.error(f"  [{i}/{total}] ERROR {msg.phone}: {e}")
                 msg.status = "failed"
-                msg.error_message = str(e)
+                # Scrubbed at write, like the handled-failure path above: an
+                # SDK exception carries the carrier's name in its class name and
+                # its message, and this text is read back into the client's
+                # campaign detail view.
+                msg.error_message = scrub_provider_text(str(e))
                 campaign.failed_count += 1
                 self.db.commit()
 

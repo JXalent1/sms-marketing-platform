@@ -81,9 +81,7 @@ async function loadSystem() {
         <div><dt class="text-sm text-gray-500">Sending number</dt><dd class="mt-0.5 text-sm font-mono text-gray-900">${esc(d.sender_number || '—')}</dd></div>
         <div><dt class="text-sm text-gray-500">Environment</dt><dd class="mt-0.5 text-sm text-gray-900">${esc(d.environment)}</dd></div>
         <div><dt class="text-sm text-gray-500">Pre-flight balance check</dt><dd class="mt-0.5">${badge(d.preflight_balance_check, 'On', 'Off')}</dd></div>
-        <div><dt class="text-sm text-gray-500">Skip out-of-region numbers</dt><dd class="mt-0.5">${badge(d.skip_non_us, 'On', 'Off')}</dd></div>
-        <div class="sm:col-span-2"><dt class="text-sm text-gray-500">Webhook URL (set this in the carrier portal)</dt>
-            <dd class="mt-0.5 text-sm font-mono text-gray-900 break-all">${esc(d.webhook_url)}</dd></div>`;
+        <div><dt class="text-sm text-gray-500">Skip out-of-region numbers</dt><dd class="mt-0.5">${badge(d.skip_non_us, 'On', 'Off')}</dd></div>`;
 }
 
 document.getElementById('autoReply').addEventListener('input', function () {

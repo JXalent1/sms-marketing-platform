@@ -43,7 +43,16 @@ async def reset_auto_reply(db: Session = Depends(get_db), user: str = Depends(re
 @router.get("/system")
 async def system_info(user: str = Depends(require_auth)):
     """Operational status. Deliberately does not leak API keys or the carrier
-    name into anything the client sees."""
+    name into anything the client sees.
+
+    `webhook_url` used to be returned here and rendered on the Settings page.
+    It is built as PUBLIC_BASE_URL + "/webhooks/" + provider.name, so it printed
+    the carrier's name onto a client-facing screen — the one leak a grep for the
+    carrier name could never find, because the name is assembled at runtime.
+    It is also a setup value only we ever use: the client has no login to the
+    carrier portal. It belongs in the deployment notes, not in his dashboard.
+    Use `settings.webhook_url(provider_name)` directly when configuring.
+    """
     provider = get_provider()
     return {
         "provider_configured": provider.name != "console",
@@ -52,5 +61,4 @@ async def system_info(user: str = Depends(require_auth)):
         "environment": app_settings.ENVIRONMENT,
         "skip_non_us": app_settings.SKIP_NON_US_NUMBERS,
         "preflight_balance_check": app_settings.PREFLIGHT_BALANCE_CHECK,
-        "webhook_url": app_settings.webhook_url(provider.name),
     }
