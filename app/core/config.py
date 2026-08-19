@@ -8,7 +8,6 @@ in the codebase; if you find yourself typing a client's name into a .py or
 """
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from typing import List, Tuple
 
 
 class Settings(BaseSettings):
@@ -64,13 +63,15 @@ class Settings(BaseSettings):
 
     # ─── Pricing plan (what YOU bill the client) ────────────────────────────
     # Kept as config, not constants in code, because these get renegotiated.
-    # Tiers are "size:rate" pairs applied in order to segments over the allowance;
-    # the last tier should be "inf" to catch everything above.
+    # The plan is: a monthly fee, an allowance of included segments, and a flat
+    # rate for every segment beyond it. No tiers — the tier table this replaced
+    # was three numbers that had to agree across a template, a config string and
+    # a Python function, and they did not.
     BILLING_ENABLED: bool = True
     BILLING_CYCLE_DAY: int = 1                   # day of month the allowance resets
-    BILLING_BASE_FEE: float = 400.0
-    BILLING_INCLUDED_SEGMENTS: int = 15000
-    BILLING_OVERAGE_TIERS: str = "5000:0.025,10000:0.022,20000:0.020,inf:0.016"
+    BILLING_MONTHLY_FEE: float = 0.0
+    BILLING_SEGMENTS_INCLUDED: int = 10000
+    BILLING_PRICE_PER_SEGMENT: float = 0.015
 
     # ─── Alerting ───────────────────────────────────────────────────────────
     ALERT_PHONE: str = ""                        # your number, for balance/scrape alerts
@@ -89,18 +90,6 @@ class Settings(BaseSettings):
     )
 
     # ─── Derived helpers ────────────────────────────────────────────────────
-
-    def overage_tiers(self) -> List[Tuple[float, float]]:
-        """Parse BILLING_OVERAGE_TIERS into [(tier_size, rate), ...]."""
-        tiers: List[Tuple[float, float]] = []
-        for part in self.BILLING_OVERAGE_TIERS.split(","):
-            part = part.strip()
-            if not part:
-                continue
-            size_str, rate_str = part.split(":")
-            size = float("inf") if size_str.strip().lower() in ("inf", "*") else float(size_str)
-            tiers.append((size, float(rate_str)))
-        return tiers
 
     def webhook_url(self, provider: str) -> str:
         return f"{self.PUBLIC_BASE_URL.rstrip('/')}/webhooks/{provider}"

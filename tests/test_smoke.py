@@ -166,13 +166,14 @@ def test_campaign_honors_blocklist_and_bills_correctly(client):
 def test_usage_counts_sent_segments(client):
     usage = client.get("/api/usage/current").json()
     assert usage["used_segments"] >= 1
-    assert usage["total_due"] >= usage["base_fee"]
+    assert usage["total_due"] >= usage["monthly_fee"]
 
 
 def test_pricing_comes_from_config(client):
+    """The plan is config. The arithmetic lives in tests/test_billing.py."""
     pricing = client.get("/api/usage/pricing").json()
-    assert pricing["base_fee"] > 0
-    assert pricing["tiers"], "overage tiers should be configured"
+    assert pricing["included_segments"] > 0
+    assert pricing["price_per_segment"] > 0
 
 
 # ─── Compliance ─────────────────────────────────────────────────────────────

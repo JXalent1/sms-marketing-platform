@@ -98,14 +98,16 @@ async function loadDashboard() {
 
     if (system.dry_run) document.getElementById('dryRunNotice').classList.remove('hidden');
 
-    // Balance is operator-only; skip it silently in dry-run.
+    // Capacity is reported in segments, never in the carrier's dollars — see
+    // the note on /api/usage/balance. Nothing to report in dry-run.
     if (!system.dry_run) {
         const b = await api('/api/usage/balance');
-        if (b.low && b.balance !== null) {
+        if (b.low && b.segments_remaining !== null) {
             const warn = document.getElementById('balanceWarning');
-            warn.innerHTML = `<span class="font-semibold">Carrier balance is $${b.balance.toFixed(2)}</span>, ` +
-                `below the $${b.threshold.toFixed(0)} alert threshold. Top up before the next campaign — ` +
-                `a blast that drains the balance mid-send fails for every remaining recipient.`;
+            warn.innerHTML = `<span class="font-semibold">Sending capacity is low — about ` +
+                `${b.segments_remaining.toLocaleString()} segments remaining.</span> ` +
+                `A campaign that runs out of capacity mid-send fails for every remaining recipient, ` +
+                `so get in touch before the next blast.`;
             warn.classList.remove('hidden');
         }
     }

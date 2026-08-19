@@ -30,15 +30,25 @@ async def pricing(user: str = Depends(require_auth)):
 
 
 @router.get("/balance")
-async def balance(user: str = Depends(require_auth)):
-    """Provider account balance — operator-facing, not for the client's eyes.
+async def capacity(user: str = Depends(require_auth)):
+    """Remaining sending capacity, denominated in segments.
 
-    Check this before every large blast. A campaign that outruns the balance
-    fails from that point onward and cannot be cleanly resumed.
+    The carrier account and its dollar balance are our implementation detail —
+    the only person logging in here is the client, and what he needs to know is
+    "how many more messages can I send", not what we pay per message or which
+    carrier holds the funds. A campaign that outruns the capacity fails from
+    that point onward and cannot be cleanly resumed, so the number still has to
+    be visible; it just gets shown in his units.
     """
     amount = await get_provider().get_balance()
+    rate = settings.PREFLIGHT_COST_PER_SEGMENT
+
+    if amount is None or rate <= 0:
+        # Console (dry run) and some carriers expose no balance at all.
+        return {"segments_remaining": None, "threshold_segments": None, "low": False}
+
     return {
-        "balance": amount,
-        "threshold": settings.BALANCE_ALERT_THRESHOLD,
-        "low": amount is not None and amount < settings.BALANCE_ALERT_THRESHOLD,
+        "segments_remaining": int(amount / rate),
+        "threshold_segments": int(settings.BALANCE_ALERT_THRESHOLD / rate),
+        "low": amount < settings.BALANCE_ALERT_THRESHOLD,
     }

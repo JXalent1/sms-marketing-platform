@@ -37,6 +37,24 @@ os.environ.setdefault("ADMIN_PASSWORD", "devpassword123")
 os.environ.setdefault("COOKIE_SECURE", "false")
 
 
+def _create_schema() -> None:
+    """Build the schema here rather than leaning on app.main's import-time
+    create_all().
+
+    That side effect only fired because test_smoke.py imports app.main and
+    happened to be collected; `pytest tests/test_billing.py` on its own ran
+    against a database with no tables in it. Any single test file must be
+    runnable on its own — that is how a failure gets isolated.
+    """
+    from app.core.database import Base, engine
+    import app.models      # noqa: F401 — importing registers every table
+
+    Base.metadata.create_all(bind=engine)
+
+
+_create_schema()
+
+
 def pytest_sessionfinish(session, exitstatus):
     """Remove the scratch database, pass or fail."""
     for suffix in ("", "-wal", "-shm"):

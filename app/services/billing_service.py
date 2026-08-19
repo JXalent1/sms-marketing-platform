@@ -1,12 +1,17 @@
-"""Usage metering and overage billing.
+"""Usage metering and billing.
 
-The plan (base fee, included segments, overage tiers, cycle day) is configuration,
-not code. In the reference system the base fee existed *only* as a hardcoded
-string in an HTML template while the tiers lived in a Python function, so nobody
-could answer "what are we actually charging?" without reading two files, and the
-two disagreed.
+The plan (monthly fee, included segments, per-segment rate, cycle day) is
+configuration, not code. In the reference system the base fee existed *only* as
+a hardcoded string in an HTML template while the rates lived in a Python
+function, so nobody could answer "what are we actually charging?" without
+reading two files, and the two disagreed.
 
-Two rules that took real money to learn:
+The plan itself:
+
+    billable_segments = max(0, segments_this_cycle - BILLING_SEGMENTS_INCLUDED)
+    cost              = BILLING_MONTHLY_FEE + billable_segments * BILLING_PRICE_PER_SEGMENT
+
+Three rules that took real money to learn:
 
   1. Bill on ('sent', 'delivered'). Delivery webhooks flip 'sent' -> 'delivered'
      minutes later; counting only 'sent' makes finished campaigns vanish from the
@@ -15,6 +20,10 @@ Two rules that took real money to learn:
   2. Bill on the carrier's segment count, not len(text)/160. Emoji force UCS-2
      and roughly 2.4x the segments. Billing the flat estimate while the carrier
      bills real parts is a straight transfer from your margin to the client's.
+
+  3. Round once, at the point of display. Rounding each campaign to cents and
+     then summing gives a different total than summing and rounding once, and
+     the client will be the one who notices.
 """
 
 from sqlalchemy.orm import Session
@@ -22,6 +31,7 @@ from app.core.config import settings
 from app.models.sms_message import SMSMessage, BILLABLE_STATUSES
 from datetime import date
 from calendar import monthrange
+from decimal import Decimal, ROUND_HALF_UP
 from typing import Tuple
 
 MONTH_NAMES = ["", "January", "February", "March", "April", "May", "June",
@@ -52,18 +62,32 @@ def get_billing_cycle(for_date: date = None) -> Tuple[date, date, date, str]:
     return cycle_start, cycle_end, next_reset, label
 
 
-def calculate_overage_cost(overage_segments: int) -> float:
-    """Apply the configured tiers to segments above the allowance."""
-    if overage_segments <= 0:
-        return 0.0
-    cost, remaining = 0.0, overage_segments
-    for tier_size, rate in settings.overage_tiers():
-        chunk = min(remaining, tier_size)
-        cost += chunk * rate
-        remaining -= chunk
-        if remaining <= 0:
-            break
-    return round(cost, 2)
+def to_money(amount: float) -> float:
+    """Round half-up to cents. Call this at the point of display, nowhere else.
+
+    Python's round() is banker's rounding: round(0.125, 2) is 0.12, not 0.13.
+    On one invoice that is a cent; across a year of cycles it is a systematic
+    drift, and it disagrees with the number any human writing the invoice by
+    hand would produce. Half-up is what a client expects and what an accountant
+    checks against.
+    """
+    return float(Decimal(str(amount)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+
+
+def billable_segments(segments: int) -> int:
+    """Segments above the included allowance. Never negative."""
+    return max(0, segments - settings.BILLING_SEGMENTS_INCLUDED)
+
+
+def cost_for_segments(segments: int) -> float:
+    """Unrounded cost for a cycle's segment total.
+
+    Deliberately not rounded: callers accumulate first and round once via
+    to_money(). Returning cents from here would push rounding into the middle
+    of every sum.
+    """
+    return (settings.BILLING_MONTHLY_FEE
+            + billable_segments(segments) * settings.BILLING_PRICE_PER_SEGMENT)
 
 
 def compute_usage(db: Session, cycle_start: date, cycle_end: date) -> Tuple[int, int]:
@@ -100,21 +124,20 @@ def current_usage(db: Session) -> dict:
     cycle_start, cycle_end, next_reset, label = get_billing_cycle()
     count, segments = compute_usage(db, cycle_start, cycle_end)
 
-    allowance = settings.BILLING_INCLUDED_SEGMENTS
-    overage = max(0, segments - allowance)
-    overage_cost = calculate_overage_cost(overage)
+    included = settings.BILLING_SEGMENTS_INCLUDED
+    billable = billable_segments(segments)
 
     return {
         "month": label,
-        "allowance": allowance,
+        "included_segments": included,
         "used_segments": segments,
         "message_count": count,
-        "remaining": max(0, allowance - segments),
-        "percentage_used": min(100, round((segments / allowance) * 100)) if allowance else 0,
-        "overage": overage,
-        "overage_cost": overage_cost,
-        "base_fee": settings.BILLING_BASE_FEE,
-        "total_due": round(settings.BILLING_BASE_FEE + overage_cost, 2),
+        "remaining": max(0, included - segments),
+        "percentage_used": min(100, round((segments / included) * 100)) if included else 0,
+        "billable_segments": billable,
+        "monthly_fee": to_money(settings.BILLING_MONTHLY_FEE),
+        "price_per_segment": settings.BILLING_PRICE_PER_SEGMENT,
+        "total_due": to_money(cost_for_segments(segments)),
         "billing_start": cycle_start.isoformat(),
         "reset_date": next_reset.isoformat(),
     }
@@ -124,11 +147,10 @@ def usage_history(db: Session, cycles: int = 6) -> list:
     """Closed cycles, most recent first."""
     out = []
     cursor = date.today()
+    current_start = get_billing_cycle()[0]
     for _ in range(cycles):
         cycle_start, cycle_end, _, label = get_billing_cycle(cursor)
         count, segments = compute_usage(db, cycle_start, cycle_end)
-        overage = max(0, segments - settings.BILLING_INCLUDED_SEGMENTS)
-        is_current = cycle_start == get_billing_cycle()[0]
 
         out.append({
             "month": label,
@@ -136,10 +158,9 @@ def usage_history(db: Session, cycles: int = 6) -> list:
             "billing_end": cycle_end.isoformat(),
             "total_segments": segments,
             "messages": count,
-            "overage": overage,
-            "overage_cost": calculate_overage_cost(overage),
-            "total_due": round(settings.BILLING_BASE_FEE + calculate_overage_cost(overage), 2),
-            "status": "current" if is_current else "closed",
+            "billable_segments": billable_segments(segments),
+            "total_due": to_money(cost_for_segments(segments)),
+            "status": "current" if cycle_start == current_start else "closed",
         })
         cursor = date.fromordinal(cycle_start.toordinal() - 1)
     return out
@@ -147,17 +168,9 @@ def usage_history(db: Session, cycles: int = 6) -> list:
 
 def pricing_table() -> dict:
     """The plan, for display. One source of truth — the UI renders this."""
-    tiers, floor = [], settings.BILLING_INCLUDED_SEGMENTS
-    for tier_size, rate in settings.overage_tiers():
-        if tier_size == float("inf"):
-            tiers.append({"range": f"{floor + 1:,}+", "rate": rate})
-        else:
-            ceiling = floor + int(tier_size)
-            tiers.append({"range": f"{floor + 1:,}–{ceiling:,}", "rate": rate})
-            floor = ceiling
     return {
-        "base_fee": settings.BILLING_BASE_FEE,
-        "included_segments": settings.BILLING_INCLUDED_SEGMENTS,
+        "monthly_fee": to_money(settings.BILLING_MONTHLY_FEE),
+        "included_segments": settings.BILLING_SEGMENTS_INCLUDED,
+        "price_per_segment": settings.BILLING_PRICE_PER_SEGMENT,
         "cycle_day": settings.BILLING_CYCLE_DAY,
-        "tiers": tiers,
     }
