@@ -43,10 +43,14 @@ sms-marketing-platform/
 
 These are the commands acceptance criteria reference. Run them and show the output.
 
-- **Tests:** `python -m pytest tests/ -q` — must exit 0. Baseline is 22 passing.
+- **Tests:** `python -m pytest tests/ -q` — must exit 0. **76 passing as of module 2.**
+  A lower count means you are on a stale branch, not that tests vanished.
 - **Migrations:** `alembic upgrade head` — must succeed from a clean DB.
 - **Run it:** `./run.sh` then `curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/login` → `200`
-- **Stylesheet is local:** `curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/static/app.css` → `200`
+- **Stylesheet is local:** run `npm run build:css` first — `app/static/app.css` is a
+  gitignored build artifact, so it 404s in a fresh clone or worktree until you build it.
+  Then `curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/static/app.css` → `200`.
+  A 404 here is a missing build step, not a regression.
 - **No runtime CDN:** `grep -rn "cdn.tailwindcss.com\|fonts.googleapis.com" app/templates/` returns nothing
 - **White-label check:** `grep -rni "telnyx" app/templates/ | grep -v "^app/templates/.*#"` returns nothing
 
