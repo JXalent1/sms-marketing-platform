@@ -23,9 +23,27 @@ bad()  { printf 'GATE FAIL: %s\n' "$1"; FAIL=1; }
 
 # ---- 1. Tests -------------------------------------------------------------
 step "pytest"
-if ! python -m pytest tests/ -q --maxfail=1; then
+# PYTEST_DISABLE_PLUGIN_AUTOLOAD stops an unrelated globally-installed pytest
+# plugin from taking this gate down for a reason that has nothing to do with the
+# repo. A conda base env with web3 installed did exactly that: its broken
+# pytest_ethereum entry point crashed pytest before collection. This suite needs
+# no third-party plugins, so autoload buys us nothing and costs reproducibility.
+# The suite has no test isolation: it runs against whatever DATABASE_URL points
+# at and never resets. test_inbound_stop_is_persisted blocklists +15555550102
+# permanently, which makes test_campaign_honors_blocklist_and_bills_correctly
+# assert skipped_count==1 against a database where 2 numbers are blocked. Net
+# effect: the suite is green exactly once on a fresh database and red forever
+# after. Under the Stop hook that is fatal — the gate would poison itself within
+# two attempts and hand the agent a failure it did not cause.
+# Pointing at a scratch DB per run makes the gate deterministic. The proper fix
+# (a conftest.py fixture) is scoped into session 1.
+GATE_DB=".gate-test.db"
+rm -f "$GATE_DB"
+if ! DATABASE_URL="sqlite:///./${GATE_DB}" PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
+     python -m pytest tests/ -q --maxfail=1; then
   bad "test suite is red"
 fi
+rm -f "$GATE_DB"
 
 # ---- 2. Migrations apply to a clean database ------------------------------
 # Agents write plausible migrations that don't match the model layer. Applying
@@ -50,7 +68,7 @@ fi
 #   agent/notify.sh        our own alerting channel, not the client's product.
 # Everything else — templates, and every other router — must be clean.
 step "white-label"
-HITS=$(grep -rni "telnyx\|twilio" app/templates/ app/routers/ 2>/dev/null \
+HITS=$(grep -rnIi --exclude-dir=__pycache__ "telnyx\|twilio" app/templates/ app/routers/ 2>/dev/null \
   | grep -v "^app/routers/webhooks/" || true)
 if [[ -n "$HITS" ]]; then
   printf '%s\n' "$HITS" | head -20
@@ -61,14 +79,14 @@ fi
 # The app rendered as raw unstyled HTML when the Tailwind Play CDN was
 # unreachable. Once module 1 removes it, it stays removed.
 step "no runtime CDN"
-if grep -rnq "cdn.tailwindcss.com\|fonts.googleapis.com" app/templates/ 2>/dev/null; then
-  grep -rn "cdn.tailwindcss.com\|fonts.googleapis.com" app/templates/ | head
+if grep -rnIq --exclude-dir=__pycache__ "cdn.tailwindcss.com\|fonts.googleapis.com" app/templates/ 2>/dev/null; then
+  grep -rnI --exclude-dir=__pycache__ "cdn.tailwindcss.com\|fonts.googleapis.com" app/templates/ | head
   bad "a template still fetches CSS or fonts at runtime"
 fi
 
 # ---- 5. File size ---------------------------------------------------------
 step "500-line rule"
-OVERSIZE=$(find app -name '*.py' -o -name '*.html' | xargs wc -l 2>/dev/null \
+OVERSIZE=$(find app -not -path '*/__pycache__/*' \( -name '*.py' -o -name '*.html' \) | xargs wc -l 2>/dev/null \
   | awk '$1 > 500 && $2 != "total" {print $2" ("$1" lines)"}')
 if [[ -n "$OVERSIZE" ]]; then
   echo "$OVERSIZE"
@@ -79,8 +97,8 @@ fi
 # This boundary is why the SMS engine was reusable across clients. Losing it is
 # silent and expensive.
 step "layering (app/sms is DB-free)"
-if grep -rnq "^from app\.\(models\|services\)\|^import app\.\(models\|services\)" app/sms/ 2>/dev/null; then
-  grep -rn "app\.\(models\|services\)" app/sms/ | head
+if grep -rnIq --exclude-dir=__pycache__ "^from app\.\(models\|services\)\|^import app\.\(models\|services\)" app/sms/ 2>/dev/null; then
+  grep -rnI --exclude-dir=__pycache__ "app\.\(models\|services\)" app/sms/ | head
   bad "app/sms/ imports from app.models or app.services"
 fi
 

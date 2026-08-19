@@ -50,6 +50,42 @@ There is **no remote yet.** Do not add one; that's a human step.
 
 Commit your work in logical chunks as you go.
 
+### 1b. Python environment
+
+`requirements.txt` pins runtime deps but **does not include pytest**, so the suite
+currently depends on whatever pytest happens to be on PATH. That is how a global conda
+environment with an unrelated broken plugin took the gate down before this session
+started.
+
+- Add `requirements-dev.txt` with `pytest` pinned (and anything else test-only)
+- Document in `README.md`: create a venv, `pip install -r requirements.txt -r
+  requirements-dev.txt`, and run everything inside it
+- Do not add pytest to `requirements.txt` — production images shouldn't carry it
+
+### 1c. Test isolation (fix this early — everything else depends on a trustworthy gate)
+
+The suite has **no test isolation.** It runs against whatever `DATABASE_URL` points at
+and never resets state. Concretely: `test_inbound_stop_is_persisted` (line ~180) posts a
+STOP webhook for `+15555550102`, which writes a permanent blocklist row. On the next run
+`test_campaign_honors_blocklist_and_bills_correctly` (line ~135) asserts
+`skipped_count == 1` against a database where two numbers are now blocked, and fails.
+
+**The suite is green exactly once on a fresh database and red forever after.** This was
+reproduced before this session started.
+
+Fix it properly:
+- Add `tests/conftest.py` that points `DATABASE_URL` at a per-run temporary SQLite file
+  before `app.main` is imported, and removes it afterwards. `Base.metadata.create_all()`
+  runs at import time in `app/main.py`, so a fresh file self-creates its schema.
+- Move the env-var setup currently at the top of `test_smoke.py` into that conftest so
+  ordering is guaranteed.
+- Prove it: run the suite **twice in a row** and show both runs green. One green run
+  proves nothing here.
+
+`agent/gate.sh` already works around this by pointing tests at a scratch DB. Do not treat
+that as the fix — the workaround exists so the gate is trustworthy while you do the real
+one, and a human running `pytest` directly should get a clean result too.
+
 ### 2. Alembic
 
 - `alembic init alembic`
@@ -200,8 +236,10 @@ implementation detail and must never be visible.
 The evaluator reads the conversation only — it cannot run commands or open files. So each
 criterion below means: run the command, show the output.
 
-- [ ] Baseline shown before changes: `python -m pytest tests/ -q` → 22 passed
-- [ ] After changes: `python -m pytest tests/ -q` exits 0, with the new billing tests included
+- [ ] Baseline shown before changes: `python -m pytest tests/ -q` → 22 passed, run inside
+      the project venv (not a global/conda environment)
+- [ ] After changes: `python -m pytest tests/ -q` exits 0, with the new billing tests
+      included — and run **twice in a row**, both green, to prove test isolation works
 - [ ] Billing test output proves: 32,940 segments → `$344.10`, and 8,000 segments → `$0.00`
 - [ ] `alembic upgrade head` against a fresh empty DB succeeds — output shown
 - [ ] `npm run build:css` succeeds and `app/static/app.css` exists — `ls -la` shown
