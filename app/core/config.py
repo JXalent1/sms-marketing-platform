@@ -19,7 +19,14 @@ class Settings(BaseSettings):
     BRAND_APP_NAME: str = "Marketing Bot"        # what the dashboard calls itself
     BRAND_SUPPORT_PHONE: str = ""                # shown in the default auto-reply
     BRAND_SUPPORT_EMAIL: str = ""
-    BRAND_COLOR: str = "blue"                    # any Tailwind color name (blue/emerald/rose/...)
+    # Brand palette as literal hex, not a Tailwind color name. The old
+    # BRAND_COLOR fed `bg-{{ brand.color }}-600`, which only ever worked because
+    # the Play CDN compiled classes in the browser: once Tailwind is compiled at
+    # build time that class is purged and the brand color silently disappears.
+    # Hex also means a client's actual brand works, instead of the nearest
+    # Tailwind name. Blank = use the validated defaults from the design file.
+    BRAND_COLOR_HEX: str = ""                    # "#RRGGBB"
+    BRAND_ACCENT_HEX: str = ""                   # "#RRGGBB"
 
     # ─── Admin auth ─────────────────────────────────────────────────────────
     # Set ADMIN_PASSWORD_HASH in production (generate with scripts/hash_password.py).

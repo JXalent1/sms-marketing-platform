@@ -1,0 +1,149 @@
+/* Input stylesheet. Compiled to app/static/app.css by `npm run build:css`.
+ *
+ * app/static/app.css is generated and gitignored — never edit it, and never add
+ * a <link> or <script> pointing at a CDN. The Play CDN this replaced shipped the
+ * Tailwind compiler to the browser, re-generated CSS on every page load, and
+ * rendered the entire app as raw unstyled HTML whenever it was unreachable.
+ */
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── Inter, self-hosted ──────────────────────────────────────────────────────
+ * Four weights, latin subset only: 96 KB total against the 4.4 MB the full
+ * @fontsource/inter package ships. Refresh them with `npm run fonts:sync` if
+ * the weight list here ever changes.
+ *
+ * font-display: swap — text paints immediately in the fallback rather than
+ * leaving the dashboard blank while a font loads.
+ */
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/static/fonts/inter-latin-400-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("/static/fonts/inter-latin-500-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("/static/fonts/inter-latin-600-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("/static/fonts/inter-latin-700-normal.woff2") format("woff2");
+}
+
+/* ── Design tokens ───────────────────────────────────────────────────────────
+ * Taken verbatim from Auctions4America.pen so the design file and the code
+ * share one vocabulary. If a name changes here, change it there too.
+ *
+ * Dark is the default, and light is the override — not the other way round.
+ * The client works in a warehouse office and asked for the dark interface; a
+ * light-first sheet with a dark override would mean every new screen starts
+ * wrong and gets patched.
+ *
+ * --s1..--s4 are the category hues and are NOT brand-configurable. They were
+ * chosen by running candidate palettes through a colorblind-separation and
+ * contrast validator; they pass all-pairs in both modes, and four is the proven
+ * ceiling. Do not add a fifth and do not adjust them by eye — an eyeballed
+ * change makes two categories indistinguishable for a deuteranope and nothing
+ * in the UI will tell you.
+ *
+ * --brand and --accent ARE configurable: app/templates/_brand.html emits an
+ * inline override from BRAND_COLOR_HEX / BRAND_ACCENT_HEX in .env.
+ */
+:root {
+  /* dark — the default */
+  --page: #0d0d0d;
+  --surface: #1a1a19;
+  --surface-2: #232322;
+  --ink: #ffffff;
+  --ink-2: #c3c2b7;
+  --ink-3: #898781;
+  --line: #2c2c2a;
+  --line-strong: #383835;
+  --brand: #3987e5;
+  --brand-soft: #16233a;
+  --on-brand: #0d0d0d;
+  --accent: #c98500;
+  --accent-soft: #2a2110;
+  --s1: #3987e5;
+  --s2: #d95926;
+  --s3: #199e70;
+  --s4: #b457b4;
+  --good: #0ca30c;
+  --good-ink: #0ca30c;
+  --good-soft: #0f2411;
+  --warn-ink: #fab219;
+  --warn-soft: #2b2308;
+  --crit: #e66767;
+  --crit-soft: #2e1412;
+}
+
+[data-theme="light"] {
+  --page: #f7f7f5;
+  --surface: #fcfcfb;
+  --surface-2: #f1f1ee;
+  --ink: #0b0b0b;
+  --ink-2: #52514e;
+  --ink-3: #8a8880;
+  --line: #e4e3dc;
+  --line-strong: #c9c8c0;
+  --brand: #123a6b;
+  --brand-soft: #e7eef8;
+  --on-brand: #ffffff;
+  --accent: #b5851f;
+  --accent-soft: #fbf3df;
+  --s1: #2a78d6;
+  --s2: #eb6834;
+  --s3: #1baf7a;
+  --s4: #a3419f;
+  --good: #0ca30c;
+  --good-ink: #006300;
+  --good-soft: #e3f5e3;
+  --warn-ink: #7a5200;
+  --warn-soft: #fcf0d4;
+  --crit: #c3372f;
+  --crit-soft: #fbe7e5;
+}
+
+@layer base {
+  html {
+    background-color: var(--page);
+  }
+
+  body {
+    background-color: var(--page);
+    color: var(--ink);
+    font-family: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* Form controls default to the OS light palette otherwise, which produces
+     white-on-white text in the dark theme. */
+  input,
+  select,
+  textarea {
+    color-scheme: dark;
+  }
+
+  [data-theme="light"] input,
+  [data-theme="light"] select,
+  [data-theme="light"] textarea {
+    color-scheme: light;
+  }
+}

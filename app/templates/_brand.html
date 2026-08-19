@@ -1,0 +1,15 @@
+{# The one and only place a brand color enters the markup.
+
+   Every other template styles with the token utilities — bg-brand, text-brand,
+   border-brand — and never with a hex, so swapping the client's brand color is
+   a one-line .env change with no template edit and no CSS rebuild.
+
+   Included by base.html and by login.html, which is standalone (it cannot
+   extend base.html because it has no nav, no auth context and its own layout).
+
+   Emitted only when a hex is actually configured: with nothing set, the
+   stylesheet's own --brand/--accent apply, and those are chosen per theme and
+   contrast-checked against both the dark and the light surfaces. A single .env
+   hex cannot be right for both, so it should take effect only when a human
+   picked it on purpose. #}
+{% if brand.has_custom_palette %}<style>:root{--brand:{{ brand.color_hex }};--accent:{{ brand.accent_hex }};}</style>{% endif %}

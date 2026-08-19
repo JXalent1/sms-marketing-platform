@@ -56,7 +56,7 @@
             </div>
 
             <div class="flex flex-wrap items-end gap-3">
-                <button type="submit" class="px-5 py-2.5 rounded-lg text-sm font-medium text-white bg-{{ brand.color }}-600 hover:bg-{{ brand.color }}-700">
+                <button type="submit" class="px-5 py-2.5 rounded-lg text-sm font-medium text-on-brand bg-brand hover:opacity-90">
                     Create draft
                 </button>
                 <div class="flex items-end gap-2 ml-auto">
@@ -246,7 +246,7 @@ async function loadCampaigns() {
                             ${c.skipped_count ? `<span class="text-gray-400 text-xs ml-1">${c.skipped_count.toLocaleString()} skipped</span>` : ''}
                         </div>
                         <div class="w-32 bg-gray-200 rounded-full h-1.5 mt-1">
-                            <div class="bg-{{ brand.color }}-600 h-1.5 rounded-full" style="width:${progress}%"></div>
+                            <div class="bg-brand h-1.5 rounded-full" style="width:${progress}%"></div>
                         </div>` : ''}
                     ${c.status === 'draft' ? `
                         <button onclick="sendCampaign(${c.id})"

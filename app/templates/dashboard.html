@@ -5,7 +5,7 @@
 <div class="space-y-6">
     <div class="flex items-center justify-between">
         <h1 class="text-2xl font-bold text-gray-900">Dashboard</h1>
-        <a href="/campaigns" class="px-3.5 py-2 rounded-lg text-sm font-medium text-white bg-{{ brand.color }}-600 hover:bg-{{ brand.color }}-700 shadow-sm">New campaign</a>
+        <a href="/campaigns" class="px-3.5 py-2 rounded-lg text-sm font-medium text-on-brand bg-brand hover:opacity-90 shadow-sm">New campaign</a>
     </div>
 
     {# Operator-facing warning. A campaign that outruns the provider balance fails
@@ -38,7 +38,7 @@
     <div class="bg-white border border-gray-200 rounded-xl">
         <div class="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
             <h3 class="font-semibold text-gray-900">Recent campaigns</h3>
-            <a href="/campaigns" class="text-sm text-{{ brand.color }}-600 hover:text-{{ brand.color }}-500 font-medium">View all</a>
+            <a href="/campaigns" class="text-sm text-brand hover:opacity-80 font-medium">View all</a>
         </div>
         <div class="overflow-x-auto">
             <table class="min-w-full divide-y divide-gray-200">
@@ -113,7 +113,7 @@ async function loadDashboard() {
     const body = document.getElementById('recentCampaigns');
     const recent = (campaigns.campaigns || []).slice(0, 8);
     if (!recent.length) {
-        body.innerHTML = `<tr><td colspan="4" class="px-6 py-8 text-center text-gray-400">No campaigns yet. <a href="/campaigns" class="text-{{ brand.color }}-600">Create one</a></td></tr>`;
+        body.innerHTML = `<tr><td colspan="4" class="px-6 py-8 text-center text-gray-400">No campaigns yet. <a href="/campaigns" class="text-brand">Create one</a></td></tr>`;
         return;
     }
 

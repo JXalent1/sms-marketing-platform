@@ -12,6 +12,13 @@ SERVICE="${SERVICE:?set SERVICE=your-service-name}"
 
 echo "Deploying to $SERVER:$REMOTE_DIR"
 
+# The stylesheet is a build artifact (gitignored), and the server carries no node
+# toolchain — so it is compiled here, before the sync, and shipped as a file.
+# Skipping this step serves the whole dashboard with no CSS at all.
+echo "Building stylesheet..."
+npm run build:css
+test -s app/static/app.css || { echo "app/static/app.css missing after build"; exit 1; }
+
 rsync -avz --delete \
     --exclude '__pycache__' --exclude '*.pyc' \
     app/ "$SERVER:$REMOTE_DIR/app/"

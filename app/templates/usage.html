@@ -36,7 +36,7 @@
                 <span>Resets <span id="resetDate">—</span></span>
             </div>
             <div class="w-full bg-gray-200 rounded-full h-2.5">
-                <div id="progressBar" class="bg-{{ brand.color }}-600 h-2.5 rounded-full transition-all duration-500" style="width:0%"></div>
+                <div id="progressBar" class="bg-brand h-2.5 rounded-full transition-all duration-500" style="width:0%"></div>
             </div>
         </div>
 
@@ -121,7 +121,7 @@ async function loadUsage() {
     const bar = document.getElementById('progressBar');
     bar.style.width = Math.min(100, d.percentage_used) + '%';
     bar.className = 'h-2.5 rounded-full transition-all duration-500 ' +
-        (d.percentage_used >= 90 ? 'bg-red-600' : d.percentage_used >= 75 ? 'bg-yellow-500' : 'bg-{{ brand.color }}-600');
+        (d.percentage_used >= 90 ? 'bg-red-600' : d.percentage_used >= 75 ? 'bg-yellow-500' : 'bg-brand');
 
     const box = document.getElementById('overageBox');
     if (d.overage > 0) {

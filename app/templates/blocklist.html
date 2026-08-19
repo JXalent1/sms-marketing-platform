@@ -85,7 +85,7 @@ async function loadBlocklist() {
             <td class="px-4 py-3 text-sm text-gray-500 whitespace-nowrap">${esc(fmtDate(n.blocked_at))}</td>
             <td class="px-4 py-3 text-sm text-gray-500 max-w-xs truncate" title="${esc(n.notes || '')}">${esc(n.notes || '—')}</td>
             <td class="px-4 py-3 text-right whitespace-nowrap">
-                <button onclick="unblock('${esc(n.phone)}')" class="text-sm font-medium text-{{ brand.color }}-600 hover:text-{{ brand.color }}-800">Unblock</button>
+                <button onclick="unblock('${esc(n.phone)}')" class="text-sm font-medium text-brand hover:opacity-80">Unblock</button>
             </td>
         </tr>`;
     }).join('');

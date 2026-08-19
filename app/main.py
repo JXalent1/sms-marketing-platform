@@ -5,6 +5,7 @@ adapting this to a new client means editing modules, not untangling this file.
 """
 
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
@@ -74,6 +75,11 @@ app = FastAPI(
     redoc_url=None,
     openapi_url=None,
 )
+
+# Compiled stylesheet and self-hosted fonts. app/static/app.css is a build
+# artifact (`npm run build:css`) and is gitignored, so a deploy that skips the
+# build serves a 404 here rather than silently falling back to a CDN.
+app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
 limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter

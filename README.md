@@ -13,12 +13,57 @@ contacts come from, and which carrier sends — are pluggable.
 
 ```bash
 cp .env.example .env
-./run.sh                             # http://localhost:8000
+
+python3 -m venv .venv                # everything below runs inside this venv
+source .venv/bin/activate
+pip install -r requirements.txt -r requirements-dev.txt
+
+npm install                          # build-time only: Tailwind + the Inter font files
+npm run build:css                    # writes app/static/app.css
+
+alembic upgrade head                 # create/upgrade the database schema
+uvicorn app.main:app --reload        # http://localhost:8000
+
 python scripts/seed_demo_data.py     # optional sample contacts
 python -m pytest tests/ -v
 ```
 
 Default login is whatever you set as `ADMIN_PASSWORD` in `.env`.
+
+**Use the venv for everything, including pytest.** The suite is not pinned to
+whatever `pytest` happens to be on `PATH`: a global conda environment with an
+unrelated broken plugin has already taken this suite down once, for a reason
+that had nothing to do with the code. `requirements-dev.txt` pins the test
+dependencies; `requirements.txt` deliberately does not carry them, so production
+images stay free of a test runner.
+
+### Front-end build
+
+Tailwind is compiled at build time into `app/static/app.css`, which is
+**gitignored** — it is an artifact, not source. Inter is self-hosted from
+`app/static/fonts/`. Nothing is fetched from a CDN at runtime, because with the
+Tailwind Play CDN unreachable the entire app rendered as raw unstyled HTML.
+
+| Command | What it does |
+|---|---|
+| `npm run build:css` | One-off compile. Run after editing templates or `app/assets/tailwind.css` |
+| `npm run watch:css` | Recompile on save while working on templates |
+| `npm run fonts:sync` | Re-copy the four Inter weights into `app/static/fonts/` |
+
+`deployment/deploy.sh` runs `build:css` before syncing, so a deploy cannot ship
+a dashboard with no stylesheet.
+
+Colors are CSS custom properties defined in `app/assets/tailwind.css` and
+exposed to Tailwind as utilities (`bg-brand`, `text-ink`, `border-line`). **Dark
+is the default theme**; light is opt-in via `data-theme="light"` on `<html>`.
+Never write a hex value into a template — set `BRAND_COLOR_HEX` in `.env`.
+
+### Migrations
+
+Schema changes go through Alembic (`alembic revision --autogenerate -m "..."`,
+then `alembic upgrade head`). `Base.metadata.create_all()` still runs at import
+for local convenience, but it cannot alter an existing table, so it is not a
+substitute for a migration.
 
 `SMS_PROVIDER` defaults to `console`, which logs messages instead of sending
 them. **Nothing can reach a real phone until you change that**, which is
@@ -54,8 +99,9 @@ the carrier, auto-blocking on hard delivery failures.
 **Delivery tracking** — webhooks record what the carrier actually did, so
 "sent" counts stay honest.
 
-**Billing** — cycle-based usage metering, configurable base fee and overage
-tiers, carrier-reported segment counts as the billing basis.
+**Billing** — cycle-based usage metering: a configurable monthly fee, an
+included-segment allowance and a flat per-segment rate above it, with
+carrier-reported segment counts as the billing basis.
 
 **Safety** — auth on every route, rate limits, pre-flight balance check, low-balance
 alerts, dry-run by default.
@@ -100,10 +146,11 @@ Rebranding is an env edit and a restart.
 
 ```
 BRAND_NAME=Acme Auto Group
-BRAND_COLOR=emerald
-SMS_PROVIDER=telnyx
-BILLING_BASE_FEE=400
-BILLING_OVERAGE_TIERS=5000:0.025,10000:0.022,20000:0.020,inf:0.016
+BRAND_COLOR_HEX=#123A6B
+SMS_PROVIDER=console
+BILLING_MONTHLY_FEE=0
+BILLING_SEGMENTS_INCLUDED=10000
+BILLING_PRICE_PER_SEGMENT=0.015
 ```
 
 ## Before you ship
