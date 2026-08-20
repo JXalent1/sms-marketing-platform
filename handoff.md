@@ -97,3 +97,35 @@ pages still head themselves "Campaigns" and "Blocklist". One word each in
 - Sender number strategy, before the first live send. The shell renders whatever
   `active_sender_number()` returns; today that is nothing.
 - `SMS_PROVIDER` is still `console`. Flipping it is a human step and stays one.
+
+---
+
+## Session 3b handoff — Today + Contacts (2026-08-19)
+
+Appended, not rewritten: session 4 is editing this file in parallel.
+
+**State.** Module 3b complete. `bash agent/gate.sh` green (96 tests), suite
+green twice in a row. Branch `module-3b`. No migration was added and `alembic/`
+was not touched — session 4 owns it this wave.
+
+**Files.** New: `app/templates/today.html`, `app/routers/dashboard.py`,
+`app/services/dashboard_service.py`, `app/services/contact_query_service.py`,
+`tests/test_dashboard.py`, `tests/test_contacts_api.py`. Modified:
+`app/templates/contacts.html`, `app/routers/contacts.py`, `app/routers/pages.py`,
+`app/services/contact_service.py`, `app/core/config.py`, `app/main.py`. Deleted:
+`app/templates/dashboard.html`. Nothing of session 4's is in the diff.
+
+**What the merge with session 4 needs to know.**
+- `campaigns.category_id` and `campaigns.scheduled_at` are both read through
+  `getattr`, so the hero already prefers them the moment the migration lands and
+  needs no edit here. `dashboard_service._category_for_campaign()` is where.
+- `app/routers/dashboard.py` imports `templates` and `shell_context` from
+  `pages.py`. `main.py` gained two `include_router` lines next to the existing
+  ones — the only overlap point, and it is additive.
+- Both new test modules purge everything they seed, because the suite shares one
+  database and `test_smoke` asserts an exact `sent_count` against audience "all".
+  Any new test module that seeds contacts must do the same.
+
+**Next.** Module 5b (go live) once 4 merges. Before the launch import, the
+client's real CSVs are still needed — the header mapping is covered by a fixture
+but his actual column names are not.

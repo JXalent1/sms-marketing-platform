@@ -17,7 +17,7 @@ from app.core.auth import (
 from app.core.config import settings
 from app.core.database import get_db
 from app.core import branding
-from app.services import billing_service
+from app.services import billing_service, contact_query_service
 from app.sms.factory import get_provider, active_sender_number
 import os
 import logging
@@ -33,9 +33,9 @@ templates = Jinja2Templates(
 )
 branding.install(templates)
 
+# "/" and "/dashboard" are not here: the Today screen renders server-side from
+# dashboard_service and lives in routers/dashboard.py.
 PAGES = [
-    ("/", "dashboard.html", "dashboard"),
-    ("/dashboard", "dashboard.html", "dashboard"),
     ("/campaigns", "campaigns.html", "campaigns"),
     ("/contacts", "contacts.html", "contacts"),
     ("/usage", "usage.html", "usage"),
@@ -143,11 +143,23 @@ def shell_context(db: Session) -> dict:
 
 # ─── Pages (all authenticated) ──────────────────────────────────────────────
 
+# Extra server-rendered context, per page. Contacts renders its category tabs on
+# the first paint rather than after a fetch: the tabs are how the screen is
+# navigated, and a row of empty buttons that fills in a moment later is the
+# thing he clicks before it is ready.
+PAGE_CONTEXT = {
+    "contacts": lambda db: {"category_tabs": contact_query_service.category_tabs(db)},
+}
+
+
 def _make_page(template: str, active: str):
     async def page(request: Request, db: Session = Depends(get_db),
                    user: str = Depends(require_auth)):
+        extra = PAGE_CONTEXT.get(active)
         return templates.TemplateResponse(
-            request, template, {"active_page": active, **shell_context(db)},
+            request, template,
+            {"active_page": active, **shell_context(db),
+             **(extra(db) if extra else {})},
         )
     return page
 

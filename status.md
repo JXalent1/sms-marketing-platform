@@ -242,3 +242,91 @@ module that owns the file.
   initial commit. Both halves of the original note check out against the source, so it
   stands. Flagged rather than quietly applied — deleting a true note to satisfy a
   review finding is the same failure the finding was trying to prevent.
+
+---
+
+## Module 3b — Today + Contacts (appended by session 3b, 2026-08-19)
+
+Appended rather than rewritten: session 4 is editing this file in a parallel
+worktree and a rewrite would be a merge conflict over the whole document.
+
+**Done.** `bash agent/gate.sh` green at both ends; 96 tests (76 inherited + 20
+new), green twice in a row on fresh databases. No migration, no `alembic/`, no
+`base.html`, nothing of session 4's touched.
+
+- **Today** (`app/templates/today.html`, `app/routers/dashboard.py`,
+  `app/services/dashboard_service.py`). `/` and `/dashboard` render server-side
+  from one service call; `/api/dashboard` returns the same payload.
+  - The hero is derived, not stored. There is no auctions table and none was
+    invented: soonest scheduled campaign if `campaigns.scheduled_at` exists —
+    guarded with `getattr`, because session 4 is adding it right now — else the
+    newest draft, else an empty state offering Compose. Its category comes from
+    `campaigns.category_id` when that column lands and from the audience
+    selector until then, so it survives the merge either way.
+  - **Days since last send is computed from `sms_messages`, not from a
+    campaign's audience string** — one grouped query joining messages to
+    `contact_categories`, counting only `sent` and `delivered`. Never texted
+    renders `—`, never `0`: those are opposite facts, and `0` reads as "texted
+    today". A category whose only send *failed* also shows `—`, for the same
+    reason. `SENT_STATUSES` deliberately does not import `BILLABLE_STATUSES`
+    even though the two sets match today; a commercial change to what we
+    invoice for must not silently rewrite the freshness figures.
+  - Stale threshold is `DASHBOARD_STALE_DAYS` in config (default 14), not a
+    constant: "stale" is a judgement about his auction calendar.
+  - Four tiles, 14-day segment chart (quiet days are a 3px rule, not a gap),
+    and per-category last-send outcome bars scoped to that category's most
+    recent campaign — scoped to a campaign rather than a date window because a
+    `blocked` message has no `sent_at` and a window would drop exactly the
+    outcome worth seeing. Percentages are direct-labelled beside every bar.
+  - Every currency figure comes from `billing_service`. No price, allowance or
+    rate appears in a template, and `WHOLESALE_COST_PER_SEGMENT` is asserted
+    absent from the tile payload.
+- **Contacts** (`app/templates/contacts.html`,
+  `app/services/contact_query_service.py`, `app/routers/contacts.py`).
+  Category tabs with live counts rendered server-side, search across name,
+  phone and `attributes.company`, bulk add/remove category, streamed CSV export.
+  - Paging is a COUNT plus LIMIT/OFFSET. **Page 1 of 1,000 contacts is 4
+    queries** — count, page, chips for the page, send counts for the page —
+    asserted with a bound, because a per-row lookup would leave every other
+    assertion passing.
+  - Search takes "(954) 600-0777" as well as `+19546000777`: the digits are
+    stripped and matched too, since that is how a number appears on the card in
+    his hand.
+  - No line-type column. We hold no line-type data and will not imply we do.
+  - `contact_service.py` gained `audience_count()` (counts a selector without
+    hydrating 50,000 rows) and nothing else; the screen's query layer is its own
+    module so neither file goes near 500 lines.
+- **The uncategorised import endpoints are retired.** `POST
+  /api/contacts/import` and `/api/contacts/import/preview` now answer 400 with
+  text naming `/api/imports/preview` and `/api/imports/commit`, rather than
+  404ing — "gone" without "go here instead" is how an integration gets rebuilt
+  against the wrong flow twice. The Contacts screen's own import panel is
+  category-first and refuses to submit without one. Tested both ways.
+- `app/templates/dashboard.html` is deleted; `today.html` replaces it. `/` and
+  `/dashboard` moved out of `pages.py`'s generic PAGES table into
+  `routers/dashboard.py`, and `pages.py` gained a per-page context hook so
+  Contacts gets its tabs on the first paint.
+
+### Found while working (session 3b)
+
+- **`docs/API.md:77-78` still documents `POST /api/contacts/import` and
+  `/api/contacts/import/preview` as the import flow.** They are retired as of
+  this session and answer 400. Left alone deliberately — module 8 owns the
+  docs. The replacement to document is `/api/imports/{preview,commit,undo}`,
+  all requiring `category_id`.
+- **The design renders are not in the repo.** `sessions/session-3b.md` cites
+  `pen-exports/b3I3tf.png` and `pen-exports/j98DI.png`, and session 4 cites
+  `pen-exports/BWsLw.png`; there is no `pen-exports/` directory and
+  `Auctions4America.pen` is not tracked either (`git ls-files | grep -i pen`
+  returns nothing). Both screens were built from the written spec, which
+  describes the layouts in enough detail to do it. Worth fixing before module 8
+  redesigns four more screens against the same missing file.
+- **`.env` sets `ENVIRONMENT=production`, so a local `./run.sh` never migrates
+  and every page 500s on a fresh `data/app.db`** with "no such table:
+  sms_messages", from `shell_context` — i.e. on all seven pages, not a 3b
+  regression. `alembic upgrade head` first and it is fine, which is exactly what
+  `deploy.sh` does. Not a bug in the app; a foot-gun in the local `.env`, and
+  `run.sh` is nobody's module (see the two existing notes about it).
+- **`run.sh` builds its own `venv/` from `requirements.txt` on first use**, so
+  the first invocation in a fresh worktree takes long enough to look hung. Same
+  root cause as the `venv/` vs `.venv/` note above.
