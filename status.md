@@ -119,10 +119,42 @@ of session 3a. Both sides were additions and both were true, so both were kept.)
     the send-mode pill, rather than the same query in six handlers.
   - Below 768px the sidebar leaves the flow and becomes a drawer behind a labelled
     toggle. Verified at 375px: no horizontal scroll open or closed.
+- **Module 4 — Composer & campaign guardrails** _(added by session 4; 3b is editing this
+  file in parallel, so this is an append)_
+  - `campaigns.category_id` exists, nullable in the schema and required by the API. The
+    one escape is `cross_category_override`, which the caller has to type and which is
+    recorded on the campaign. Old campaigns keep NULL and the UI shows "—"; nothing was
+    backfilled, because a guessed category is indistinguishable from one a human chose.
+  - `campaigns.html` is the three-step composer from `pen-exports/BWsLw.png`: category
+    as a segmented control, message with live metering, pre-flight checklist, with the
+    phone preview and the "this send" summary pinned right. The page heads itself
+    "Compose" now, agreeing with the nav.
+  - `POST /api/campaigns/preflight` returns seven checks as key / label / status /
+    reason. The UI draws them and computes none of them, so a check cannot say one thing
+    on screen and another over the API.
+  - Recent-contact suppression, 3 days, `RECENT_CONTACT_SUPPRESSION_DAYS`. Across
+    categories: a buyer in three of them is one person with one phone. Held-back
+    contacts get a `skipped` row at create time, so the count is on screen before the
+    send rather than inferable after it, and `skipped` is outside `BILLABLE_STATUSES`.
+  - Scheduled send: `campaigns.scheduled_at`, dispatched by a one-minute APScheduler job
+    registered in `main.py`'s lifespan. The job only finds what is due; it hands each
+    campaign to the same `send_campaign()` the button reaches, so a scheduled blast gets
+    the capacity pre-flight and every filter. `tests/test_campaign_guardrails.py` proves
+    it by making pre-flight *refuse* — the scheduled campaign comes out `aborted` and
+    the stub provider's `send()` asserts if it is ever reached.
+  - The composer's money is the client's money. `estimated_cost` on `/preview` and
+    `/preflight` is `BILLING_PRICE_PER_SEGMENT` net of the month's allowance, computed
+    as the difference of two `billing_service.cost_for_segments()` Decimals so the
+    half-cent boundary survives. Nothing in module 4 reads the wholesale rate except the
+    capacity check, which needs it as a divisor and returns only `ok` and `detail`.
+  - The capacity check itself is unchanged. Its arithmetic moved into
+    `capacity_assessment()` so the endpoint can re-state the same verdict from the same
+    numbers; the threshold, the branches and the wording are identical, and a test
+    asserts the endpoint's row and `preflight()`'s string are the same string.
 
 ## Next
 1. Module 3b — Today + Contacts screens
-2. Module 4 — Composer & campaign guardrails
+2. Module 5b — Go live (needs 3b and 4 merged)
 
 ## Blocked on
 - A4A logo and brand hex colors. **No longer blocking:** the placeholder palette from
@@ -167,6 +199,29 @@ list. All three are nullable, additive, and dropped by the downgrade. Nothing to
 ## Found while working
 Real issues outside the current module's scope. Left alone deliberately; each names the
 module that owns the file.
+
+- **`app/routers/usage.py:46` reads `WHOLESALE_COST_PER_SEGMENT`.** Session 4's acceptance
+  criteria include `grep -rn "WHOLESALE_COST_PER_SEGMENT" app/routers/ app/templates/`
+  returning nothing, and this one line is why it does not. It is not a leak: session 1b
+  put it there deliberately as the divisor that turns our carrier balance into his segment
+  capacity, and neither the rate nor the balance is in the response —
+  `tests/test_whitelabel.py::test_no_response_quotes_our_wholesale_rate` proves that by
+  running the route. But the literal grep is a structural rule the runtime test cannot
+  replace, and satisfying it means moving the conversion behind a service helper.
+  `usage.py` is module 8's file, so this is a note rather than a drive-by. Module 4's own
+  routers and templates are clean.
+- **`docs/API.md` does not document any of module 4.** `POST /api/campaigns` now requires
+  `category_id` or `cross_category_override` and accepts `scheduled_at`;
+  `POST /api/campaigns/preflight` is new; `/preview` returns cost, suppressed and
+  opted-out counts. Docs are module 8's, and `docs/API.md:45` is already stale from
+  session 1b.
+- **The suite's shared rate-limit budget is now nearly spent.** `POST /api/campaigns` is
+  5/minute per IP and the whole suite runs inside one window from one address:
+  test_smoke makes 1 create, test_whitelabel 2, test_campaign_guardrails 4. The last of
+  those resets the limiter around itself so it neither inherits nor leaves debt, but a
+  future module that creates campaigns over HTTP and does not do the same will fail on a
+  429 that looks like a bug in the code under test. The same shape as the 10/minute login
+  cap already noted below.
 
 - **`sessions/session-5a.md` does not exist.** Module 5a was built from its row in
   `modules.md` (scope, file list, "5a stays out of `app/main.py`") plus the acceptance

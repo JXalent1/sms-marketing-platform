@@ -1,0 +1,388 @@
+{# Composer behaviour. Included by campaigns.html inside {% block scripts %}.
+
+   A .html partial rather than a file under app/static/ for one concrete reason:
+   Tailwind's content scan is `./app/templates/**/*.html`, so the class strings
+   in the lookup tables below are compiled into app.css. The same strings in a
+   .js file would be purged and the checklist would render unstyled.
+
+   Two rules this file keeps:
+     - Class names are literals in a lookup table, never concatenated from a
+       value the API returned. A colour token arriving as "s9" picks the
+       fallback; it never produces `text-s9`, which would silently be no class
+       at all.
+     - Every money figure comes from the API. Nothing here multiplies a rate. #}
+<script>
+// Category chip styling, keyed by the colour token the API returns. The four
+// hues are validated as a set — anything unrecognised takes the neutral chip
+// rather than inventing a fifth.
+const CHIP_BASE = 'category-chip rounded-full border px-3.5 py-1.5 text-[13px] font-medium '
+                + 'transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand';
+
+const CATEGORY_SELECTED = {
+    s1:      'border-s1 bg-surface-2 text-s1',
+    s2:      'border-s2 bg-surface-2 text-s2',
+    s3:      'border-s3 bg-surface-2 text-s3',
+    s4:      'border-s4 bg-surface-2 text-s4',
+    neutral: 'border-ink-2 bg-surface-2 text-ink',
+};
+const CATEGORY_UNSELECTED = 'border-line-strong text-ink-2 hover:bg-surface-2';
+
+// The whole className is rebuilt from CHIP_BASE rather than edited in place.
+// Stripping the old state with a regex was the obvious way and the wrong one:
+// `text-\S+` also matches `text-[13px]`, so selecting a category quietly
+// resized the chip it selected.
+function chipClass(colorToken, selected) {
+    return CHIP_BASE + ' ' + (selected
+        ? (CATEGORY_SELECTED[colorToken] || CATEGORY_SELECTED.neutral)
+        : CATEGORY_UNSELECTED);
+}
+
+const CHECK_STYLES = {
+    pass: { dot: 'bg-good',     label: 'text-ink-3', mark: '✓' },
+    warn: { dot: 'bg-warn-ink', label: 'text-ink-2', mark: '!' },
+    fail: { dot: 'bg-crit',     label: 'text-ink-2', mark: '✕' },
+};
+
+const STATUS_STYLES = {
+    draft:     'bg-surface-2 text-ink-2',
+    running:   'bg-brand-soft text-brand',
+    completed: 'bg-good-soft text-good-ink',
+    aborted:   'bg-warn-soft text-warn-ink',
+    failed:    'bg-crit-soft text-crit',
+};
+
+const el = (id) => document.getElementById(id);
+const money = (value) => (value === null || value === undefined)
+    ? '—'
+    : value.toLocaleString('en-US', { style: 'currency', currency: 'USD' });
+
+let selectedCategory = null;      // {id, slug, label, color_token}
+let lastPreview = null;
+
+// ─── Step 1: category and audience ──────────────────────────────────────────
+
+async function loadCategories() {
+    const data = await api('/api/categories');
+    const box = el('categoryChoices');
+    const categories = data.categories || [];
+
+    if (!categories.length) {
+        box.innerHTML = '<span class="text-[13px] text-ink-3">No categories yet.</span>';
+        return;
+    }
+
+    box.innerHTML = categories.map(c => `
+        <button type="button" role="radio" aria-checked="false"
+                data-category-id="${c.id}" data-token="${esc(c.color_token)}"
+                class="${chipClass(c.color_token, false)}">
+            ${esc(c.label)} <span class="tabular-nums opacity-70">${c.count.toLocaleString()}</span>
+        </button>`).join('');
+
+    box.querySelectorAll('.category-chip').forEach(chip => {
+        chip.addEventListener('click', () => {
+            const chosen = categories.find(c => String(c.id) === chip.dataset.categoryId);
+            selectCategory(chosen);
+        });
+    });
+}
+
+function selectCategory(category) {
+    selectedCategory = category;
+    el('crossCategory').checked = false;
+    el('categoryError').classList.add('hidden');
+
+    document.querySelectorAll('.category-chip').forEach(chip => {
+        const on = chip.dataset.categoryId === String(category.id);
+        chip.className = chipClass(chip.dataset.token, on);
+        chip.setAttribute('aria-checked', String(on));
+    });
+
+    el('sumCategory').textContent = category.label;
+    // Selecting the auction selects its audience. He can widen it afterwards;
+    // what he cannot do is leave it pointing at last night's list by accident.
+    const audience = el('audience');
+    const match = Array.from(audience.options).find(o => o.value === `category:${category.slug}`);
+    if (match) { audience.value = match.value; }
+    schedulePreview();
+}
+
+async function loadAudiences() {
+    const data = await api('/api/campaigns/audiences');
+    const select = el('audience');
+    if (!data.audiences?.length) {
+        select.innerHTML = '<option value="">No contacts yet</option>';
+        return;
+    }
+    select.innerHTML = data.audiences
+        .map(a => `<option value="${esc(a.selector)}">${esc(a.label)} — ${a.count.toLocaleString()} contacts</option>`)
+        .join('');
+    refreshPreview();
+}
+
+el('crossCategory').addEventListener('change', function () {
+    if (!this.checked) return;
+    selectedCategory = null;
+    document.querySelectorAll('.category-chip').forEach(chip => {
+        chip.setAttribute('aria-checked', 'false');
+        chip.className = chipClass(chip.dataset.token, false);
+    });
+    el('sumCategory').textContent = 'Cross-category override';
+    schedulePreview();
+});
+
+// ─── Step 2: live metering ──────────────────────────────────────────────────
+
+document.querySelectorAll('.tag-btn').forEach(button => {
+    button.addEventListener('click', () => {
+        const box = el('message');
+        const at = box.selectionStart ?? box.value.length;
+        box.value = box.value.slice(0, at) + button.dataset.tag + box.value.slice(box.selectionEnd ?? at);
+        box.focus();
+        box.selectionStart = box.selectionEnd = at + button.dataset.tag.length;
+        schedulePreview();
+    });
+});
+
+let previewTimer;
+function schedulePreview() {
+    clearTimeout(previewTimer);
+    previewTimer = setTimeout(refreshPreview, 300);
+}
+
+async function refreshPreview() {
+    const template = el('message').value;
+    const audience = el('audience').value;
+    if (!template) { return; }
+
+    const data = await api('/api/campaigns/preview', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message_template: template, audience }),
+    });
+    lastPreview = data;
+
+    el('pvChars').textContent = data.characters;
+    el('pvEncoding').textContent = data.encoding;
+    el('pvSegments').textContent = data.segments;
+    el('pvRecipients').textContent = data.recipients.toLocaleString();
+    el('pvTotal').textContent = data.total_segments.toLocaleString();
+    el('pvCost').textContent = money(data.estimated_cost);
+
+    el('pvText').textContent = data.preview_text || 'Your message appears here…';
+    el('previewWho').textContent = data.sample_name
+        ? `Rendered for ${data.sample_name}.`
+        : 'Merge tags render against a real contact.';
+    el('pvSegmentNote').textContent =
+        `${data.segments} segment${data.segments === 1 ? '' : 's'} · ${data.encoding}`;
+
+    el('sumRecipients').textContent = data.recipients.toLocaleString();
+    el('sumSuppressed').textContent = (data.suppressed || 0).toLocaleString();
+    el('sumOptedOut').textContent = (data.opted_out || 0).toLocaleString();
+    el('sumSegments').textContent = data.total_segments.toLocaleString();
+    el('sumCost').textContent = money(data.estimated_cost);
+
+    paintUnicodeWarning(data);
+    paintLinkWarning(data);
+}
+
+function paintUnicodeWarning(data) {
+    const box = el('pvUnicodeWarn');
+    if (data.encoding !== 'UCS-2') { box.classList.add('hidden'); return; }
+
+    // Both dollar figures come from the API at his rate, net of the month's
+    // included segments. The comparison is the whole message: one emoji cuts a
+    // segment from 160 characters to 70, and the only version of that fact
+    // anyone acts on is the difference between two numbers at tonight's count.
+    const extra = (data.estimated_cost ?? 0) - (data.estimated_cost_if_gsm7 ?? 0);
+    const chars = data.forced_unicode_by.join(' ');
+    box.innerHTML =
+        `<strong class="font-semibold">${esc(chars)} switches this message to Unicode.</strong> ` +
+        `Every segment drops from 160 characters to 70, so each recipient costs ` +
+        `${data.segments} segments instead of ${data.gsm7_segments_if_stripped}. ` +
+        `At ${data.recipients.toLocaleString()} recipients that is ` +
+        `<strong class="font-semibold tabular-nums">${money(data.estimated_cost)}</strong> ` +
+        `instead of <strong class="font-semibold tabular-nums">${money(data.estimated_cost_if_gsm7)}</strong>` +
+        (extra > 0 ? ` — <strong class="font-semibold tabular-nums">${money(extra)}</strong> more.` : '.') +
+        ` Remove it and the message costs what plain text costs.`;
+    box.classList.remove('hidden');
+}
+
+function paintLinkWarning(data) {
+    const box = el('pvLinkWarn');
+    if (!data.risky_links?.length) { box.classList.add('hidden'); return; }
+    box.innerHTML =
+        `<strong class="font-semibold">${esc(data.risky_links.join(', '))} is a shared link shortener.</strong> ` +
+        `Carriers spam-filter these hard: the send is accepted, then quietly dropped, at full price. ` +
+        `Use a link on a domain you own.`;
+    box.classList.remove('hidden');
+}
+
+el('message').addEventListener('input', schedulePreview);
+el('audience').addEventListener('change', schedulePreview);
+el('batchSize').addEventListener('input', schedulePreview);
+
+// ─── Step 3: pre-flight ─────────────────────────────────────────────────────
+
+el('preflightBtn').addEventListener('click', runPreflight);
+
+async function runPreflight() {
+    const list = el('preflightList');
+    const message = el('message').value;
+    const audience = el('audience').value;
+
+    if (!message || !audience) {
+        list.innerHTML = '<li class="px-5 py-4 text-[13px] text-ink-3">Write the message and pick an audience first.</li>';
+        return;
+    }
+
+    list.innerHTML = '<li class="px-5 py-4 text-[13px] text-ink-3">Running checks…</li>';
+    const batch = parseInt(el('batchSize').value, 10);
+    const report = await api('/api/campaigns/preflight', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            message_template: message,
+            audience,
+            category_id: selectedCategory ? selectedCategory.id : null,
+            batch_size: Number.isFinite(batch) ? batch : null,
+        }),
+    });
+
+    // The server decides what each check says. This only draws it — a check
+    // whose wording lived here would say one thing on screen and another over
+    // the API, and the API is what a post-mortem reads.
+    list.innerHTML = report.checks.map(check => {
+        const style = CHECK_STYLES[check.status] || CHECK_STYLES.warn;
+        return `
+        <li class="flex items-start gap-3 px-5 py-3">
+            <span class="mt-1 grid h-4 w-4 shrink-0 place-items-center rounded-full ${style.dot} text-[10px] font-bold text-page">${style.mark}</span>
+            <div class="min-w-0">
+                <p class="text-[13px] font-medium text-ink">${esc(check.label)}</p>
+                <p class="mt-0.5 text-[12px] leading-relaxed ${style.label}">${esc(check.reason)}</p>
+            </div>
+        </li>`;
+    }).join('');
+}
+
+// ─── Commit ─────────────────────────────────────────────────────────────────
+
+el('composer').addEventListener('submit', async function (e) {
+    e.preventDefault();
+    const name = el('campaignName').value.trim();
+    const audience = el('audience').value;
+    const message = el('message').value;
+    const override = el('crossCategory').checked;
+
+    if (!selectedCategory && !override) {
+        const error = el('categoryError');
+        error.textContent = 'Pick the auction this is for. If it genuinely is not for one auction, tick the override.';
+        error.classList.remove('hidden');
+        el('categoryChoices').scrollIntoView({ behavior: 'smooth', block: 'center' });
+        return;
+    }
+    if (!name || !audience || !message) { showToast('Fill in every field', 'error'); return; }
+
+    const batch = parseInt(el('batchSize').value, 10);
+    const when = el('scheduledAt').value;      // "2026-08-20T09:00", already local
+    const button = this.querySelector('button[type=submit]');
+    button.disabled = true;
+    try {
+        const data = await api('/api/campaigns', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                name,
+                message_template: message,
+                audience,
+                batch_size: Number.isFinite(batch) ? batch : null,
+                category_id: selectedCategory ? selectedCategory.id : null,
+                cross_category_override: override,
+                scheduled_at: when ? `${when}:00` : null,
+            }),
+        });
+        if (data.success) {
+            const c = data.campaign;
+            showToast(c.scheduled_at
+                ? `Scheduled — ${c.total_recipients.toLocaleString()} recipients, ${fmtDate(c.scheduled_at)}`
+                : `Draft created — ${c.total_recipients.toLocaleString()} recipients, ` +
+                  `~${(c.estimated_segments || 0).toLocaleString()} segments`);
+            loadCampaigns();
+        } else {
+            showToast(data.detail || 'Could not create campaign', 'error');
+        }
+    } finally {
+        button.disabled = false;
+    }
+});
+
+// ─── Test send ──────────────────────────────────────────────────────────────
+
+el('testBtn').addEventListener('click', () => {
+    const panel = el('testPanel');
+    panel.classList.toggle('hidden');
+    if (!panel.classList.contains('hidden')) el('testPhone').focus();
+});
+
+el('testSendBtn').addEventListener('click', async function () {
+    const phone = el('testPhone').value;
+    const message = el('message').value;
+    if (!phone || !message) { showToast('Enter a test number and a message', 'error'); return; }
+
+    this.disabled = true;
+    try {
+        const data = await api('/api/campaigns/test-sms', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ phone, message: lastPreview?.preview_text || message }),
+        });
+        showToast(data.success ? 'Test sent' : `Failed: ${data.error || 'unknown'}`,
+                  data.success ? 'success' : 'error');
+    } finally {
+        this.disabled = false;
+    }
+});
+
+// ─── History rail ───────────────────────────────────────────────────────────
+
+async function loadCampaigns() {
+    const data = await api('/api/campaigns?limit=8');
+    const list = el('campaignList');
+
+    if (!data.campaigns?.length) {
+        list.innerHTML = '<li class="px-5 py-4 text-[13px] text-ink-3">No campaigns yet</li>';
+        return;
+    }
+
+    list.innerHTML = data.campaigns.map(c => `
+        <li class="px-5 py-3">
+            <div class="flex items-start gap-2">
+                <p class="min-w-0 flex-1 truncate text-[13px] font-medium text-ink">${esc(c.name)}</p>
+                <span class="shrink-0 rounded px-1.5 py-0.5 text-[11px] font-medium ${STATUS_STYLES[c.status] || STATUS_STYLES.draft}">${esc(c.status)}</span>
+            </div>
+            <p class="mt-0.5 text-[11px] text-ink-3">
+                ${esc(c.category_label || (c.cross_category_override ? 'Cross-category' : '—'))}
+                · ${c.total_recipients.toLocaleString()} recipients${c.suppressed_count ? ` · ${c.suppressed_count.toLocaleString()} held back` : ''}
+            </p>
+            ${c.scheduled_at ? `<p class="mt-0.5 text-[11px] text-brand">Scheduled ${esc(fmtDate(c.scheduled_at))}</p>` : ''}
+            ${c.abort_reason ? `<p class="mt-1 text-[11px] text-warn-ink">${esc(c.abort_reason)}</p>` : ''}
+            ${c.status === 'draft' && !c.scheduled_at ? `
+                <button type="button" onclick="sendCampaign(${c.id})"
+                        class="mt-1.5 rounded-md bg-good px-2.5 py-1 text-[11px] font-medium text-white hover:opacity-90">
+                    Send now
+                </button>` : ''}
+        </li>`).join('');
+}
+
+async function sendCampaign(id) {
+    if (!confirm('Send this campaign now? This spends real money and cannot be undone.')) return;
+    const data = await api(`/api/campaigns/${id}/send`, { method: 'POST' });
+    showToast(data.success ? 'Sending started' : (data.detail || 'Failed'),
+              data.success ? 'success' : 'error');
+    loadCampaigns();
+}
+
+loadCategories();
+loadAudiences();
+loadCampaigns();
+setInterval(loadCampaigns, 5000);
+</script>

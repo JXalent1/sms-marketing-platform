@@ -104,19 +104,30 @@ async def lifespan(app: FastAPI):
     if provider.name == "console":
         logger.warning("SMS provider is 'console' — messages are logged, NOT sent.")
 
-    # Register scheduled jobs here. Example — a nightly contact sync:
+    # Register scheduled jobs here. Give every job an explicit id and
+    # replace_existing=True, or a reload quietly stacks duplicates that all fire
+    # at once.
     #
-    #   from apscheduler.triggers.cron import CronTrigger
-    #   import pytz
-    #   scheduler.add_job(
-    #       sync_contacts_job,
-    #       CronTrigger(hour=9, minute=0, timezone=pytz.timezone("US/Eastern")),
-    #       id="daily_sync", replace_existing=True,
-    #   )
+    # Scheduled campaigns. The job only *finds* what is due — it hands each
+    # campaign to the same `send_campaign()` the Send button reaches, so a
+    # scheduled blast gets the capacity pre-flight, the blocklist, the region
+    # filter and recent-contact suppression exactly as an on-demand one does.
+    # Nothing about scheduling may become a second, thinner send path.
     #
-    # Give every job an explicit id and replace_existing=True, or a reload
-    # quietly stacks duplicates that all fire at once.
+    # A minute is the resolution: he schedules "Thursday 9am", not "09:00:07",
+    # and a tighter tick would spend a query a second on an empty table.
+    # max_instances=1 so a long blast cannot have a second copy of itself
+    # started underneath it.
+    from apscheduler.triggers.interval import IntervalTrigger
+    from app.services.campaign_service import run_due_campaigns
+
+    scheduler.add_job(
+        run_due_campaigns,
+        IntervalTrigger(minutes=1),
+        id="scheduled_campaigns", replace_existing=True, max_instances=1,
+    )
     scheduler.start()
+    logger.info("Scheduler started | scheduled campaigns checked every minute")
 
     yield
 

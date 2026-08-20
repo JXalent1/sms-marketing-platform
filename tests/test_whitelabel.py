@@ -85,10 +85,14 @@ def client():
     # A real draft, so the detail routes render a populated payload rather than
     # a 404 body that would pass every assertion by having nothing in it.
     # Never sent: this must not add billable messages to the shared cycle.
+    categories = c.get("/api/categories").json()["categories"]
+    PATH_VALUES["category_id"] = categories[0]["id"]
+
     created = c.post("/api/campaigns", json={
         "name": "white-label scan",
         "message_template": "Hi {first_name}, scanning.",
         "audience": "all",
+        "category_id": categories[0]["id"],
     })
     assert created.status_code == 200, created.text
     PATH_VALUES["campaign_id"] = created.json()["campaign"]["id"]
@@ -184,10 +188,14 @@ def test_campaign_payloads_carry_no_estimated_cost(client):
     for path in ("/api/campaigns", f"/api/campaigns/{campaign_id}"):
         assert "estimated_cost" not in client.get(path).text, path
 
+    # The cross-category override path, scanned too: it is the one create that
+    # produces a campaign with no category, and its payload must be as free of
+    # our wholesale figure as any other.
     created = client.post("/api/campaigns", json={
         "name": "white-label scan 2",
         "message_template": "Hi {first_name}, scanning again.",
         "audience": "all",
+        "cross_category_override": True,
     })
     assert "estimated_cost" not in created.text
 
