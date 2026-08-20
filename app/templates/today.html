@@ -1,0 +1,209 @@
+{# ─── Today ───────────────────────────────────────────────────────────────────
+   The first screen of the morning: what is going out next, which niches have
+   gone quiet, and what the cycle has cost so far.
+
+   Every number on this page arrives computed from dashboard_service. There is
+   no arithmetic here and no currency formatting — the price and the allowance
+   have exactly one source, and it is not a template.
+
+   Colour never carries meaning on its own. The category swatches are paired
+   with their labels, and the outcome bars are direct-labelled with their
+   percentages, because roughly one man in twelve cannot separate two of these
+   hues and nothing in the UI would tell him.
+#}
+{% extends "base.html" %}
+{% block title %}Today{% endblock %}
+
+{% block page_actions %}
+<a href="/campaigns"
+   class="inline-flex h-9 items-center rounded-lg bg-brand px-3.5 text-[13px] font-semibold text-on-brand
+          hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand
+          focus-visible:ring-offset-2 focus-visible:ring-offset-page">New campaign</a>
+{% endblock %}
+
+{# Literal class names, never assembled from a variable: Tailwind compiles what
+   it can see in this file, and `bg-{{ token }}` compiles to nothing. #}
+{% macro swatch(token, size='h-2.5 w-2.5') -%}
+<span class="{{ size }} shrink-0 rounded-full
+  {%- if token == 's1' %} bg-s1
+  {%- elif token == 's2' %} bg-s2
+  {%- elif token == 's3' %} bg-s3
+  {%- elif token == 's4' %} bg-s4
+  {%- else %} bg-ink-3{% endif %}" aria-hidden="true"></span>
+{%- endmacro %}
+
+{% macro chip(category) -%}
+<span class="inline-flex items-center gap-1.5 rounded-full border border-line bg-surface-2 px-2.5 py-1 text-[12px] font-medium text-ink-2">
+  {{ swatch(category.color_token, 'h-2 w-2') }}{{ category.label }}
+</span>
+{%- endmacro %}
+
+{% block content %}
+<div class="mx-auto max-w-[1200px] space-y-6">
+
+  {# ─── Hero ────────────────────────────────────────────────────────────────
+     Derived, not stored: there is no auctions table. It is the soonest
+     scheduled campaign, else the newest draft, else an empty state. #}
+  {% if next_up %}
+  <section class="rounded-xl border border-line border-l-4 border-l-accent bg-surface p-5">
+    <div class="flex flex-wrap items-start justify-between gap-4">
+      <div class="min-w-0">
+        <p class="text-[11px] font-semibold uppercase tracking-[0.08em] text-ink-3">Next out</p>
+        <h2 class="mt-1 truncate text-[20px] font-semibold tracking-tight text-ink">{{ next_up.name }}</h2>
+        <div class="mt-2.5 flex flex-wrap items-center gap-2">
+          {% if next_up.category %}{{ chip(next_up.category) }}{% endif %}
+          {# The selector's wording, unless it only repeats the chip beside it. #}
+          {% if not next_up.category or next_up.audience_label != next_up.category.label %}
+          <span class="text-[13px] text-ink-3">{{ next_up.audience_label }}</span>
+          {% endif %}
+        </div>
+      </div>
+      <div class="flex shrink-0 gap-6">
+        <div>
+          <p class="text-[11px] text-ink-3">Eligible</p>
+          <p class="text-[22px] font-semibold tabular-nums text-ink">
+            {% if next_up.audience_count is none %}—{% else %}{{ '{:,}'.format(next_up.audience_count) }}{% endif %}
+          </p>
+        </div>
+        <div>
+          <p class="text-[11px] text-ink-3">Category last texted</p>
+          <p class="text-[22px] font-semibold tabular-nums text-ink">
+            {{ next_up.days_label if next_up.days_label else '—' }}
+            <span class="text-[12px] font-normal text-ink-3">{{ next_up.days_caption or 'no category' }}</span>
+          </p>
+        </div>
+        <a href="/campaigns" class="self-center rounded-lg border border-line-strong px-3 py-2 text-[13px] font-medium text-ink hover:bg-surface-2">Open</a>
+      </div>
+    </div>
+  </section>
+  {% else %}
+  <section class="rounded-xl border border-line border-l-4 border-l-accent bg-surface p-5">
+    <p class="text-[11px] font-semibold uppercase tracking-[0.08em] text-ink-3">Next out</p>
+    <h2 class="mt-1 text-[20px] font-semibold tracking-tight text-ink">No campaign queued</h2>
+    <p class="mt-1 text-[13px] text-ink-2">Nothing is drafted or scheduled. Pick tonight's niche and write it.</p>
+    <a href="/campaigns"
+       class="mt-3 inline-flex h-9 items-center rounded-lg bg-brand px-3.5 text-[13px] font-semibold text-on-brand hover:opacity-90">Compose</a>
+  </section>
+  {% endif %}
+
+  {# ─── Category freshness ──────────────────────────────────────────────────
+     Days since that category was last *actually texted* — read from the message
+     table, not from a campaign's audience string. Never texted shows an em
+     dash: "0" would read as "texted today", the opposite of the truth. #}
+  <section>
+    <div class="mb-2.5 flex items-baseline justify-between">
+      <h2 class="text-[13px] font-semibold uppercase tracking-[0.06em] text-ink-3">Days since last send</h2>
+      <span class="text-[12px] text-ink-3">Red past {{ stale_days }} days</span>
+    </div>
+    <div class="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-5">
+      {% for card in categories %}
+      <div class="rounded-xl border bg-surface p-4 {% if card.stale %}border-crit{% else %}border-line{% endif %}">
+        <div class="flex items-center gap-2">
+          {{ swatch(card.color_token) }}
+          <span class="truncate text-[13px] font-medium text-ink">{{ card.label }}</span>
+        </div>
+        <p class="mt-2 text-[34px] font-semibold leading-none tabular-nums {% if card.stale %}text-crit{% else %}text-ink{% endif %}">{{ card.days_label }}</p>
+        <p class="mt-1 text-[11px] text-ink-3">{{ card.days_caption }}</p>
+        <p class="mt-2.5 border-t border-line pt-2 text-[12px] text-ink-2">{{ '{:,}'.format(card.contacts) }} contacts</p>
+      </div>
+      {% endfor %}
+    </div>
+  </section>
+
+  {# ─── Stat tiles ──────────────────────────────────────────────────────────
+     Cost and segments come from billing_service via dashboard_service. No
+     price, rate or allowance is written in this file. #}
+  <section class="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+    {% for tile in tiles %}
+    <div class="rounded-xl border border-line bg-surface p-4">
+      <p class="text-[12px] font-medium text-ink-3">{{ tile.label }}</p>
+      <p class="mt-1 text-[28px] font-semibold leading-tight tabular-nums text-ink">{{ tile.value }}</p>
+      <p class="mt-0.5 text-[12px] text-ink-3">{{ tile.sub }}</p>
+    </div>
+    {% endfor %}
+  </section>
+
+  <div class="grid grid-cols-1 gap-6 xl:grid-cols-2">
+
+    {# ─── 14-day segments ───────────────────────────────────────────────────
+       A day with no send is a faint rule, not a gap. An absent bar and a zero
+       bar look identical, and "have we gone quiet?" is the question this chart
+       is read to answer. #}
+    <section class="rounded-xl border border-line bg-surface p-5">
+      <div class="flex items-baseline justify-between">
+        <h2 class="text-[13px] font-semibold uppercase tracking-[0.06em] text-ink-3">Segments · last {{ chart.days }} days</h2>
+        <span class="text-[12px] tabular-nums text-ink-2">{{ '{:,}'.format(chart.total) }} total</span>
+      </div>
+
+      <div class="mt-4 flex h-40 items-end gap-1.5" role="img"
+           aria-label="Segments sent per day over the last {{ chart.days }} days">
+        {% for bar in chart.bars %}
+        <div class="flex h-full flex-1 flex-col justify-end" title="{{ bar.label }} · {{ bar.segments }} segments">
+          {% if bar.pct %}
+          <span class="block w-full rounded-t bg-s1" style="height: {{ bar.pct }}%"></span>
+          {% else %}
+          <span class="block h-[3px] w-full rounded-full bg-line-strong"></span>
+          {% endif %}
+        </div>
+        {% endfor %}
+      </div>
+      <div class="mt-1.5 flex gap-1.5">
+        {% for bar in chart.bars %}
+        <span class="flex-1 text-center text-[10px] tabular-nums text-ink-3">{{ bar.tick }}</span>
+        {% endfor %}
+      </div>
+    </section>
+
+    {# ─── Last-send outcomes ────────────────────────────────────────────────
+       The percentages beside each bar are not decoration. They are what makes
+       this readable without separating the three hues, so they are required. #}
+    <section class="rounded-xl border border-line bg-surface p-5">
+      <h2 class="text-[13px] font-semibold uppercase tracking-[0.06em] text-ink-3">Last send by category</h2>
+
+      {% if outcomes %}
+      <div class="mt-4 space-y-4">
+        {% for row in outcomes %}
+        <div>
+          <div class="flex items-baseline justify-between gap-3">
+            <span class="flex min-w-0 items-center gap-2">
+              {{ swatch(row.category.color_token, 'h-2 w-2') }}
+              <span class="truncate text-[13px] font-medium text-ink">{{ row.category.label }}</span>
+            </span>
+            <span class="shrink-0 text-[12px] tabular-nums text-ink-3">{{ '{:,}'.format(row.total) }} messages</span>
+          </div>
+
+          <div class="mt-1.5 flex h-2.5 overflow-hidden rounded-full bg-surface-2">
+            {% for seg in row.segments %}
+            <span class="block h-full
+              {%- if seg.key == 'delivered' %} bg-s1
+              {%- elif seg.key == 'failed' %} bg-s2
+              {%- else %} bg-s3{% endif %}" style="width: {{ seg.pct }}%"></span>
+            {% endfor %}
+          </div>
+
+          <p class="mt-1.5 flex flex-wrap gap-x-3 gap-y-1 text-[12px] tabular-nums text-ink-2">
+            {% for seg in row.segments %}
+            <span class="inline-flex items-center gap-1.5">
+              <span class="h-2 w-2 shrink-0 rounded-full
+                {%- if seg.key == 'delivered' %} bg-s1
+                {%- elif seg.key == 'failed' %} bg-s2
+                {%- else %} bg-s3{% endif %}" aria-hidden="true"></span>
+              {{ seg.pct }}% {{ seg.key }}
+            </span>
+            {% endfor %}
+            {% if row.awaiting_receipt %}
+            <span class="text-ink-3">{{ '{:,}'.format(row.awaiting_receipt) }} awaiting receipt</span>
+            {% endif %}
+          </p>
+        </div>
+        {% endfor %}
+      </div>
+      {% else %}
+      <p class="mt-4 text-[13px] text-ink-2">
+        Nothing has been sent yet. Outcomes appear here after the first campaign goes out.
+      </p>
+      {% endif %}
+    </section>
+  </div>
+</div>
+{% endblock %}

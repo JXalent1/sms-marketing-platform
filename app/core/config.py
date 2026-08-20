@@ -84,6 +84,13 @@ class Settings(BaseSettings):
     BILLING_SEGMENTS_INCLUDED: int = 10000
     BILLING_PRICE_PER_SEGMENT: float = 0.015
 
+    # ─── Dashboard ──────────────────────────────────────────────────────────
+    # A category card turns red past this many days without a send. Config, not
+    # a constant, because "stale" is a judgement about his auction calendar: a
+    # house that runs food service weekly wants a tighter number than one that
+    # runs estates twice a quarter.
+    DASHBOARD_STALE_DAYS: int = 14
+
     # ─── Alerting ───────────────────────────────────────────────────────────
     ALERT_PHONE: str = ""                        # your number, for balance/scrape alerts
     BALANCE_ALERT_THRESHOLD: float = 50.0

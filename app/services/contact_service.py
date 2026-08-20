@@ -263,6 +263,21 @@ def _term_label(db: Session, term: str) -> str:
     return term
 
 
+def audience_count(db: Session, selector: str) -> int:
+    """How many contacts a selector resolves to, without materializing them.
+
+    resolve_audience() returns objects because the send loop needs them. A
+    screen that only wants the number must not pay for 50,000 hydrated rows to
+    call len() on them — that is the difference between a dashboard that opens
+    instantly and one that appears to hang.
+    """
+    terms = _split_terms((selector or "").strip())
+    query = db.query(func.count(Contact.id)).filter(Contact.is_active == 1)
+    for term in terms:
+        query = query.filter(Contact.id.in_(_term_ids_query(db, term).scalar_subquery()))
+    return query.scalar() or 0
+
+
 def audience_label(db: Session, selector: str) -> str:
     """Human wording for a selector: "Food Service + Equipment ∩ Aug 22 preview".
 
@@ -276,3 +291,4 @@ def audience_label(db: Session, selector: str) -> str:
     except ValueError:
         return selector
     return " ∩ ".join(_term_label(db, t) for t in terms)
+

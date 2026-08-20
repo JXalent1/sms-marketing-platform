@@ -1,161 +1,367 @@
+{# ─── Contacts ────────────────────────────────────────────────────────────────
+   The list, filtered by category, searched, and paged 50 at a time on the
+   server. The reference build paged in the browser and stopped being usable at
+   about 8,000 rows; nothing here ever holds the table in memory.
+
+   No line-type column. We hold no line-type data, and a "Mobile" badge we
+   cannot substantiate is worse than no badge — it invites him to text numbers
+   that fail and cost money.
+
+   Category tabs render on the first paint from the server so the row of tabs is
+   never a set of empty buttons waiting on a fetch. Their counts are refreshed
+   from /api/contacts/categories after anything that could change them.
+#}
 {% extends "base.html" %}
 {% block title %}Contacts{% endblock %}
 
+{% block page_actions %}
+<button type="button" id="importToggle"
+        class="inline-flex h-9 items-center rounded-lg border border-line-strong bg-surface px-3 text-[13px] font-medium text-ink hover:bg-surface-2">Import CSV</button>
+<button type="button" id="exportAll"
+        class="inline-flex h-9 items-center rounded-lg bg-brand px-3.5 text-[13px] font-semibold text-on-brand hover:opacity-90">Export</button>
+{% endblock %}
+
+{% macro swatch(token, size='h-2 w-2') -%}
+<span class="{{ size }} shrink-0 rounded-full
+  {%- if token == 's1' %} bg-s1
+  {%- elif token == 's2' %} bg-s2
+  {%- elif token == 's3' %} bg-s3
+  {%- elif token == 's4' %} bg-s4
+  {%- else %} bg-ink-3{% endif %}" aria-hidden="true"></span>
+{%- endmacro %}
+
 {% block content %}
-<div class="space-y-6">
-    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-        <h1 class="text-2xl font-bold text-gray-900">Contacts</h1>
-        <div class="bg-white border border-gray-200 rounded-lg px-4 py-2 text-center">
-            <div class="text-2xl font-bold text-gray-900" id="contactTotal">—</div>
-            <div class="text-xs text-gray-500 font-medium">Total contacts</div>
-        </div>
+<div class="mx-auto max-w-[1200px] space-y-4">
+
+  {# ─── Category-first import ───────────────────────────────────────────────
+     The category is chosen before the file is read, and it is required. The
+     uncategorised endpoints this replaced are retired: an untagged block of
+     contacts is one nobody can safely text. #}
+  <section id="importPanel" class="hidden rounded-xl border border-line bg-surface p-5">
+    <h2 class="text-[15px] font-semibold text-ink">Import a CSV into a category</h2>
+    <p class="mt-1 text-[13px] text-ink-2">
+      Column names are matched loosely — Phone, Cell and Mobile Number all work.
+      Preview shows exactly what the file will do before anything is written.
+    </p>
+    <div class="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-3">
+      <select id="importCategory" class="rounded-lg border border-line-strong bg-surface-2 px-3 py-2 text-[13px] text-ink">
+        <option value="">Choose a category…</option>
+        {% for tab in category_tabs if tab.id %}
+        <option value="{{ tab.id }}">{{ tab.label }}</option>
+        {% endfor %}
+      </select>
+      <input type="file" id="importFile" accept=".csv"
+             class="rounded-lg border border-line-strong bg-surface-2 px-3 py-2 text-[13px] text-ink sm:col-span-2">
+    </div>
+    <div class="mt-3 flex gap-2">
+      <button type="button" id="previewBtn"
+              class="rounded-lg border border-line-strong bg-surface px-3.5 py-2 text-[13px] font-medium text-ink hover:bg-surface-2">Preview</button>
+      <button type="button" id="commitBtn"
+              class="rounded-lg bg-brand px-3.5 py-2 text-[13px] font-semibold text-on-brand hover:opacity-90">Import</button>
+    </div>
+    <div id="previewBox" class="mt-3 hidden rounded-lg border border-line bg-surface-2 p-3 text-[13px] text-ink-2"></div>
+  </section>
+
+  {# ─── Tabs ────────────────────────────────────────────────────────────────#}
+  <div class="flex flex-wrap gap-1.5" role="tablist" aria-label="Filter by category">
+    {% for tab in category_tabs %}
+    <button type="button" role="tab" data-category-id="{{ tab.id or '' }}"
+            aria-selected="{{ 'true' if loop.first else 'false' }}"
+            class="tab inline-flex items-center gap-2 rounded-lg border px-3 py-1.5 text-[13px] transition-colors
+                   {% if loop.first %}border-brand bg-brand-soft font-medium text-brand{% else %}border-line bg-surface text-ink-2 hover:bg-surface-2{% endif %}">
+      {% if tab.id %}{{ swatch(tab.color_token) }}{% endif %}
+      <span>{{ tab.label }}</span>
+      <span class="tab-count tabular-nums text-ink-3">{{ '{:,}'.format(tab.count) }}</span>
+    </button>
+    {% endfor %}
+  </div>
+
+  <div class="rounded-xl border border-line bg-surface">
+    <div class="flex flex-col gap-3 border-b border-line p-4 sm:flex-row sm:items-center sm:justify-between">
+      <label class="relative block w-full sm:max-w-xs">
+        <span class="sr-only">Search contacts</span>
+        <input type="search" id="search" placeholder="Search name, company or number"
+               class="w-full rounded-lg border border-line-strong bg-surface-2 px-3 py-2 text-[13px] text-ink placeholder:text-ink-3
+                      focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand">
+      </label>
+      <p id="resultSummary" class="text-[12px] tabular-nums text-ink-3">—</p>
     </div>
 
-    <div class="bg-white border border-gray-200 rounded-xl p-6">
-        <h3 class="font-semibold text-gray-900">Import CSV</h3>
-        <p class="mt-1 text-sm text-gray-500">
-            Column names are matched loosely — <code class="bg-gray-100 px-1 rounded">Phone</code>,
-            <code class="bg-gray-100 px-1 rounded">Cell</code>,
-            <code class="bg-gray-100 px-1 rounded">Mobile Number</code> all work.
-            Preview first to confirm the mapping before committing.
-        </p>
-
-        <div class="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
-            <input type="file" id="csvFile" accept=".csv"
-                   class="text-sm border border-gray-300 rounded-lg px-3 py-2 sm:col-span-2">
-            <input type="text" id="listName" placeholder="Add to list (optional)"
-                   class="text-sm border border-gray-300 rounded-lg px-3 py-2">
-        </div>
-        <div class="mt-3 flex gap-2">
-            <button id="previewBtn" class="px-4 py-2 rounded-lg border border-gray-300 bg-white text-sm font-medium text-gray-700 hover:bg-gray-50">Preview</button>
-            <button id="importBtn" class="px-4 py-2 rounded-lg text-sm font-medium text-on-brand bg-brand hover:opacity-90">Import</button>
-        </div>
-
-        <div id="previewBox" class="hidden mt-4 bg-slate-50 border border-slate-200 rounded-lg p-4 text-sm"></div>
+    {# Bulk bar — only present once something is ticked. #}
+    <div id="bulkBar" class="hidden flex-wrap items-center gap-2 border-b border-line bg-surface-2 px-4 py-2.5">
+      <span id="bulkCount" class="text-[13px] font-medium text-ink"></span>
+      <select id="bulkCategory" class="rounded-lg border border-line-strong bg-surface px-2.5 py-1.5 text-[13px] text-ink">
+        <option value="">Category…</option>
+        {% for tab in category_tabs if tab.id %}
+        <option value="{{ tab.id }}">{{ tab.label }}</option>
+        {% endfor %}
+      </select>
+      <button type="button" id="bulkAdd" class="rounded-lg bg-brand px-3 py-1.5 text-[13px] font-semibold text-on-brand hover:opacity-90">Add to category</button>
+      <button type="button" id="bulkRemove" class="rounded-lg border border-line-strong px-3 py-1.5 text-[13px] font-medium text-ink hover:bg-surface">Remove from category</button>
+      <button type="button" id="bulkExport" class="rounded-lg border border-line-strong px-3 py-1.5 text-[13px] font-medium text-ink hover:bg-surface">Export selected</button>
+      <button type="button" id="bulkClear" class="ml-auto text-[12px] text-ink-3 hover:text-ink">Clear selection</button>
     </div>
 
-    <div class="bg-white border border-gray-200 rounded-xl">
-        <div class="px-6 py-4 border-b border-gray-200 flex flex-col sm:flex-row gap-3 sm:items-center sm:justify-between">
-            <h3 class="font-semibold text-gray-900">All contacts</h3>
-            <div class="flex gap-2">
-                <select id="listFilter" class="text-sm border border-gray-300 rounded-lg px-3 py-2 bg-white">
-                    <option value="">All lists</option>
-                </select>
-                <input type="search" id="search" placeholder="Search name or phone"
-                       class="text-sm border border-gray-300 rounded-lg px-3 py-2">
-            </div>
-        </div>
-        <div class="overflow-x-auto">
-            <table class="min-w-full divide-y divide-gray-200">
-                <thead class="bg-gray-50">
-                    <tr>
-                        <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase">Name</th>
-                        <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase">Phone</th>
-                        <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase">Source</th>
-                        <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase">Last messaged</th>
-                    </tr>
-                </thead>
-                <tbody id="contactBody" class="divide-y divide-gray-200">
-                    <tr><td colspan="4" class="px-4 py-8 text-center text-sm text-gray-400">Loading…</td></tr>
-                </tbody>
-            </table>
-        </div>
+    <div class="overflow-x-auto">
+      <table class="min-w-full text-left">
+        <thead>
+          <tr class="border-b border-line text-[11px] uppercase tracking-[0.06em] text-ink-3">
+            <th class="w-10 px-4 py-2.5"><input type="checkbox" id="selectPage" aria-label="Select this page"></th>
+            <th class="px-4 py-2.5 font-semibold">Name</th>
+            <th class="px-4 py-2.5 font-semibold">Number</th>
+            <th class="px-4 py-2.5 font-semibold">Categories</th>
+            <th class="px-4 py-2.5 font-semibold">Source</th>
+            <th class="px-4 py-2.5 font-semibold">Last texted</th>
+            <th class="px-4 py-2.5 text-right font-semibold">Sends</th>
+          </tr>
+        </thead>
+        <tbody id="contactBody" class="divide-y divide-line">
+          <tr><td colspan="7" class="px-4 py-10 text-center text-[13px] text-ink-3">Loading…</td></tr>
+        </tbody>
+      </table>
     </div>
+
+    <div class="flex items-center justify-between gap-3 border-t border-line px-4 py-3">
+      <span id="pageLabel" class="text-[12px] tabular-nums text-ink-3"></span>
+      <span class="flex gap-2">
+        <button type="button" id="prevPage" class="rounded-lg border border-line-strong px-3 py-1.5 text-[13px] font-medium text-ink hover:bg-surface-2 disabled:opacity-40">Previous</button>
+        <button type="button" id="nextPage" class="rounded-lg border border-line-strong px-3 py-1.5 text-[13px] font-medium text-ink hover:bg-surface-2 disabled:opacity-40">Next</button>
+      </span>
+    </div>
+  </div>
 </div>
 {% endblock %}
 
 {% block scripts %}
 <script>
-async function loadLists() {
-    const data = await api('/api/lists');
-    const select = document.getElementById('listFilter');
-    select.innerHTML = '<option value="">All lists</option>' + data.lists
-        .filter(l => l.selector.startsWith('list:'))
-        .map(l => `<option value="${l.selector.split(':')[1]}">${esc(l.label)} (${l.count.toLocaleString()})</option>`)
-        .join('');
+// Literal class names in a fixed map. Nothing here is built by concatenation —
+// Tailwind compiles what it can read in this file, and `bg-${token}` compiles
+// to nothing at all, which is a chip with no colour and no error.
+const SWATCH = { s1: 'bg-s1', s2: 'bg-s2', s3: 'bg-s3', s4: 'bg-s4', neutral: 'bg-ink-3' };
+
+const state = { q: '', categoryId: '', page: 1, pages: 1, selected: new Set() };
+
+function params(extra) {
+    const p = new URLSearchParams(extra || {});
+    if (state.q) p.set('q', state.q);
+    if (state.categoryId) p.set('category_id', state.categoryId);
+    return p;
+}
+
+function chipHtml(c) {
+    return `<span class="inline-flex items-center gap-1.5 rounded-full border border-line bg-surface-2 px-2 py-0.5 text-[11px] text-ink-2">
+        <span class="h-1.5 w-1.5 rounded-full ${SWATCH[c.color_token] || SWATCH.neutral}"></span>${esc(c.label)}</span>`;
+}
+
+function emptyState() {
+    // Two different nothings. "No contacts yet" and "nothing matched that
+    // search" need different next actions, and a single blank row gives neither.
+    if (state.q || state.categoryId) {
+        return `<tr><td colspan="7" class="px-4 py-10 text-center text-[13px] text-ink-2">
+            Nothing here matches that filter.
+            <button type="button" id="clearFilters" class="text-brand underline">Clear the search and show everyone</button>.</td></tr>`;
+    }
+    return `<tr><td colspan="7" class="px-4 py-10 text-center text-[13px] text-ink-2">
+        No contacts yet. Import a CSV into a category to get started —
+        <button type="button" id="openImport" class="text-brand underline">Import CSV</button>.</td></tr>`;
+}
+
+function rowHtml(c) {
+    const checked = state.selected.has(c.id) ? 'checked' : '';
+    return `<tr class="hover:bg-surface-2">
+        <td class="px-4 py-2.5 align-top"><input type="checkbox" class="rowCheck" data-id="${c.id}" ${checked} aria-label="Select ${esc(c.full_name || c.phone)}"></td>
+        <td class="px-4 py-2.5 align-top">
+            <div class="text-[13px] font-medium text-ink">${esc(c.full_name || '—')}</div>
+            ${c.company ? `<div class="text-[12px] text-ink-3">${esc(c.company)}</div>` : ''}
+        </td>
+        <td class="px-4 py-2.5 align-top font-mono text-[12px] tracking-tight text-ink-2">${esc(c.phone)}</td>
+        <td class="px-4 py-2.5 align-top"><div class="flex flex-wrap gap-1">${c.categories.map(chipHtml).join('') || '<span class="text-[12px] text-ink-3">Untagged</span>'}</div></td>
+        <td class="px-4 py-2.5 align-top text-[12px] text-ink-3">${esc(c.source || '—')}</td>
+        <td class="px-4 py-2.5 align-top text-[12px] text-ink-3">${esc(fmtDate(c.last_texted))}</td>
+        <td class="px-4 py-2.5 align-top text-right text-[12px] tabular-nums text-ink-2">${c.send_count.toLocaleString()}</td>
+    </tr>`;
 }
 
 async function loadContacts() {
-    const q = document.getElementById('search').value.trim();
-    const listId = document.getElementById('listFilter').value;
-    const params = new URLSearchParams();
-    if (q) params.set('q', q);
-    if (listId) params.set('list_id', listId);
-
-    const data = await api('/api/contacts?' + params);
-    document.getElementById('contactTotal').textContent = data.total.toLocaleString();
+    const data = await api('/api/contacts?' + params({ page: state.page }));
+    state.page = data.page;
+    state.pages = data.pages;
 
     const body = document.getElementById('contactBody');
-    if (!data.contacts.length) {
-        body.innerHTML = '<tr><td colspan="4" class="px-4 py-8 text-center text-sm text-gray-400">No contacts found</td></tr>';
-        return;
+    body.innerHTML = data.contacts.length ? data.contacts.map(rowHtml).join('') : emptyState();
+
+    const first = data.total ? (data.page - 1) * data.per_page + 1 : 0;
+    const last = first ? first + data.contacts.length - 1 : 0;
+    document.getElementById('resultSummary').textContent =
+        data.total ? `${first.toLocaleString()}–${last.toLocaleString()} of ${data.total.toLocaleString()}` : 'No matches';
+    document.getElementById('pageLabel').textContent = `Page ${data.page} of ${data.pages}`;
+    document.getElementById('prevPage').disabled = data.page <= 1;
+    document.getElementById('nextPage').disabled = data.page >= data.pages;
+    document.getElementById('selectPage').checked = false;
+    paintBulkBar();
+}
+
+async function refreshTabCounts() {
+    const data = await api('/api/contacts/categories');
+    const byId = Object.fromEntries(data.tabs.map(t => [String(t.id || ''), t.count]));
+    document.querySelectorAll('.tab').forEach(tab => {
+        const count = byId[tab.dataset.categoryId];
+        if (count !== undefined) tab.querySelector('.tab-count').textContent = count.toLocaleString();
+    });
+}
+
+function paintBulkBar() {
+    const bar = document.getElementById('bulkBar');
+    bar.classList.toggle('hidden', state.selected.size === 0);
+    bar.classList.toggle('flex', state.selected.size > 0);
+    document.getElementById('bulkCount').textContent = `${state.selected.size.toLocaleString()} selected`;
+}
+
+// ─── Events ────────────────────────────────────────────────────────────────
+
+document.querySelectorAll('.tab').forEach(tab => tab.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach(other => {
+        const on = other === tab;
+        other.setAttribute('aria-selected', String(on));
+        other.classList.toggle('border-brand', on);
+        other.classList.toggle('bg-brand-soft', on);
+        other.classList.toggle('font-medium', on);
+        other.classList.toggle('text-brand', on);
+        other.classList.toggle('border-line', !on);
+        other.classList.toggle('bg-surface', !on);
+        other.classList.toggle('text-ink-2', !on);
+    });
+    state.categoryId = tab.dataset.categoryId;
+    state.page = 1;
+    loadContacts();
+}));
+
+let searchTimer;
+document.getElementById('search').addEventListener('input', (e) => {
+    clearTimeout(searchTimer);
+    state.q = e.target.value.trim();
+    state.page = 1;
+    searchTimer = setTimeout(loadContacts, 250);
+});
+
+document.getElementById('prevPage').addEventListener('click', () => {
+    if (state.page > 1) { state.page -= 1; loadContacts(); }
+});
+document.getElementById('nextPage').addEventListener('click', () => {
+    if (state.page < state.pages) { state.page += 1; loadContacts(); }
+});
+
+document.getElementById('contactBody').addEventListener('change', (e) => {
+    if (!e.target.classList.contains('rowCheck')) return;
+    const id = Number(e.target.dataset.id);
+    e.target.checked ? state.selected.add(id) : state.selected.delete(id);
+    paintBulkBar();
+});
+
+document.getElementById('contactBody').addEventListener('click', (e) => {
+    if (e.target.id === 'clearFilters') {
+        document.getElementById('search').value = '';
+        state.q = ''; state.categoryId = ''; state.page = 1;
+        document.querySelector('.tab').click();
     }
-    body.innerHTML = data.contacts.map(c => `
-        <tr class="hover:bg-gray-50">
-            <td class="px-4 py-3 text-sm font-medium text-gray-900">${esc(c.full_name || '—')}</td>
-            <td class="px-4 py-3 text-sm text-gray-600 font-mono">${esc(c.phone)}</td>
-            <td class="px-4 py-3 text-sm text-gray-500">${esc(c.source || '—')}</td>
-            <td class="px-4 py-3 text-sm text-gray-500">${esc(fmtDate(c.last_messaged_at))}</td>
-        </tr>`).join('');
+    if (e.target.id === 'openImport') document.getElementById('importToggle').click();
+});
+
+document.getElementById('selectPage').addEventListener('change', (e) => {
+    document.querySelectorAll('.rowCheck').forEach(box => {
+        box.checked = e.target.checked;
+        const id = Number(box.dataset.id);
+        e.target.checked ? state.selected.add(id) : state.selected.delete(id);
+    });
+    paintBulkBar();
+});
+
+document.getElementById('bulkClear').addEventListener('click', () => {
+    state.selected.clear();
+    document.querySelectorAll('.rowCheck').forEach(box => { box.checked = false; });
+    paintBulkBar();
+});
+
+async function bulkCategory(action) {
+    const categoryId = Number(document.getElementById('bulkCategory').value);
+    if (!categoryId) { showToast('Choose a category first', 'error'); return; }
+
+    const res = await fetch(`/api/contacts/bulk/${action}-category`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ contact_ids: [...state.selected], category_id: categoryId }),
+    });
+    const data = await res.json();
+    if (!res.ok) { showToast(data.detail || 'That did not work', 'error'); return; }
+
+    showToast(action === 'add'
+        ? `${data.added.toLocaleString()} tagged, ${data.already_tagged.toLocaleString()} already there`
+        : `${data.removed.toLocaleString()} untagged`);
+    state.selected.clear();
+    await Promise.all([loadContacts(), refreshTabCounts()]);
+}
+
+document.getElementById('bulkAdd').addEventListener('click', () => bulkCategory('add'));
+document.getElementById('bulkRemove').addEventListener('click', () => bulkCategory('remove'));
+document.getElementById('bulkExport').addEventListener('click', () => {
+    window.location = '/api/contacts/export.csv?' + new URLSearchParams({ ids: [...state.selected].join(',') });
+});
+document.getElementById('exportAll').addEventListener('click', () => {
+    window.location = '/api/contacts/export.csv?' + params();
+});
+
+// ─── Import ────────────────────────────────────────────────────────────────
+
+document.getElementById('importToggle').addEventListener('click', () => {
+    document.getElementById('importPanel').classList.toggle('hidden');
+});
+
+function importForm() {
+    const file = document.getElementById('importFile').files[0];
+    const categoryId = document.getElementById('importCategory').value;
+    if (!categoryId) { showToast('Choose the category this file belongs to', 'error'); return null; }
+    if (!file) { showToast('Choose a CSV first', 'error'); return null; }
+    const form = new FormData();
+    form.append('file', file);
+    form.append('category_id', categoryId);
+    return form;
 }
 
 document.getElementById('previewBtn').addEventListener('click', async () => {
-    const file = document.getElementById('csvFile').files[0];
-    if (!file) { showToast('Choose a CSV first', 'error'); return; }
-
-    const form = new FormData();
-    form.append('file', file);
-    const res = await fetch('/api/contacts/import/preview', { method: 'POST', body: form });
+    const form = importForm();
+    if (!form) return;
+    const res = await fetch('/api/imports/preview', { method: 'POST', body: form });
     const data = await res.json();
-
     const box = document.getElementById('previewBox');
     box.classList.remove('hidden');
-    if (!res.ok) { box.innerHTML = `<span class="text-red-700">${esc(data.detail)}</span>`; return; }
-
-    const rows = data.sample.map(r =>
-        `<tr><td class="pr-4 py-0.5">${esc(r.name || '—')}</td><td class="pr-4 py-0.5 font-mono">${esc(r.phone || '—')}</td><td class="py-0.5">${esc(r.email || '—')}</td></tr>`
-    ).join('');
+    if (!res.ok) { box.innerHTML = `<span class="text-crit">${esc(data.detail)}</span>`; return; }
 
     box.innerHTML = `
-        <div class="font-medium text-gray-900 mb-2">Detected mapping</div>
-        <div class="text-xs text-gray-600 mb-3">
-            ${Object.entries(data.mapped).map(([raw, field]) => `<span class="inline-block bg-white border rounded px-2 py-0.5 mr-1 mb-1">${esc(raw)} → ${esc(field)}</span>`).join('')}
-            ${data.unmapped.length ? `<div class="mt-2 text-gray-400">Kept as attributes: ${data.unmapped.map(esc).join(', ')}</div>` : ''}
-        </div>
-        <table class="text-xs"><thead><tr class="text-gray-400"><th class="text-left pr-4">Name</th><th class="text-left pr-4">Phone</th><th class="text-left">Email</th></tr></thead><tbody>${rows}</tbody></table>`;
+        <div class="font-medium text-ink">${esc(data.category_label)} — ${data.rows.toLocaleString()} rows</div>
+        <ul class="mt-1.5 space-y-0.5">
+            <li>${data.new_contacts.toLocaleString()} new contacts</li>
+            <li>${data.existing_contacts.toLocaleString()} already known, will be tagged</li>
+            <li>${data.already_in_category.toLocaleString()} already in this category</li>
+            <li>${data.opted_out.toLocaleString()} opted out — skipped</li>
+            <li>${data.unusable.toLocaleString()} unusable numbers · ${data.duplicates.toLocaleString()} repeated in the file</li>
+        </ul>`;
 });
 
-document.getElementById('importBtn').addEventListener('click', async function () {
-    const file = document.getElementById('csvFile').files[0];
-    if (!file) { showToast('Choose a CSV first', 'error'); return; }
-
-    const form = new FormData();
-    form.append('file', file);
-    const listName = document.getElementById('listName').value.trim();
-    if (listName) form.append('list_name', listName);
-
+document.getElementById('commitBtn').addEventListener('click', async function () {
+    const form = importForm();
+    if (!form) return;
     this.disabled = true;
     try {
-        const res = await fetch('/api/contacts/import', { method: 'POST', body: form });
+        const res = await fetch('/api/imports/commit', { method: 'POST', body: form });
         const data = await res.json();
         if (!res.ok) { showToast(data.detail || 'Import failed', 'error'); return; }
-        showToast(`${data.created.toLocaleString()} new, ${data.updated.toLocaleString()} updated, ` +
-                  `${data.duplicates.toLocaleString()} duplicate, ${data.invalid.toLocaleString()} invalid`);
-        loadContacts();
-        loadLists();
+        showToast(`${data.new_contacts.toLocaleString()} added, ${data.existing_contacts.toLocaleString()} tagged`);
+        await Promise.all([loadContacts(), refreshTabCounts()]);
     } finally {
         this.disabled = false;
     }
 });
 
-let searchTimer;
-document.getElementById('search').addEventListener('input', () => {
-    clearTimeout(searchTimer);
-    searchTimer = setTimeout(loadContacts, 300);
-});
-document.getElementById('listFilter').addEventListener('change', loadContacts);
-
-loadLists();
 loadContacts();
 </script>
 {% endblock %}

@@ -22,8 +22,8 @@ from app.core.database import engine
 from app.sms.factory import get_provider
 import app.models                                    # noqa: F401 — registers tables
 
-from app.routers import (pages, campaigns, contacts, categories, imports, blocklist,
-                         usage, settings as settings_router)
+from app.routers import (pages, dashboard, campaigns, contacts, categories, imports,
+                         blocklist, usage, settings as settings_router)
 from app.routers.webhooks import telnyx as telnyx_webhooks, twilio as twilio_webhooks
 
 logger = logging.getLogger("app")
@@ -146,6 +146,8 @@ app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 app.include_router(pages.router)
+app.include_router(dashboard.router)
+app.include_router(dashboard.api_router)
 app.include_router(campaigns.router)
 app.include_router(contacts.router)
 app.include_router(contacts.lists_router)
