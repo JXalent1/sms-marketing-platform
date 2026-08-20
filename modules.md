@@ -25,11 +25,11 @@ client sending real campaigns.
 | 1 | Foundation, pricing & white-label | Built | — | see below |
 | 1b | Module 1 review fixes | Done | 1 | `app/routers/campaigns.py`, `app/templates/campaigns.html`, `app/services/billing_service.py`, `app/services/campaign_service.py`, `app/core/config.py`, `app/main.py`, `tests/**`, `README.md`, `deployment/deploy.sh` |
 | 2 | Categories & segmented upload | Done | 1b | `app/models/category.py`, `app/models/__init__.py`, `app/services/category_service.py`, `app/services/contact_service.py`, `app/services/import_service.py`, `app/routers/categories.py`, `app/routers/contacts.py`, `app/sources/csv_source.py`, `alembic/versions/*`, `tests/test_categories.py`, `tests/test_import.py` |
-| 3a | UI shell (base.html only) | Next | 2 | `app/templates/base.html`, `app/routers/pages.py` |
-| 3b | Today + Contacts screens | Not started | 3a | `app/templates/today.html`, `app/templates/contacts.html`, `app/routers/dashboard.py`, `app/services/dashboard_service.py`, `tests/test_dashboard.py`, `tests/test_contacts_api.py` |
-| 4 | Composer & campaign guardrails | Not started | 3a | `app/models/campaign.py`, `app/services/campaign_service.py`, `app/routers/campaigns.py`, `app/templates/campaigns.html`, `alembic/versions/*`, `tests/test_campaign_guardrails.py` |
+| 3a | UI shell (base.html only) | Done | 2 | `app/templates/base.html`, `app/routers/pages.py` |
+| 3b | Today + Contacts screens | Done | 3a | `app/templates/today.html`, `app/templates/contacts.html`, `app/routers/dashboard.py`, `app/services/dashboard_service.py`, `tests/test_dashboard.py`, `tests/test_contacts_api.py` |
+| 4 | Composer & campaign guardrails | Done | 3a | `app/models/campaign.py`, `app/services/campaign_service.py`, `app/routers/campaigns.py`, `app/templates/campaigns.html`, `alembic/versions/*`, `tests/test_campaign_guardrails.py` |
 | 5a | Deploy scaffolding | Done · gaps for 5b | 1b | `deployment/**`, `scripts/backup.sh`, `docs/CLIENT_GUIDE.md`, `README.md` |
-| 5b | **Go live** | Not started | 3b, 4, 5a | `deployment/**`, `scripts/**`, `.env.example`, `docs/CLIENT_GUIDE.md`, `app/main.py` |
+| 5b | **Go live** | Next — last one | 3b, 4, 5a | `deployment/**`, `scripts/**`, `.env.example`, `docs/CLIENT_GUIDE.md`, `app/main.py` |
 
 **That's the launch — six sessions, but only four waves. See "Parallel plan" below.**
 
