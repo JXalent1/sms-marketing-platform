@@ -32,6 +32,8 @@ from app.main import app
 from app.models.campaign import Campaign
 from app.services import contact_service
 from app.services.campaign_service import CampaignService
+from app.sms import factory
+from tests._provider_setup import degraded_provider
 
 PASSWORD = os.environ["ADMIN_PASSWORD"]
 
@@ -149,6 +151,40 @@ def test_no_response_names_the_carrier(client):
         if CARRIER_RE.search(response.text):
             offenders.append(f"{path} -> {CARRIER_RE.search(response.text).group(0)}")
     assert not offenders, f"carrier name reached a client response: {offenders}"
+
+
+def test_degraded_send_path_names_no_carrier(client):
+    """Every route again, this time with the carrier failing to start.
+
+    The scan above runs on the console provider, where nothing in the process
+    has ever held the carrier's name. The degraded state is the opposite case:
+    the app is holding a raw SDK exception that says "module 'telnyx' has no
+    attribute 'Telnyx'", and it is describing that failure on six screens and in
+    a JSON payload. Those strings are new as of session 5c, they are the ones a
+    future reader is most tempted to make "more helpful" by pasting the
+    exception into, and no grep of the templates could tell.
+    """
+    with degraded_provider():
+        assert CARRIER_RE.search(factory.provider_fallback().error), (
+            "the harness must reproduce an error that names the carrier, or "
+            "this test proves nothing"
+        )
+        # Two positive controls before the sweep. The routes below return a mix
+        # of 200s and 404s by design, so a blanket status assertion inside the
+        # loop would be wrong — but "no carrier name" is equally true of a 302
+        # to /login, so prove first that this client is authenticated and that
+        # the degraded state is actually in effect while the scan runs.
+        settings_page = client.get("/settings")
+        assert settings_page.status_code == 200, settings_page.status_code
+        assert 'data-mode="unavailable"' in settings_page.text, (
+            "the sweep below would have scanned pages in the ordinary dry-run state"
+        )
+        offenders = []
+        for path in _get_routes():
+            response = client.get(_fill(path))
+            if CARRIER_RE.search(response.text):
+                offenders.append(f"{path} -> {CARRIER_RE.search(response.text).group(0)}")
+    assert not offenders, f"carrier name reached a client response while degraded: {offenders}"
 
 
 def test_post_responses_do_not_name_the_carrier(client):

@@ -43,7 +43,13 @@ sms-marketing-platform/
 
 These are the commands acceptance criteria reference. Run them and show the output.
 
-- **Tests:** `python -m pytest tests/ -q` — must exit 0. **76 passing as of module 2.**
+- **Run everything inside the project venv.** `agent/gate.sh` and the commands below
+  call bare `python` and `alembic`, so they test whatever is first on `PATH`. If that
+  is a system or conda python, the gate dies at collection with
+  `ModuleNotFoundError: slowapi` and reports **"test suite is red"** — a true statement
+  about the wrong interpreter, and a convincing false alarm. Either activate `.venv`
+  or run `PATH="$PWD/.venv/bin:$PATH" bash agent/gate.sh`.
+- **Tests:** `python -m pytest tests/ -q` — must exit 0. **145 passing as of session 5c.**
   A lower count means you are on a stale branch, not that tests vanished.
 - **Migrations:** `alembic upgrade head` — must succeed from a clean DB.
 - **Run it:** `./run.sh` then `curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/login` → `200`
@@ -128,6 +134,21 @@ change to a live table.
   for literals and structurally cannot see any of them. When you add a client-facing
   surface, ask what the string is *built from*, not just what it contains — and add a case
   to `tests/test_whitelabel.py`, which runs the code rather than reading it.
+- **A degraded fallback must not look like a chosen one.** `get_provider()` falling back
+  to console when a carrier credential is wrong is correct — a dashboard must not die
+  over a credential. What broke the launch was that the product then *described* the
+  result as a deliberate dry run: same pill, same badge, same wording, with the real
+  cause in an ERROR line in a journal the service account could not read. A live box sat
+  unable to send while every screen said it was fine. Any fallback you add gets three
+  states, not two, and the failed one says so on screen. `send_mode()` in
+  `app/sms/factory.py` is the pattern: one function owns the client-safe wording, every
+  surface renders it verbatim, and the exception stays in the log.
+- **A pinned SDK is a runtime contract, not a version number.** `requirements.txt` said
+  `telnyx==2.1.2` while the provider was written against the 4.x client class. Nothing
+  failed at import, at boot or in the suite — the app served every page. If a module
+  drives a third-party API, assert the shape it drives in a test
+  (`tests/test_provider_status.py`), so a bad pin fails at `pip install` rather than on
+  the morning of a sale.
 - **`WHOLESALE_COST_PER_SEGMENT` is our cost, not the client's price.** It must never
   reach a response body, a template, or a log the client can see. The client's rate is
   `BILLING_PRICE_PER_SEGMENT`. Showing him the wholesale number discloses our margin and

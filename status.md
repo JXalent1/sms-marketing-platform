@@ -1,6 +1,6 @@
 # Status
 
-_Last updated: 2026-08-19_
+_Last updated: 2026-08-20_
 
 ## Where we are
 Module 3a complete — the dark application shell is in, every existing page still
@@ -548,6 +548,19 @@ reasoning is written into the test file so the next reader does not re-derive it
   uncategorised import flow and does not mention categories, pre-flight or the
   composer. Not touched — 5b's file list does not include it, and it is the
   skeleton's doc rather than this client's.
+- **`requirements.txt` pinned a carrier SDK the provider cannot drive.** Found at
+  launch, on the box, with `SMS_PROVIDER` already flipped to the live carrier: the
+  pin was `telnyx==2.1.2`, `app/sms/providers/telnyx.py:35` constructs the 4.x
+  client class, `__init__` died on `AttributeError: module 'telnyx' has no
+  attribute 'Telnyx'`, and `get_provider()` caught it and fell back to console.
+  The app served every screen, the dashboard showed the ordinary amber "Dry run"
+  pill, the sender number rendered in the sidebar, and nothing could send. The
+  only record was an ERROR line in a journal `appuser` is not in the `adm` group
+  to read. Two defects in one incident: the pin, and a fallback that is invisible
+  by design.
+  <br>_Fixed in session 5c: pin bumped to 4.175.0 and verified against the real
+  package; the fallback is now recorded and rendered as a third send mode._
+
 - **Nothing refuses to boot without a `SECRET_KEY`.** `app/core/config.py:36`
   defaults it to `""` and `app/core/auth.py:59` hands that straight to
   `URLSafeTimedSerializer`, which signs session cookies with it quite happily.
@@ -565,3 +578,173 @@ reasoning is written into the test file so the next reader does not re-derive it
   the dangerous case is precisely the box where `ENVIRONMENT` was never set.
   `app/core/config.py` belongs to no current module, so this is a note rather
   than a drive-by fix.
+
+---
+
+## Module 5c Part A — live-send blockers (appended by session 5c, 2026-08-20)
+
+**Status: Part A complete. Part B is Jordan's and was not attempted.** Nothing in
+this session can send a message: `SMS_PROVIDER` is `console` in every file
+touched and in `tests/conftest.py`, no live credential was read or written, and
+the only carrier object built anywhere is constructed with a visibly fake key and
+never called. No contacts were imported.
+
+Gate green at both ends. **133 tests at start, 145 at end** (+12: 11 provider
+status, 1 white-label). Suite run twice, green both.
+
+### A1 — the pin
+
+`requirements.txt` now pins `telnyx==4.175.0`. Verified against the real package
+rather than taken from the spec, in a venv built from `requirements.txt` alone:
+
+- `client.messages.send()` accepts `to`, `from_`, `text`, `messaging_profile_id`
+  (and returns `MessageSendResponse`, whose `.data` carries `id` and `parts`)
+- `client.messages.retrieve(id=...)` still exists and its payload still has
+  `to[].status`, which is what `get_message_status()` reads — the provider's
+  other SDK call, which the spec did not name and which would have failed the
+  same silent way
+- its declared deps are `anyio<5`, `distro<2`, `httpx<1`, `pydantic<3`,
+  `sniffio`, `typing-extensions>=4.14`
+
+**Nothing else in `requirements.txt` resolves differently.** Diffing a full
+install of the old pins against the new ones, the only changes are telnyx itself,
+`distro` arriving, and `cffi`/`pycparser`/`PyNaCl` leaving — 2.x transitives that
+nothing in this codebase imports. Every other version is identical.
+
+### A2 — a failed provider no longer looks like a chosen one
+
+`get_provider()` records a `ProviderFallback` (requested provider, exception type,
+raw message) instead of only logging one, and `send_mode()` turns the two-state
+"is it console?" question into three: `live`, `dry_run`, `unavailable`.
+
+- The wording lives in `app/sms/factory.py`, next to the fallback that causes it
+  and behind the same boundary as `scrub_provider_text()`. The pill and the
+  Settings page render `label`/`detail` verbatim; neither computes its own
+  answer, so they cannot disagree the way the API and the UI did before.
+- `/api/settings/system` keeps `dry_run` but narrows it to *chosen* dry run, and
+  adds `sending_unavailable`, `send_mode`, `send_mode_label`, `send_mode_detail`.
+- The top-bar pill carries `data-mode` and goes red with different words. It is
+  in the shell, so it is on all six screens — the state matters most on Today and
+  Compose, which is where he actually is.
+- The Settings banner renders **server-side** from the shell context rather than
+  from the `/api/settings/system` fetch. A page that announces an outage only
+  once a script has run announces it last, or never if the fetch is the thing
+  that broke.
+- The exception text stays in the log. It says `module 'telnyx' has no attribute
+  'Telnyx'` — the carrier's name, twice, in the one string a future reader is
+  most tempted to render "so support can see what broke".
+
+### A3 — the tests that would have caught it
+
+`tests/test_provider_status.py` (11) and one addition to `tests/test_whitelabel.py`,
+sharing `tests/_provider_setup.py`, which drives the factory into each of its
+three states and always restores it. All ten run authenticated; the new module
+resets the login limiter around itself, because the suite was at nine logins
+against a 10/minute cap and a tenth would have started failing modules on 429s
+that read like auth bugs.
+
+The one that matters most is the cheapest: `test_carrier_sdk_matches_the_provider_
+it_is_used_through` asserts the installed SDK has the client class the provider
+constructs. That is the whole of the launch-day bug, and it fails on
+`pip install -r requirements.txt` rather than on the morning of a sale.
+
+### A4 — nginx security headers
+
+`deployment/nginx.conf.template` sets HSTS (`max-age=300`, deliberately five
+minutes — HSTS is not revocable and this has to be walkable-back),
+`X-Frame-Options DENY`, `X-Content-Type-Options nosniff`,
+`Referrer-Policy same-origin`, and a CSP matching the app's actual profile:
+`default-src 'self'` with `'unsafe-inline'` for scripts and styles, which is
+load-bearing (the pre-paint theme script, per-page script blocks, `_brand.html`'s
+inline palette, two screens' style attributes) and not laziness.
+
+Verified by running nginx over the rendered template in a container with the app
+behind it: config test passes, all five headers are present on a page, on a 404
+from the app and on nginx's own 404 for `/.env`, and `/static/app.css` plus all
+four Inter weights return 200 with the policy applied. The compiled stylesheet
+references the fonts as `/static/fonts/...` — same-origin, so `font-src 'self'`
+covers them.
+
+**The live box is not updated.** `appuser` has sudo for `systemctl restart
+a4a-sms` only, `deploy.sh` does not touch nginx, and the spec says not to
+hand-edit the box. The template's header comment now carries the merge-into-an-
+existing-certbot-block instructions and the two curl commands that prove it
+worked.
+
+### A5 — this file
+
+The `SECRET_KEY` note was already committed (in `0e89818`, with the 5c spec), so
+there was nothing uncommitted to rescue; the telnyx entry is filed beside it
+above.
+
+### Acceptance
+
+`agent/accept-5c.sh` is the Part A stop condition — the six criteria from
+`sessions/session-5c.md`, each as a check that runs rather than a claim. Criteria
+1-5 pass locally. Criterion 6 needs the deployed site and is opt-in:
+
+    A4A_URL=https://... A4A_PASSWORD=... bash agent/accept-5c.sh --with-remote
+
+Criterion 5 is the interesting one: it checks out the pre-fix commit into a
+worktree, builds a venv from *that* tree's `requirements.txt` (old pin included,
+since the old pin is half the bug), copies the new tests in and requires them to
+fail. All nine do.
+
+### Found while working (session 5c)
+
+- **A degraded box still accepts campaigns, marks every message `sent`, and bills
+  for them.** Nothing on the send path consults `send_mode()`.
+  `campaign_service.py:64` holds the console fallback, `console.py:43` answers the
+  pre-flight balance question with `999_999.0` ("never trips the pre-flight
+  check"), `console.py:35-40` reports every send successful,
+  `campaign_service.py:356` writes `status="sent"`, and `sent` is in
+  `BILLABLE_STATUSES`. So on a live box whose carrier failed to start, all 1,223
+  contacts can be "sent" to, every row goes green, and the segments are counted
+  against the 10,000 and invoiced — for messages nobody received. The pre-flight
+  check, the safeguard that exists for precisely this, cannot fire because the
+  provider it interrogates is a stub with a bottomless balance.
+  Not a regression — identical before 5c, and correct in a *chosen* dry run. What
+  changed is that the two cases are now distinguishable, so acting on the
+  difference is possible for the first time. A fix touches the billable-status
+  set and the pre-flight check, both escalation items, so it is
+  **`decisions/002-degraded-box-still-bills.open.md`** rather than a quiet edit.
+  Found by the fresh-context review of this session.
+- **An unknown `SMS_PROVIDER` is the one misconfiguration with no send mode.**
+  `factory.py:100` raises `ValueError` rather than degrading, so every page 500s
+  — three lines above a docstring arguing that a bad configuration "should
+  degrade to 'sends nothing', never to a crash loop on a box that is also serving
+  the client's dashboard". Loud beats silent and this may well be right, but it
+  is currently an accident of ordering rather than a decision, and the new
+  three-mode enum has no state for it. Pre-existing; not changed here, because
+  what a misconfigured box should do is not an implementation detail.
+
+- **`agent/gate.sh` runs bare `python` and `alembic`, so it tests whatever is
+  first on `PATH`.** On this machine that is a conda base env, where the gate
+  dies at collection with `ModuleNotFoundError: slowapi` and reports "test suite
+  is red" — a true statement about the wrong interpreter, and a very convincing
+  false alarm for the next agent. `accept-5c.sh` puts `.venv/bin` in front before
+  calling it, and `CLAUDE.md` now says to. The gate itself is human-only, so the
+  fix is escalated: **`decisions/001-gate-interpreter-path.open.md`**. That file
+  also records two problems in `.claude/hooks/verify-gate.sh` found alongside it
+  — its stdin JSON parse raises, so `stop_hook_active` is never set and the
+  `MAX_GATE_ATTEMPTS` guard can never fire, and the attempt counter degrades to a
+  single fixed path (`/tmp/gate-attempts-`) shared across every session. This one
+  was on attempt 22 of 4.
+- **`docs/API.md:280-283` describes `/api/settings/system` as the place to find
+  the webhook URL.** Worse than merely stale: that field was *removed* on
+  white-label grounds — it was `PUBLIC_BASE_URL + "/webhooks/" + provider.name`,
+  so it printed the carrier's name onto a client-facing screen — and
+  `tests/test_whitelabel.py::test_system_info_exposes_no_webhook_url` pins its
+  absence. The doc tells a reader to look for something the code deliberately
+  does not return. The same entry now also misses this session's additions:
+  `send_mode`, `send_mode_label`, `send_mode_detail` and `sending_unavailable`
+  are new, and `dry_run` narrowed to mean a *chosen* dry run. Docs are module
+  8's and `docs/` is not in 5c's file list, so this was left rather than quietly
+  widened.
+- **`docs/RUNBOOK.md:147` and `docs/CLIENT_GUIDE.md:145-150` describe the pill as
+  two-state.** Both say it reads "Dry run" whenever the provider is console,
+  which was the defect. Same owner, same reason for leaving it, and the client
+  guide is the one he actually reads.
+- **The live box still has the pre-5c nginx config and the hot-patched SDK.** The
+  repo is now the truth for both, but neither reaches the server without a deploy
+  (SDK) and a human with root (nginx).

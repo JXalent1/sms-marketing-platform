@@ -1,6 +1,6 @@
 # Handoff
 
-_Last updated: 2026-08-19_
+_Last updated: 2026-08-20_
 
 ## What just happened
 
@@ -298,3 +298,85 @@ directions. Do not "fix" the test back toward the spec.
   `app/routers/usage.py`'s wholesale-rate literal is still its note to close.
 - **`docs/NEW_CLIENT_CHECKLIST.md`** still predates the category work. Out of
   5b's file list.
+
+---
+
+# Session 5c handoff — live-send blockers (2026-08-20)
+
+## Where this leaves things
+
+Part A is done and its acceptance runs as a script rather than a claim:
+`bash agent/accept-5c.sh`. Criteria 1-5 pass. **Criterion 6 does not — it needs
+the deploy, and the deploy is Jordan's.** Until it runs, the live box is still on
+the hot-patched SDK and the pre-5c nginx config; the repo is ahead of the server
+on both.
+
+Nothing here can send. `SMS_PROVIDER` is `console` in every file this session
+touched, no live credential was read or written, and no contacts were imported.
+
+## What landed
+
+- **`telnyx==4.175.0`** in `requirements.txt`, verified against the real package
+  in a venv built from `requirements.txt` alone — the send call, the response
+  shape, *and* `messages.retrieve()`, which `get_message_status()` uses and which
+  the spec did not name. Nothing else in the file resolves differently: diffing
+  full installs of the old and new pins, only telnyx moves, `distro` arrives and
+  three 2.x transitives nothing imports (`cffi`, `pycparser`, `PyNaCl`) leave.
+- **A third send mode.** `get_provider()` now records a `ProviderFallback`
+  instead of only logging one, and `send_mode()` in `app/sms/factory.py` returns
+  `live` / `dry_run` / `unavailable`. The pill, the Settings banner and
+  `/api/settings/system` all render its `label`/`detail` verbatim.
+- **Twelve tests**, in `tests/test_provider_status.py` and `tests/test_whitelabel.py`,
+  over `tests/_provider_setup.py`. All ten fail against the pre-fix tree — the
+  acceptance script proves it by checking out that commit and running them there.
+- **Security headers and a CSP** in `deployment/nginx.conf.template`.
+
+## Four things worth knowing before you touch any of it
+
+**`shell_context()`'s `send_mode` changed meaning.** It used to be the label
+("Live" / "Dry run"); it is now the state key (`live` / `dry_run` /
+`unavailable`), and the label is `send_mode_label`. The session 3a section above
+still describes the old shape. Only `base.html` consumed it, and it was updated
+in step.
+
+**The wording lives in one place on purpose.** `SEND_MODES` in
+`app/sms/factory.py`. That module knows the carrier's name, which is exactly why
+it owns the client-safe projection of the carrier's state — the same argument
+that puts `scrub_provider_text()` in `app/sms/phone.py`. A surface that computes
+its own answer is how the API and the UI came to disagree in the first place.
+
+**`ProviderFallback.error` is raw SDK text and names the carrier.** It says
+`module 'telnyx' has no attribute 'Telnyx'`. It is deliberately not in any
+response, and `test_degraded_send_path_names_no_carrier` re-scans every
+client-facing route with that string held in memory. Do not "help support" by
+rendering it.
+
+**Anything that flips the provider must restore it.** `factory` caches one
+instance per process and the suite shares it; `CampaignService` resolves the
+provider when it is constructed. Use the context managers in
+`tests/_provider_setup.py` rather than assigning `settings.SMS_PROVIDER` by hand.
+
+## Verified this session
+
+- Gate green at both ends — 133 start, 145 end
+- Suite twice, 145 both
+- Clean venv from `requirements.txt` installs 4.175.0 and `TelnyxProvider()`
+  constructs against it — construction only, nothing sent
+- The nginx template run in a real nginx (container) with the app behind it: all
+  five headers present on a page, on an app 404 and on nginx's own `/.env` 404;
+  `/static/app.css` and all four Inter weights 200 under the CSP
+- The new tests fail 11/11 against `0e89818` with that tree's own pins
+
+## Not done, and deliberately
+
+- **The deploy, and therefore acceptance criterion 6.** Run it, then
+  `A4A_URL=... A4A_PASSWORD=... bash agent/accept-5c.sh --with-remote`.
+- **The nginx config on the box.** `deploy.sh` does not touch nginx and `appuser`
+  has no root. The template's header comment carries the merge instructions and
+  the two curls that prove it took.
+- **All of Part B.** Contacts, the first send, the STOP test. Human work.
+- **The `SECRET_KEY` guard.** Still a note in `status.md`, still post-launch, as
+  the 5c spec says.
+- **`docs/API.md`, `docs/RUNBOOK.md` and `docs/CLIENT_GUIDE.md` are now stale on
+  the send-mode pill** — all three describe two states. Module 8's files;
+  recorded under "Found while working (session 5c)".

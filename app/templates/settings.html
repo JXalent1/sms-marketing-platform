@@ -8,11 +8,29 @@
 
 {% block content %}
 <div class="space-y-6">
-    <div id="dryRunBanner" class="hidden rounded-xl border-l-4 border-warn-ink bg-warn-soft px-4 py-3 text-sm leading-relaxed text-ink">
+    {# Both banners render server-side from the shell context, not from the
+       /api/settings/system fetch below. The state that matters most is the one
+       where sending is broken, and a page that announces it only once a script
+       has run announces it last — or not at all if the fetch is the thing that
+       failed. The System panel still reads the API, and both read send_mode(),
+       so they cannot contradict each other. #}
+    {% if send_mode_degraded %}
+    <div id="sendingUnavailableBanner"
+         class="rounded-xl border-l-4 border-crit bg-crit-soft px-4 py-3 text-sm leading-relaxed text-ink">
+        {# Explanation first, then the sentence that tells him what to do. The
+           detail line ends in "Contact support", so rendering it before the
+           explanation buried the instruction in the middle of the paragraph. #}
+        <span class="font-semibold">{{ send_mode_label }}.</span>
+        Your messaging account is configured but did not start — this is not a dry run,
+        and it will not clear on its own. {{ send_mode_detail }}
+    </div>
+    {% elif send_mode == 'dry_run' %}
+    <div id="dryRunBanner" class="rounded-xl border-l-4 border-warn-ink bg-warn-soft px-4 py-3 text-sm leading-relaxed text-ink">
         <span class="font-semibold">Dry-run mode.</span>
         Messages are written to the log and never sent. Set <code class="rounded bg-surface-2 px-1 py-0.5">SMS_PROVIDER</code>
         in <code class="rounded bg-surface-2 px-1 py-0.5">.env</code> to go live.
     </div>
+    {% endif %}
 
     <div class="rounded-xl border border-line bg-surface px-6 py-6">
         <h2 class="font-semibold text-ink">Auto-reply</h2>
@@ -75,13 +93,26 @@ async function loadAutoReply() {
 async function loadSystem() {
     const d = await api('/api/settings/system');
     document.getElementById('senderNumber').textContent = d.sender_number || 'not configured';
-    if (d.dry_run) document.getElementById('dryRunBanner').classList.remove('hidden');
 
     const badge = (ok, yes, no) =>
         `<span class="inline-flex px-2 py-0.5 rounded text-xs font-medium ${ok ? 'bg-good-soft text-good-ink' : 'bg-surface-2 text-ink-2'}">${ok ? yes : no}</span>`;
 
+    // The Messaging row is the one place on this page a client looks to answer
+    // "is it sending?", so it carries all three states and takes its words from
+    // the API rather than choosing its own. A red badge here and an amber one
+    // for a chosen dry run is the whole point of the row.
+    const modeClass = {
+        live:        'bg-good-soft text-good-ink',
+        dry_run:     'bg-warn-soft text-ink',
+        unavailable: 'bg-crit-soft text-crit',
+    }[d.send_mode] || 'bg-surface-2 text-ink-2';
+    const modeBadge =
+        `<span id="messagingModeBadge" data-mode="${esc(d.send_mode)}"
+               class="inline-flex px-2 py-0.5 rounded text-xs font-medium ${modeClass}">${esc(d.send_mode_label)}</span>
+         <p class="mt-1 text-xs text-ink-3">${esc(d.send_mode_detail)}</p>`;
+
     document.getElementById('systemInfo').innerHTML = `
-        <div><dt class="text-sm text-ink-3">Messaging</dt><dd class="mt-0.5">${badge(d.provider_configured, 'Live', 'Dry run')}</dd></div>
+        <div><dt class="text-sm text-ink-3">Messaging</dt><dd class="mt-0.5">${modeBadge}</dd></div>
         <div><dt class="text-sm text-ink-3">Sending number</dt><dd class="mt-0.5 text-sm font-mono text-ink">${esc(d.sender_number || '—')}</dd></div>
         <div><dt class="text-sm text-ink-3">Environment</dt><dd class="mt-0.5 text-sm text-ink">${esc(d.environment)}</dd></div>
         <div><dt class="text-sm text-ink-3">Pre-flight balance check</dt><dd class="mt-0.5">${badge(d.preflight_balance_check, 'On', 'Off')}</dd></div>

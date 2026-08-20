@@ -8,7 +8,7 @@ from app.core.auth import require_auth
 from app.core.config import settings as app_settings
 from app.models.app_setting import get_setting, set_setting, AUTO_REPLY_KEY
 from app.sms import compliance
-from app.sms.factory import get_provider, active_sender_number
+from app.sms.factory import send_mode, active_sender_number
 from app.sms.segments import describe
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
@@ -52,11 +52,22 @@ async def system_info(user: str = Depends(require_auth)):
     It is also a setup value only we ever use: the client has no login to the
     carrier portal. It belongs in the deployment notes, not in his dashboard.
     Use `settings.webhook_url(provider_name)` directly when configuring.
+
+    `dry_run` means a dry run was *chosen*. It used to mean "the console
+    provider is active", which is also true when a carrier credential is wrong
+    and get_provider() has fallen back — so a broken live box answered this
+    endpoint exactly as a healthy dry-run one did. The third state is
+    `sending_unavailable`, and it is the one that needs a human. The exception
+    behind it stays in the log: it is SDK text and routinely names the carrier.
     """
-    provider = get_provider()
+    mode = send_mode()
     return {
-        "provider_configured": provider.name != "console",
-        "dry_run": provider.name == "console",
+        "provider_configured": mode.key == "live",
+        "dry_run": mode.key == "dry_run",
+        "sending_unavailable": mode.key == "unavailable",
+        "send_mode": mode.key,
+        "send_mode_label": mode.label,
+        "send_mode_detail": mode.detail,
         "sender_number": active_sender_number(),
         "environment": app_settings.ENVIRONMENT,
         "skip_non_us": app_settings.SKIP_NON_US_NUMBERS,

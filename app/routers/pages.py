@@ -18,7 +18,7 @@ from app.core.config import settings
 from app.core.database import get_db
 from app.core import branding
 from app.services import billing_service, contact_query_service
-from app.sms.factory import get_provider, active_sender_number
+from app.sms.factory import send_mode, active_sender_number
 import os
 import logging
 import re
@@ -129,15 +129,23 @@ def shell_context(db: Session) -> dict:
 
     # Read from the live provider, not from settings: get_provider() falls back
     # to console when a carrier can't initialise, and the pill has to say what
-    # is actually happening rather than what .env intended. The provider's name
-    # decides the label and never reaches the response.
-    live = get_provider().name != "console"
+    # is actually happening rather than what .env intended.
+    #
+    # Three states, not two. Deriving the label from `name != "console"` made a
+    # failed carrier and a chosen dry run render the same amber pill, which is
+    # how a production box sat unable to send while every screen looked normal.
+    # The wording comes from send_mode() so this pill and the Settings page
+    # cannot disagree, and the provider's name never reaches the template.
+    mode = send_mode()
 
     return {
         "segments_this_month": segments,
         "sender_number": mask_sender_number(active_sender_number()),
-        "send_mode": "Live" if live else "Dry run",
-        "send_mode_live": live,
+        "send_mode": mode.key,
+        "send_mode_label": mode.label,
+        "send_mode_detail": mode.detail,
+        "send_mode_live": mode.key == "live",
+        "send_mode_degraded": mode.key == "unavailable",
     }
 
 

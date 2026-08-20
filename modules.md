@@ -30,7 +30,8 @@ client sending real campaigns.
 | 4 | Composer & campaign guardrails | Done | 3a | `app/models/campaign.py`, `app/services/campaign_service.py`, `app/routers/campaigns.py`, `app/templates/campaigns.html`, `alembic/versions/*`, `tests/test_campaign_guardrails.py` |
 | 5a | Deploy scaffolding | Done · gaps for 5b | 1b | `deployment/**`, `scripts/backup.sh`, `docs/CLIENT_GUIDE.md`, `README.md` |
 | 5b | **Go live** | Part A done · B3 verified · B4/B5 pending | 3b, 4, 5a | `deployment/**`, `scripts/**`, `.env.example`, `docs/CLIENT_GUIDE.md`, `app/main.py` |
-| 5c | **Live-send blockers** | Next — unplanned, found at launch | 5b Part A | `requirements.txt`, `app/sms/factory.py`, `app/routers/settings.py`, `app/routers/pages.py`, `app/templates/settings.html`, `app/templates/base.html`, `deployment/nginx.conf.template`, `tests/` |
+| 5c | **Live-send blockers** | Part A done · deploy + B pending | 5b Part A | `requirements.txt`, `app/sms/factory.py`, `app/routers/settings.py`, `app/routers/pages.py`, `app/templates/settings.html`, `app/templates/base.html`, `deployment/nginx.conf.template`, `tests/`, `agent/accept-5c.sh` |
+| 5d | **Refuse to send from a degraded box** | Next — must land before client handover | 5c | `app/services/campaign_service.py`, `app/services/billing_service.py`, `app/models/sms_message.py`, `app/sms/factory.py`, `app/main.py`, `.claude/hooks/verify-gate.sh`, `docs/API.md`, `tests/` |
 
 **That's the launch — six sessions, but only four waves. See "Parallel plan" below.**
 
@@ -38,6 +39,13 @@ client sending real campaigns.
 revealed that `requirements.txt` pinned a telnyx SDK major version the provider was not
 written against, and `get_provider()`'s console fallback hid it behind a normal-looking
 "Dry run" pill. The pin is the bug; the invisibility is the defect worth fixing.
+
+Part A landed 2026-08-20: pin at 4.175.0 and verified against the real package, the
+fallback recorded and rendered as a third send mode ("Sending unavailable"), ten tests
+that fail against the pre-fix tree, and security headers in the nginx template. The two
+things left are a deploy — the box still runs the hot-patched SDK and the pre-5c nginx
+config, and the nginx half needs root — and Part B, which is Jordan's. Acceptance is
+`agent/accept-5c.sh`; criteria 1-5 pass locally, criterion 6 is `--with-remote`.
 
 ### Deferred until after launch
 

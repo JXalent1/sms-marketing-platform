@@ -4,11 +4,80 @@
 #   sudo ln -s /etc/nginx/sites-available/APP_NAME /etc/nginx/sites-enabled/
 #   sudo nginx -t && sudo systemctl reload nginx
 #   sudo certbot --nginx -d actual.domain.com
+#
+# Updating an already-certificated box: certbot has rewritten the server block
+# below to listen on 443 and added its own :80 redirect block. Do not re-copy
+# this file over it — merge the two header sections into the existing 443 block
+# by hand, then `sudo nginx -t && sudo systemctl reload nginx`. Confirm with:
+#   curl -sI https://actual.domain.com/login | grep -i "strict-transport\|content-security\|x-frame\|x-content\|referrer"
+#   curl -s -o /dev/null -w "%{http_code}\n" https://actual.domain.com/static/fonts/inter-latin-400-normal.woff2
 
 server {
     listen 80;
     server_name YOUR_DOMAIN;
     # Certbot rewrites this block to redirect to HTTPS when you run it.
+
+    # ─── Security headers ───────────────────────────────────────────────────
+    # This is a public admin panel with a session cookie and a client's entire
+    # contact list behind it, and it shipped without any of these.
+    #
+    # `always` on every one of them: without it nginx omits the header on error
+    # responses, and a 502 while the app restarts is exactly when a framed or
+    # sniffed response is worth something to an attacker.
+
+    # Five minutes, not a year. HSTS is not revocable — a browser that has seen
+    # a long max-age refuses plain HTTP to this host until it expires, no matter
+    # what the server says afterwards. Start where a mistake costs five minutes,
+    # raise it deliberately once renewals have proven themselves, and only add
+    # includeSubDomains/preload when nothing else lives on the domain.
+    add_header Strict-Transport-Security "max-age=300" always;
+
+    add_header X-Frame-Options "DENY" always;
+    add_header X-Content-Type-Options "nosniff" always;
+
+    # same-origin: a referrer is useful in our own logs and is nobody else's
+    # business. The dashboard links nowhere external, so this costs nothing.
+    add_header Referrer-Policy "same-origin" always;
+
+    # ─── Content-Security-Policy ────────────────────────────────────────────
+    # The app's asset profile is genuinely same-origin-only: Tailwind is compiled
+    # to /static/app.css at build time, Inter is self-hosted under /static/fonts,
+    # and nothing is fetched from a CDN. That is what makes a policy this tight
+    # possible; a template that reintroduces a CDN breaks here, which is the
+    # intended outcome.
+    #
+    # One literal line, not a `set $csp ...` chain. The chain reads better and
+    # lets each directive carry its own comment, but a header built from a
+    # variable is only emitted once the rewrite phase has run — nginx sends no
+    # CSP at all on a request it rejects before that, which is exactly the class
+    # of response `always` is here to cover. Keep the reasoning up here instead:
+    #
+    #   script-src 'unsafe-inline'  Load-bearing, not laziness. base.html applies
+    #       the saved theme before first paint, every screen carries its own
+    #       <script> block, and two build markup with inline onclick handlers
+    #       (blocklist.html's Unblock, the composer's Send). Nonces would mean
+    #       emitting one per render AND rewriting those handlers — and a nonce
+    #       makes the browser *ignore* 'unsafe-inline', so a half-done migration
+    #       silently kills exactly those buttons with nothing in the console the
+    #       client would think to report. What this still buys: no third-party
+    #       origin can be a script source at all.
+    #   style-src 'unsafe-inline'   _brand.html emits an inline <style> for the
+    #       client's palette; today.html and usage.html size chart bars with a
+    #       style attribute.
+    #   font-src 'self'             The one most likely to break something
+    #       visible: app.css pulls four woff2 from /static/fonts. If this is
+    #       wrong the app silently renders in the system font and nothing errors.
+    #   img-src 'self'              No images ship with the app and there is no
+    #       <link rel="icon">; 'self' still covers the browser's automatic
+    #       /favicon.ico. `data:` was here for "a future inline SVG", which is
+    #       not an img-src concern at all — inline <svg> is never fetched. Dead
+    #       permission, removed.
+    #   connect-src 'self'          Every fetch in the app goes to its own /api.
+    #   form-action 'self'          The login form posts here. Anywhere else is
+    #       credential theft.
+    #   frame-ancestors 'none'      The modern half of X-Frame-Options above.
+    #       Both are set because both are still read by browsers in the field.
+    add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self'; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'self'; object-src 'none'" always;
 
     location / {
         proxy_pass http://127.0.0.1:8000;
@@ -30,5 +99,8 @@ server {
     client_max_body_size 25M;    # CSV uploads
 
     # Blocks the noisiest scanner probes. Not security on its own — auth is.
+    # No add_header of its own on purpose: a location that sets one stops
+    # inheriting every header above, and a 404 with no security headers is the
+    # gap this whole section exists to close.
     location ~ /\.(git|env|svn) { deny all; return 404; }
 }

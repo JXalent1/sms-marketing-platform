@@ -17,6 +17,12 @@
 set -uo pipefail
 cd "$(git rev-parse --show-toplevel 2>/dev/null || pwd)" || exit 1
 
+# Decision 001: test against the repo's own interpreter, not whatever happens to be
+# first on PATH. On this machine conda's python shadows the project venv and lacks
+# slowapi, so the gate reported "test suite is red" about a suite that was green.
+# A gate whose verdict depends on the caller's shell is not a gate.
+[[ -x .venv/bin/python ]] && PATH="$PWD/.venv/bin:$PATH"
+
 FAIL=0
 step() { printf '\n── %s\n' "$1"; }
 bad()  { printf 'GATE FAIL: %s\n' "$1"; FAIL=1; }

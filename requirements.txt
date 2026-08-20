@@ -29,5 +29,12 @@ pytz==2024.1
 httpx==0.26.0
 
 # SMS providers — install only what you use
-telnyx==2.1.2
+#
+# telnyx MUST stay on 4.x. app/sms/providers/telnyx.py is written against the
+# 4.x client object (`telnyx.Telnyx(api_key=...)`, `client.messages.send()`);
+# 2.x has no such class, so TelnyxProvider.__init__ raised AttributeError,
+# get_provider() caught it and fell back to console, and the dashboard went on
+# showing a normal "Dry run" pill on a box that had been switched live. The pin
+# said 2.1.2 for the whole of module 5b and nothing failed loudly.
+telnyx==4.175.0
 twilio==9.0.4

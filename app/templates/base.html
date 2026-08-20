@@ -188,9 +188,20 @@
       {# Send mode, not uptime. With the provider in dry run the app is running
          perfectly and sending nothing, and that is exactly the state a "Live"
          pill would hide on the morning of a sale. Shown at every width for the
-         same reason — it is the answer to "did that campaign actually go out?" #}
-      <span class="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-line bg-surface px-2.5 py-1 text-[12px] font-medium text-ink-2">
-        <span class="h-1.5 w-1.5 rounded-full {% if send_mode_live %}bg-good{% else %}bg-warn-ink{% endif %}"></span>{{ send_mode | default('Dry run', true) }}
+         same reason — it is the answer to "did that campaign actually go out?"
+
+         Three states. A carrier that fails to start falls back to the console
+         provider, and until session 5c that rendered this pill identically to a
+         chosen dry run — amber, calm, wrong. "Sending unavailable" is red and
+         says so. The words and the state key both come from send_mode(); this
+         file decides only how they look, and the carrier is not named here or
+         anywhere else the client can see. #}
+      <span id="sendModePill" data-mode="{{ send_mode | default('dry_run', true) }}"
+            title="{{ send_mode_detail | default('', true) }}"
+            class="inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2.5 py-1 text-[12px] font-medium
+                   {% if send_mode_degraded %}border-crit bg-crit-soft text-crit{% else %}border-line bg-surface text-ink-2{% endif %}">
+        <span class="h-1.5 w-1.5 rounded-full
+                     {% if send_mode_live %}bg-good{% elif send_mode_degraded %}bg-crit{% else %}bg-warn-ink{% endif %}"></span>{{ send_mode_label | default('Dry run', true) }}
       </span>
 
       <div class="ml-auto flex shrink-0 items-center gap-2">
