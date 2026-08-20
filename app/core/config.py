@@ -84,6 +84,38 @@ class Settings(BaseSettings):
     BILLING_SEGMENTS_INCLUDED: int = 10000
     BILLING_PRICE_PER_SEGMENT: float = 0.015
 
+    # ─── Composer guardrails ────────────────────────────────────────────────
+    # A contact who was texted inside this window is skipped by the next
+    # campaign, whatever category it is for. Across categories on purpose: a
+    # buyer tagged Food Service, Equipment and Estates would otherwise collect
+    # three texts in a week from three perfectly correct campaigns, and it is
+    # the person who unsubscribes, not the category.
+    RECENT_CONTACT_SUPPRESSION_DAYS: int = 3
+
+    # Segments per message above which pre-flight warns. Not a refusal — a long
+    # message is a legitimate choice, it just costs a multiple of a short one
+    # and that should be a decision rather than a surprise.
+    PREFLIGHT_SEGMENT_CEILING: int = 3
+
+    # Words that belong to a niche, keyed by category slug. Pre-flight warns
+    # when the body carries another category's vocabulary — the copy-paste
+    # mistake ("last night's fryer text, sent to the memorabilia list") is the
+    # single most likely way this platform sends the wrong thing to the wrong
+    # people, and a keyword table catches it for nothing.
+    #
+    # Config, not code, because the niches are the client's and he will add to
+    # them. Override in .env with a JSON object under the same key.
+    CATEGORY_KEYWORDS: dict[str, list[str]] = {
+        "food_service": ["fryer", "walk-in", "hood", "griddle", "range",
+                         "dishwasher", "prep table", "reach-in", "steam table"],
+        "equipment": ["lathe", "welder", "drill press", "forklift", "compressor",
+                      "skid steer", "excavator", "generator", "mill"],
+        "estates": ["estate", "antique", "china cabinet", "sterling", "armoire",
+                    "heirloom", "silverware"],
+        "memorabilia": ["memorabilia", "autograph", "autographed", "signed",
+                        "trading card", "rookie", "collectible", "vintage poster"],
+    }
+
     # ─── Alerting ───────────────────────────────────────────────────────────
     ALERT_PHONE: str = ""                        # your number, for balance/scrape alerts
     BALANCE_ALERT_THRESHOLD: float = 50.0

@@ -143,10 +143,17 @@ def test_campaign_honors_blocklist_and_bills_correctly(client):
     client.post("/api/blocklist/block",
                 json={"phone": "+15555550101", "reason": "stop_keyword"})
 
+    # Module 4 made the category mandatory on create; every campaign now carries
+    # the niche it is for or an explicitly recorded override. The guardrail
+    # itself is tested in tests/test_campaign_guardrails.py — here it is just
+    # part of the contract this end-to-end story has to satisfy.
+    category_id = client.get("/api/categories").json()["categories"][0]["id"]
+
     created = client.post("/api/campaigns", json={
         "name": "smoke test",
         "message_template": "Hi {first_name}, testing.",
         "audience": "all",
+        "category_id": category_id,
     }).json()
     assert created["success"]
     campaign_id = created["campaign"]["id"]

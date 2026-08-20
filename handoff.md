@@ -97,3 +97,77 @@ pages still head themselves "Campaigns" and "Blocklist". One word each in
 - Sender number strategy, before the first live send. The shell renders whatever
   `active_sender_number()` returns; today that is nothing.
 - `SMS_PROVIDER` is still `console`. Flipping it is a human step and stays one.
+
+---
+
+# Session 4 handoff — Composer & campaign guardrails
+
+_Appended, not rewritten: 3b was editing this file in parallel._
+
+## What landed
+
+The module the project exists for. Sending the wrong niche the wrong message is now
+structurally hard rather than a matter of him being careful.
+
+- **`campaigns.category_id`**, plus `cross_category_override`, `suppressed_count` and
+  `scheduled_at`, in `alembic/versions/8c1d4a2f70b3_*`. Additive, batch-mode (SQLite
+  cannot add a REFERENCES constraint in place), and the downgrade drops exactly what the
+  upgrade added. Nothing near `ix_contacts_phone`.
+- **`app/templates/campaigns.html`** rebuilt as the three-step composer, with the
+  behaviour in `app/templates/_composer-script.html`.
+- **`app/services/preflight_service.py`** — suppression, the seven checks, and the
+  client-rate cost arithmetic.
+- **`POST /api/campaigns/preflight`**, and `/preview` extended with the client's cost,
+  the suppressed and opted-out counts, and a preview rendered against a real contact.
+- **A one-minute scheduler job** in `main.py`'s lifespan.
+
+## Four things the next session should know
+
+**The category rule lives in the service, not the router.** `resolve_category()` raises
+`CampaignError`, the router turns that into a 400. A script, a future screen or module
+5b's import path cannot route around it by not being HTTP.
+
+**Suppression happens at create time, not send time.** Held-back contacts get a `skipped`
+`SMSMessage` row the moment the draft is built, which is what puts the count on screen
+while there is still time to change the audience. It also means `skipped_count` on a
+fresh draft is already non-zero — that is the suppression, and the send loop adds
+blocklist and region skips to it as it runs. `suppressed_count` is the one that means
+only "held back as recently texted".
+
+**The composer's dollar figure is marginal, not `segments × rate`.** He has 10,000
+included segments a month, so the first campaign of the month usually costs $0.00 and the
+one that crosses the allowance costs only the part above it. `marginal_cost()` is the
+difference of two `billing_service.cost_for_segments()` Decimals, subtracted before any
+rounding. Do not "simplify" it to a multiplication — it would over-state every early send
+and under-state the crossing one.
+
+**Two module-4 files exist because of a rate limit and a Tailwind glob**, and both are
+load-bearing:
+- `_composer-script.html` is a template, not a `.js` file, because Tailwind's content glob
+  is `./app/templates/**/*.html`. The category-chip and checklist class names are built in
+  JS; under `app/static/` they would be purged from the compiled stylesheet.
+- `tests/test_campaign_guardrails.py` resets the campaign limiter around itself
+  (it and `test_campaign_preflight.py` share `tests/_guardrail_setup.py`).
+  `POST /api/campaigns` is 5/minute per IP, the whole suite runs inside one window from
+  one address, and four creates here starved test_smoke and test_whitelabel of theirs.
+  The cap is not weakened; the module gives back what it spends, and everything not
+  testing the HTTP contract goes through the service instead.
+
+## Verified this session
+
+Gate green at both ends (76 tests before, 99 after). Suite green twice in a row and every
+file green run alone. `alembic upgrade head` from empty, `alembic check` clean, and the
+new revision round-trips down and back up. Composer served at `/campaigns` → 200 with
+`app.css` → 200. A campaign scheduled two minutes in the past was picked up by the real
+scheduler, logged `pre-flight OK`, and completed 4 sent / 1 skipped against the console
+provider.
+
+## Not done, and deliberately
+
+- **The audience picker offers two shapes, not the spec's three.** §1 lists "everyone in
+  the category / category minus recent recipients / a saved list ∩ category", but §4
+  makes suppression unconditional — so options one and two resolve to the same audience
+  and the only way to make them differ is to let one bypass suppression, which §4 forbids
+  and which is on the escalation list. The picker offers the category and the list ∩
+  category, and the always-on rule is stated under it. Flagged rather than guessed.
+- **`SMS_PROVIDER` is still `console`.** Nothing in this session can send a real message.
