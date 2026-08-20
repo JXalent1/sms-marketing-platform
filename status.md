@@ -548,3 +548,20 @@ reasoning is written into the test file so the next reader does not re-derive it
   uncategorised import flow and does not mention categories, pre-flight or the
   composer. Not touched — 5b's file list does not include it, and it is the
   skeleton's doc rather than this client's.
+- **Nothing refuses to boot without a `SECRET_KEY`.** `app/core/config.py:36`
+  defaults it to `""` and `app/core/auth.py:59` hands that straight to
+  `URLSafeTimedSerializer`, which signs session cookies with it quite happily.
+  There is no startup guard anywhere. Found during Part B: on a freshly
+  bootstrapped box with no `.env` yet, `ENVIRONMENT` also defaults to
+  `development`, so the app starts, auto-migrates on startup — the exact race
+  `deploy.sh` runs migrations separately to avoid — and serves a public login
+  whose sessions are signed with a key every reader of this repo knows. Anyone
+  can mint an admin cookie. The window is small on a careful deploy and
+  permanent on a careless one, and nothing in the app or the gate would say so.
+  `PRODUCTION_CHECKLIST.md` already documents `SECRET_KEY` correctly, which is
+  why this went unnoticed: the docs are right and the code does not enforce
+  them. The fix is a startup check that refuses to serve on an empty
+  `SECRET_KEY` — unconditionally, not only when `ENVIRONMENT=production`, since
+  the dangerous case is precisely the box where `ENVIRONMENT` was never set.
+  `app/core/config.py` belongs to no current module, so this is a note rather
+  than a drive-by fix.

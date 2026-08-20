@@ -29,9 +29,15 @@ client sending real campaigns.
 | 3b | Today + Contacts screens | Done | 3a | `app/templates/today.html`, `app/templates/contacts.html`, `app/routers/dashboard.py`, `app/services/dashboard_service.py`, `tests/test_dashboard.py`, `tests/test_contacts_api.py` |
 | 4 | Composer & campaign guardrails | Done | 3a | `app/models/campaign.py`, `app/services/campaign_service.py`, `app/routers/campaigns.py`, `app/templates/campaigns.html`, `alembic/versions/*`, `tests/test_campaign_guardrails.py` |
 | 5a | Deploy scaffolding | Done · gaps for 5b | 1b | `deployment/**`, `scripts/backup.sh`, `docs/CLIENT_GUIDE.md`, `README.md` |
-| 5b | **Go live** | Next — last one | 3b, 4, 5a | `deployment/**`, `scripts/**`, `.env.example`, `docs/CLIENT_GUIDE.md`, `app/main.py` |
+| 5b | **Go live** | Part A done · B3 verified · B4/B5 pending | 3b, 4, 5a | `deployment/**`, `scripts/**`, `.env.example`, `docs/CLIENT_GUIDE.md`, `app/main.py` |
+| 5c | **Live-send blockers** | Next — unplanned, found at launch | 5b Part A | `requirements.txt`, `app/sms/factory.py`, `app/routers/settings.py`, `app/routers/pages.py`, `app/templates/settings.html`, `app/templates/base.html`, `deployment/nginx.conf.template`, `tests/` |
 
 **That's the launch — six sessions, but only four waves. See "Parallel plan" below.**
+
+5c was not in the original breakdown. It exists because flipping the provider to live
+revealed that `requirements.txt` pinned a telnyx SDK major version the provider was not
+written against, and `get_provider()`'s console fallback hid it behind a normal-looking
+"Dry run" pill. The pin is the bug; the invisibility is the defect worth fixing.
 
 ### Deferred until after launch
 
