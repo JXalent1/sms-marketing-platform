@@ -200,3 +200,101 @@ provider.
   and which is on the escalation list. The picker offers the category and the list ∩
   category, and the always-on rule is stated under it. Flagged rather than guessed.
 - **`SMS_PROVIDER` is still `console`.** Nothing in this session can send a real message.
+
+---
+
+# Session 5b handoff — Part A, go-live prep (2026-08-19)
+
+## Where this leaves things
+
+The build is done and prepared. **The next action is a human's**, and it is Part
+B of `sessions/session-5b.md`: create the droplet, write the production `.env`
+from `deployment/PRODUCTION_CHECKLIST.md`, deploy in dry run, import the real
+CSVs, and only then the send sequence. Nothing in this session can send a
+message; `SMS_PROVIDER` is `console` in every file it touched.
+
+Gate green, 133 tests (was 119).
+
+## What landed
+
+| Area | File |
+|---|---|
+| Runbook (ours) | `docs/RUNBOOK.md` — new |
+| Production config | `deployment/PRODUCTION_CHECKLIST.md` — new |
+| Deploy hardening | `deployment/deploy.sh` |
+| Monitoring | `app/services/monitoring_service.py` — new; wired in `app/main.py` |
+| Cron entry point | `scripts/balance_alert.py` — now a shell over the service |
+| Exact pre-flight | `app/services/preflight_service.py`, `app/routers/campaigns.py` |
+| Dark tokens | `settings.html`, `blocklist.html`, `usage.html`, `base.html` |
+| Docs | `docs/API.md`, `docs/CLIENT_GUIDE.md`, `docs/screenshots/`, `README.md` |
+| Dev defaults | `.env.example` |
+
+## Five things worth knowing before you touch any of it
+
+**1. `deploy.sh`'s order is the design, not a preference.**
+`clean tree → build → sync → BACK UP → MIGRATE → restart → health check →
+roll back`. Back up before migrating because a migration is the one step with no
+undo. Migrate before restarting because a worker meeting an unknown schema serves
+500s on every page. Health-check after restarting because "systemctl says active"
+and "the app answers" are different claims. Reordering any pair of these removes
+a specific protection.
+
+The rollback restores **code only**. A migration is not undone — the script says
+so in its own output, and the pre-migrate backup is what you restore by hand if
+the schema is what broke.
+
+**2. Pre-flight's segment total is measured, not estimated, and that is load-bearing.**
+`exact_segment_totals()` renders the template against every resolved recipient
+using `CampaignService.render` — the send path's own function, passed in as a
+callable rather than imported, because `campaign_service` already imports
+`preflight_service` and because measuring with a second copy of that logic would
+eventually measure something the send path does not produce.
+
+If you add a merge tag, nothing here needs to change. If you change how rendering
+works, this follows automatically. That is the point of passing the callable.
+
+`/preview` deliberately still reports the cheap template estimate — it runs on
+every keystroke. When the two disagree, pre-flight is right, and the composer now
+says so on screen.
+
+**3. The low-balance alert must not go back through `provider.send()`.**
+That is how it was, and at a true zero balance the warning fails with everything
+else. It goes through `agent/notify.sh` now. `notify.sh` is human-only and still
+reads the carrier credential by default — **give it its own credential before
+go-live** or the fix is undone by configuration. It is in `status.md` under
+"Found while working" for that reason.
+
+**4. No child template may carry its own `<h1>`.**
+The shell renders the page heading from `{% block title %}`. All three remaining
+offenders were fixed this session and `base.html`'s header comment now says so.
+Adding one back puts the page name on screen twice, which is what Settings looked
+like until now.
+
+**5. The spec's segment example was wrong and the correction is documented in the test.**
+`sessions/session-5b.md` A7 describes a 158-character template with
+`{first_name}` crossing a boundary for an 11-character name. That cannot happen —
+the tag is twelve characters, the name is eleven, so the message gets shorter.
+`tests/test_campaign_preflight.py` carries the arithmetic and tests both
+directions. Do not "fix" the test back toward the spec.
+
+## Verified this session
+
+- Gate green at both ends — 119 start, 133 end
+- Suite twice, 133 both
+- `bash -n` clean on every script; `shellcheck` not installed on this machine
+- `deploy.sh --dry-run` and `bootstrap.sh --dry-run` exit 0, no side effects
+- Both scheduler jobs log their registration by id on startup
+- A simulated low balance pages through `notify.sh` with a provider stub whose
+  `send()` raises — nothing was sent, and a regression would fail loudly
+- No carrier name in `CLIENT_GUIDE.md` or `RUNBOOK.md`
+- `SMS_PROVIDER` is never set to a live provider anywhere in `deployment/`
+
+## Not done, and deliberately
+
+- **All of Part B.** Server, DNS, certificate, production `.env`, real
+  credentials, the provider switch, the real CSVs, the first message. Human work,
+  in the escalation list, and it stays there.
+- **Module 8.** History and Categories screens are still absent from the nav;
+  `app/routers/usage.py`'s wholesale-rate literal is still its note to close.
+- **`docs/NEW_CLIENT_CHECKLIST.md`** still predates the category work. Out of
+  5b's file list.

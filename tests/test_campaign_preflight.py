@@ -28,8 +28,8 @@ from tests import _guardrail_setup as setup
 PASSWORD = os.environ["ADMIN_PASSWORD"]
 
 EXPECTED_CHECKS = {"capacity", "opt_out_language", "brand_identified",
-                   "segment_count", "recent_overlap", "link_shortener",
-                   "category_match"}
+                   "segment_count", "merge_expansion", "recent_overlap",
+                   "link_shortener", "category_match"}
 
 
 @pytest.fixture(scope="module")
@@ -247,3 +247,139 @@ def test_marginal_cost_is_free_inside_the_allowance():
         assert preflight_service.marginal_cost(db, 10) == 0.0
     finally:
         db.close()
+
+
+# ─── Segments, measured rather than estimated ───────────────────────────────
+#
+# The composer's live counter measures the raw template, where a merge tag is
+# literal characters. Pre-flight must not: it runs against a resolved audience,
+# and the number it quotes is the number that gets billed.
+#
+# On the spec's arithmetic. It describes "a template at 158 characters with
+# {first_name}" crossing a boundary for an 11-character name. That case cannot
+# exist: `{first_name}` is twelve characters, so replacing it with an
+# eleven-character name always makes the message *shorter*, and a template at or
+# under 160 stays at or under 160. Verified before following it — see the second
+# test below, which asserts exactly that. The under-count the spec is actually
+# describing needs a merge tag shorter than the value it takes, and `{name}` is
+# six characters: a 158-character template holding it is one segment, and
+# renders to 163 — two — for a Christopher. Same shape, same 158, same two names,
+# arithmetic that works.
+
+LONG_NAME_PHONE = "+15555550411"      # 11-character first name
+SHORT_NAME_PHONE = "+15555550412"     # 2-character first name
+NAME_LIST = "module-5b merge-tag list"
+
+
+@pytest.fixture(scope="module")
+def merge_audience():
+    """Two never-texted contacts whose names differ in length, on their own list."""
+    from app.models.contact import Contact
+    from app.models.contact_list import ContactList, ContactListMember
+    from app.services import contact_service
+
+    phones = (LONG_NAME_PHONE, SHORT_NAME_PHONE)
+
+    def purge(db):
+        ids = [c.id for c in db.query(Contact).filter(Contact.phone.in_(phones))]
+        if ids:
+            db.query(ContactListMember).filter(
+                ContactListMember.contact_id.in_(ids)).delete(synchronize_session=False)
+            db.query(Contact).filter(Contact.id.in_(ids)).delete(synchronize_session=False)
+        for row in db.query(ContactList).filter(ContactList.name == NAME_LIST):
+            db.query(ContactListMember).filter(
+                ContactListMember.list_id == row.id).delete(synchronize_session=False)
+            db.delete(row)
+        db.commit()
+
+    db = SessionLocal()
+    try:
+        purge(db)
+        contact_list = contact_service.get_or_create_list(db, NAME_LIST)
+        for phone, name in ((LONG_NAME_PHONE, "Christopher"), (SHORT_NAME_PHONE, "Al")):
+            contact = contact_service.upsert_contact(
+                db, phone=phone, full_name=name, source="merge-tag-test")
+            contact.last_messaged_at = None
+            contact_service.add_to_list(db, contact_list.id, contact.id)
+        db.commit()
+        yield f"list:{contact_list.id}"
+        purge(db)
+    finally:
+        db.close()
+
+
+def _template_of_158_chars(tag: str) -> str:
+    """A template exactly 158 characters long, ending in `tag`."""
+    body = f"{settings.BRAND_NAME}: auction Thursday 9am, preview from 8. Reply STOP to opt out. "
+    filler = "-" * (158 - len(tag) - len(body))
+    assert filler, "BRAND_NAME is too long for this fixture to reach 158 characters"
+    template = body + filler + tag
+    assert len(template) == 158, len(template)
+    return template
+
+
+def test_preflight_reports_the_true_total_when_a_name_crosses_a_boundary(
+        client, seeded, merge_audience):
+    """158 characters, one segment on paper. Christopher costs two."""
+    from app.sms.segments import count_segments
+
+    template = _template_of_158_chars("{name}")
+    assert count_segments(template) == 1, "the template itself must look like one segment"
+    assert count_segments(template.replace("{name}", "Al")) == 1
+    assert count_segments(template.replace("{name}", "Christopher")) == 2
+
+    report = client.post("/api/campaigns/preflight", json={
+        "message_template": template,
+        "audience": merge_audience,
+        "category_id": seeded["category_id"],
+    }).json()
+
+    counts = report["counts"]
+    assert counts["recipients"] == 2
+    assert counts["segments_measured"] is True
+    # The template's own arithmetic: 1 segment x 2 recipients.
+    assert counts["template_total_segments"] == 2
+    # What actually gets sent, and billed: 1 for Al, 2 for Christopher.
+    assert counts["total_segments"] == 3
+    assert counts["max_segments_per_message"] == 2
+
+    expansion = next(c for c in report["checks"] if c["key"] == "merge_expansion")
+    assert expansion["status"] == "warn", expansion
+    assert expansion["over_template_count"] == 1
+    assert "3" in expansion["reason"] and "2" in expansion["reason"]
+
+
+def test_a_first_name_tag_cannot_push_an_eleven_character_name_over(
+        client, seeded, merge_audience):
+    """Why the test above uses `{name}`: `{first_name}` is longer than the name.
+
+    Twelve characters of tag replaced by eleven of name is a shorter message, so
+    this direction over-quotes rather than under-quotes — and pre-flight now
+    reports the lower true total instead of the template's pessimistic one.
+    """
+    from app.sms.segments import count_segments
+
+    template = _template_of_158_chars("{first_name}")
+    assert count_segments(template.replace("{first_name}", "Christopher")) == 1
+
+    report = client.post("/api/campaigns/preflight", json={
+        "message_template": template,
+        "audience": merge_audience,
+        "category_id": seeded["category_id"],
+    }).json()
+
+    counts = report["counts"]
+    assert counts["total_segments"] == 2
+    assert counts["max_segments_per_message"] == 1
+    assert next(c for c in report["checks"]
+                if c["key"] == "merge_expansion")["status"] == "pass"
+
+
+def test_exact_totals_fall_back_to_the_template_when_there_is_no_audience():
+    """No recipients means nothing was measured, and the report must say so."""
+    totals = preflight_service.exact_segment_totals("x" * 200, [], lambda t, c: t)
+
+    assert totals["exact"] is False
+    assert totals["total_segments"] == 0
+    assert totals["template_segments_per_message"] == 2
+    assert preflight_service.check_merge_expansion(totals)["status"] == "warn"

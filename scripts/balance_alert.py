@@ -1,18 +1,21 @@
 #!/usr/bin/env python3
-"""Low-balance alert. Run hourly from cron.
+"""Low-balance alert — the cron entry point.
 
-Texts the operator when the carrier balance drops below the threshold, so the
-account gets topped up BEFORE a campaign drains it to zero.
+The app registers the same check on its own scheduler (`app/main.py`), so on a
+normal deployment this script is redundant. It stays because the two fail
+differently: the scheduled job dies with the app, and "the app is down" and "the
+account is empty" are the two situations you most want a warning about. Run it
+from cron on a box where the app is not the only thing running.
 
-Why this exists: in the reference deployment a zero balance deactivated the
-account mid-blast and every remaining message failed with "Account inactive".
-It happened at least five separate times across two months and cost more than
-13,000 undelivered messages. Auto-recharge did not prevent it — the top-up was
-configured at $10, and a 6,000-recipient blast spends that in about ninety
-seconds, far faster than a PayPal recharge can post.
+Both entry points call `monitoring_service.check_low_balance()`. There is one
+implementation of the threshold, one of the re-alert window, and one state file
+— two copies would drift, and the copy that drifts is the one that stops firing.
 
-Set the threshold well above zero. The alert is sent over the same account it is
-warning about, so at a true zero balance it cannot send at all.
+Why this used to be wrong, kept as a warning: the alert was sent with
+`provider.send()`, over the carrier account it was warning about. At a true zero
+balance that send fails too, so the one moment the alert mattered was the one
+moment it was silently dropped. It now goes through `agent/notify.sh`, on a
+credential independent of the one being watched.
 
     crontab -e
     0 * * * * cd /path/to/app && venv/bin/python scripts/balance_alert.py >> logs/balance_alert.log 2>&1
@@ -20,80 +23,38 @@ warning about, so at a true zero balance it cannot send at all.
 
 import os
 import sys
-import json
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 os.chdir(HERE)                      # so .env and the sqlite path resolve
 sys.path.insert(0, HERE)
 
-from app.core.config import settings          # noqa: E402
-from app.sms.factory import get_provider      # noqa: E402
-
-REALERT_HOURS = 12                  # don't re-text more often than this while low
-STATE_FILE = os.path.join(HERE, "data", ".balance_alert_state.json")
+from app.services import monitoring_service          # noqa: E402
 
 
-def load_state() -> dict:
-    try:
-        with open(STATE_FILE) as f:
-            return json.load(f)
-    except Exception:
-        return {}
+async def main() -> int:
+    result = await monitoring_service.check_low_balance()
+    stamp = datetime.now().strftime("%Y-%m-%d %H:%M")
 
+    if not result.get("checked"):
+        print(f"{stamp}  {result.get('reason', 'not checked')}; nothing to do")
+        return 0
 
-def save_state(state: dict):
-    try:
-        os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
-        with open(STATE_FILE, "w") as f:
-            json.dump(state, f)
-    except Exception as e:
-        print(f"warn: could not write state file: {e}")
+    if not result.get("low"):
+        print(f"{stamp}  sending capacity OK")
+        return 0
 
+    if result.get("alerted"):
+        print(f"{stamp}  sending capacity LOW "
+              f"(~{result.get('remaining_segments', 0):,} segments); alert sent")
+        return 0
 
-async def main():
-    if not settings.ALERT_PHONE:
-        print("ALERT_PHONE not configured; nothing to do")
-        return
-
-    provider = get_provider()
-    balance = await provider.get_balance()
-    if balance is None:
-        print("provider does not report a balance; nothing to do")
-        return
-
-    state = load_state()
-    now = datetime.now()
-    stamp = now.strftime("%Y-%m-%d %H:%M")
-    threshold = settings.BALANCE_ALERT_THRESHOLD
-
-    if balance >= threshold:
-        if state.pop("last_alert", None):
-            save_state(state)       # recovered — re-arm for the next dip
-        print(f"{stamp}  balance ${balance:.2f} OK (>= ${threshold:.0f})")
-        return
-
-    last = state.get("last_alert")
-    if last:
-        try:
-            if now - datetime.fromisoformat(last) < timedelta(hours=REALERT_HOURS):
-                print(f"{stamp}  balance ${balance:.2f} low, already alerted {last}; skipping")
-                return
-        except ValueError:
-            pass
-
-    message = (
-        f"{settings.BRAND_APP_NAME}: carrier balance is ${balance:.2f}, below the "
-        f"${threshold:.0f} threshold. Top up before the next campaign or messages will fail."
-    )
-    result = await provider.send(settings.ALERT_PHONE, message)
-    print(f"{stamp}  balance ${balance:.2f} low; alert sent={result.success}")
-
-    if result.success:
-        state["last_alert"] = now.isoformat()
-        save_state(state)
+    print(f"{stamp}  sending capacity LOW; {result.get('reason', 'alert not sent')}")
+    # Non-zero so cron mail and the log both show that a low balance went
+    # un-paged, rather than burying it in a success line.
+    return 0 if result.get("reason") == "already alerted" else 1
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    sys.exit(asyncio.run(main()))

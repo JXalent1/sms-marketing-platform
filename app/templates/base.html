@@ -16,10 +16,14 @@
      {% block head %}         extra <head> content.
      {% block scripts %}      page scripts, after the shared helpers below.
 
-   The child templates still carry the skeleton's light bg-white/text-gray-*
-   classes and read as light cards on a dark page. That is known and deliberate:
-   3b, 4 and module 8 own those files. This session guarantees only that they
-   still render.
+   Every child template is now on the shell's tokens — the skeleton's light
+   bg-white/text-gray-* classes are gone. A page that reintroduces one reads as
+   a white card on a dark page, which is what the last three looked like until
+   session 5b ported them.
+
+   None of them carries its own page <h1> either. The heading on screen is this
+   file's, rendered from {% block title %}; a child that adds one puts the page
+   name up twice.
 #}
 <!DOCTYPE html>
 {# Dark is the default, not an option: light is opt-in via data-theme="light". #}

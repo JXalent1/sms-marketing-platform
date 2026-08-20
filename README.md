@@ -30,6 +30,26 @@ python -m pytest tests/ -v
 
 Default login is whatever you set as `ADMIN_PASSWORD` in `.env`.
 
+### Two commands stand between a fresh clone and a working app
+
+```bash
+npm run build:css        # app/static/app.css is a gitignored build artifact
+alembic upgrade head     # Alembic owns the schema; nothing else creates a table
+```
+
+Skip the first and every page renders as unstyled HTML with a 404 on
+`/static/app.css`. Skip the second and — on a fresh `data/app.db` — every page
+answers **500** with `no such table: sms_messages` in the log.
+
+`.env.example` now sets `ENVIRONMENT=development`, which makes the app run
+`alembic upgrade head` for you at startup, so the second one is a safety net
+rather than a trap. It used to say `production`, and production deliberately
+does *not* migrate on startup (two workers restarting together would race), so a
+fresh clone came up 500ing on every page with the cause one line deep in the
+log. If you are looking at that, check `ENVIRONMENT` first.
+
+Neither symptom is a regression. Both are a missing build step.
+
 **Use the venv for everything, including pytest.** The suite is not pinned to
 whatever `pytest` happens to be on `PATH`: a global conda environment with an
 unrelated broken plugin has already taken this suite down once, for a reason
@@ -104,9 +124,12 @@ Then follow [docs/NEW_CLIENT_CHECKLIST.md](docs/NEW_CLIENT_CHECKLIST.md).
 | Doc | Read it when |
 |---|---|
 | [NEW_CLIENT_CHECKLIST.md](docs/NEW_CLIENT_CHECKLIST.md) | Standing this up for a client — start to launch |
+| [PRODUCTION_CHECKLIST.md](deployment/PRODUCTION_CHECKLIST.md) | Writing the production `.env` — every variable, what breaks if it's wrong |
+| [RUNBOOK.md](docs/RUNBOOK.md) | Something is on fire. Deploy, roll back, restore, **stop a campaign mid-send** |
 | [ARCHITECTURE.md](docs/ARCHITECTURE.md) | Before changing anything structural |
 | [SMS_LESSONS.md](docs/SMS_LESSONS.md) | **Before you remove a safety check you think is redundant** |
 | [API.md](docs/API.md) | Wiring a frontend or integrating |
+| [CLIENT_GUIDE.md](docs/CLIENT_GUIDE.md) | What the client gets. No carrier name, no server detail |
 
 ## What's included
 
@@ -211,13 +234,53 @@ credentials and `SMS_PROVIDER` stays `console` until a human changes it.
 SERVER=appuser@host SERVICE=a4a-sms ./deployment/deploy.sh
 ```
 
-Deploys build the stylesheet locally and ship it as a file — the server carries
-no Node toolchain at runtime. The sync excludes `data/` and `.env` on purpose:
-those belong to the server, and overwriting either from a laptop is how you lose
-a client's contact list.
+The order is the design:
 
-Migrations run from the deploy script before the restart, never from the app on
-startup, so two workers restarting together cannot race into the same migration.
+```
+clean tree → build assets → sync code → BACK UP → MIGRATE → restart
+                                                         → health check
+                                                         → roll back
+```
+
+- **Refuses a dirty working tree.** What ships has to be something you can get
+  back; a deploy from uncommitted work exists on no branch. `--allow-dirty` if
+  you mean it. The dry run reports the refusal instead of performing it, so it
+  can still show you the later steps.
+- **Builds `app.css` *and* syncs the fonts.** The rsync that follows runs
+  `--delete`, so a deploy carrying a `static/` with no fonts in it deletes the
+  server's copy and the UI silently drops to `system-ui`, with no error anywhere.
+- **Backs up immediately before migrating.** A migration is the one step with no
+  undo button, and the only acceptable distance between the backup and the
+  damage is zero.
+- **Migrates before restarting, and aborts the deploy if it fails.** A worker
+  that comes up against a schema it does not know serves 500s on every page. On
+  a failed migration nothing is restarted — the old code is still running
+  against the old schema.
+- **Health-checks `/health` after the restart** (retried, ~30s) and **rolls the
+  code back** if it fails, leaving the broken build at `app.broken`. "systemctl
+  says active" and "the app answers" are different claims. The migration is
+  *not* rolled back — restore the pre-migrate backup by hand if the schema is
+  what broke it.
+
+The sync excludes `data/` and `.env` on purpose: those belong to the server, and
+overwriting either from a laptop is how you lose a client's contact list.
+
+Migrations run from the deploy script, never from the app on startup, so two
+workers restarting together cannot race into the same migration.
+
+### Monitoring
+
+Two jobs register on the scheduler at startup (`app/main.py`), alongside the
+scheduled-campaign tick:
+
+| Job id | Runs | Does |
+|---|---|---|
+| `low_balance_alert` | hourly | Pages when sending capacity drops below `BALANCE_ALERT_THRESHOLD`, re-alerting at most every 12 hours |
+| `daily_failure_digest` | 07:00 | Yesterday's failures grouped by reason. Silent on a clean day, on purpose |
+
+Both go through `agent/notify.sh` rather than the carrier account — the account
+being warned about is the one that cannot send the warning. Neither can send a
+campaign message: the only provider call either makes is `get_balance()`.
 
 ### Backups
 

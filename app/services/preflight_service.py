@@ -28,7 +28,7 @@ is on the path between a send and that check.
 import re
 from datetime import datetime, timedelta
 from decimal import Decimal
-from typing import List, Optional, Sequence, Tuple
+from typing import Any, Callable, List, Optional, Sequence, Tuple
 
 from sqlalchemy.orm import Session
 
@@ -37,7 +37,7 @@ from app.models.category import Category
 from app.services import billing_service
 from app.sms.compliance import STOP_KEYWORDS
 from app.sms.phone import find_risky_links
-from app.sms.segments import describe
+from app.sms.segments import count_segments, describe
 
 PASS, WARN, FAIL = "pass", "warn", "fail"
 
@@ -88,6 +88,61 @@ def suppression_reason() -> str:
     days = settings.RECENT_CONTACT_SUPPRESSION_DAYS
     return (f"Texted within the last {days} day{'s' if days != 1 else ''} — held back "
             f"so nobody gets two messages in a row")
+
+
+# ─── Segments, measured on what actually reaches a handset ──────────────────
+
+def exact_segment_totals(message_template: str, recipients: Sequence,
+                         render: Callable[[str, Any], str]) -> dict:
+    """Segments this send really costs: the template rendered per recipient.
+
+    The composer's live counter measures the raw template, where `{first_name}`
+    is twelve literal characters. Nobody is called `{first_name}`. Usually that
+    over-counts and the quote is merely pessimistic, but the reverse happens
+    too: `{name}` is six characters, so a 158-character template counts as one
+    segment and renders to 163 for a Christopher — two segments, at double the
+    quoted rate, discovered on the invoice.
+
+    So the keystroke counter stays an estimate and this is the exact figure.
+    Pre-flight is a deliberate action against a resolved audience: rendering the
+    template `len(recipients)` times is affordable exactly here and nowhere on
+    the typing path.
+
+    `render` is passed in rather than imported. `campaign_service` already
+    imports this module, and the send path's own `render()` is the one whose
+    output is billed — measuring with a second copy of that logic would
+    eventually measure something the send path does not produce.
+
+    With no recipients there is nothing to render, so the template's own count
+    is returned and `exact` is False. Callers must not present that as measured.
+    """
+    template_per_message = count_segments(message_template or "")
+
+    if not recipients:
+        return {
+            "exact": False,
+            "recipients": 0,
+            "template_segments_per_message": template_per_message,
+            "template_total_segments": 0,
+            "total_segments": 0,
+            "max_segments_per_message": template_per_message,
+            "min_segments_per_message": template_per_message,
+            "over_template_count": 0,
+        }
+
+    per_recipient = [count_segments(render(message_template, c)) for c in recipients]
+    return {
+        "exact": True,
+        "recipients": len(per_recipient),
+        "template_segments_per_message": template_per_message,
+        "template_total_segments": template_per_message * len(per_recipient),
+        "total_segments": sum(per_recipient),
+        "max_segments_per_message": max(per_recipient),
+        "min_segments_per_message": min(per_recipient),
+        # The number that matters: how many people the template's own count
+        # under-quotes. One is enough to make the quote wrong.
+        "over_template_count": sum(1 for n in per_recipient if n > template_per_message),
+    }
 
 
 # ─── Cost, at the client's rate ─────────────────────────────────────────────
@@ -174,6 +229,41 @@ def check_segment_count(segments_per_message: int) -> dict:
         f"{segments_per_message} segments per message, above the {ceiling}-segment "
         f"guideline. Every recipient is metered {segments_per_message} times, "
         f"not once.",
+    )
+
+
+def check_merge_expansion(totals: dict) -> dict:
+    """Does rendering push anyone past a boundary the template didn't predict?
+
+    Only ever a warning. Going over is a real cost, not a mistake — a long name
+    is not something he can fix — so this tells him the true number and lets him
+    decide, rather than blocking a correct send because one buyer is called
+    Christopher.
+    """
+    predicted = totals["template_segments_per_message"]
+
+    if not totals["exact"]:
+        return _check("merge_expansion", "Merge tags", WARN,
+                      "No recipients resolved yet, so the total below is the "
+                      "template's own estimate rather than a measured figure.")
+
+    over = totals["over_template_count"]
+    if not over:
+        return _check(
+            "merge_expansion", "Merge tags", PASS,
+            f"Measured on every recipient's rendered message: "
+            f"{totals['total_segments']:,} segments in total. Merge tags do not "
+            f"push anyone past {predicted} segment{'s' if predicted != 1 else ''}.",
+        )
+
+    return _check(
+        "merge_expansion", "Merge tags", WARN,
+        f"{over:,} of {totals['recipients']:,} recipients render to "
+        f"{totals['max_segments_per_message']} segments, not the {predicted} the "
+        f"template predicts — their names are longer than the merge tag they "
+        f"replace. The real total is {totals['total_segments']:,} segments, not "
+        f"{totals['template_total_segments']:,}, and the cost below is the real one.",
+        over_template_count=over,
     )
 
 
@@ -266,23 +356,32 @@ def check_category_match(db: Session, category_slug: Optional[str], body: str) -
 # ─── The report ─────────────────────────────────────────────────────────────
 
 def build_report(db: Session, *, category_slug: Optional[str], message_template: str,
-                 sendable_count: int, suppressed_count: int,
+                 totals: dict, sendable_count: int, suppressed_count: int,
                  capacity_assessment: dict) -> dict:
     """Every check, plus the numbers the composer's summary panel renders.
 
     Checks come back in a fixed order — capacity first, because it is the one
     that stops a send — so the checklist does not reshuffle itself between
     keystrokes.
+
+    `totals` comes from `exact_segment_totals()` and is the measured cost of
+    this exact audience. Everything downstream of it — the segment total, the
+    length check and the quote — is denominated in what will actually be sent,
+    not in what the raw template happens to measure.
     """
     breakdown = describe(message_template or "")
-    per_message = breakdown["segments"]
-    total_segments = per_message * sendable_count
+    template_per_message = breakdown["segments"]
+    # Length is judged on the longest rendered message, not the template: a
+    # 3-segment guideline is about what lands on a handset.
+    per_message = totals["max_segments_per_message"]
+    total_segments = totals["total_segments"]
 
     checks = [
         check_capacity(capacity_assessment),
         check_opt_out_language(message_template),
         check_brand_identified(message_template),
         check_segment_count(per_message),
+        check_merge_expansion(totals),
         check_recent_overlap(suppressed_count, sendable_count),
         check_link_shortener(message_template),
         check_category_match(db, category_slug, message_template),
@@ -294,8 +393,13 @@ def build_report(db: Session, *, category_slug: Optional[str], message_template:
         "counts": {
             "recipients": sendable_count,
             "suppressed": suppressed_count,
-            "segments_per_message": per_message,
+            # What the live counter shows, kept so the two panels can be
+            # compared rather than silently disagreeing.
+            "segments_per_message": template_per_message,
+            "max_segments_per_message": per_message,
+            "template_total_segments": totals["template_total_segments"],
             "total_segments": total_segments,
+            "segments_measured": totals["exact"],
         },
         "encoding": breakdown["encoding"],
         # His rate, from billing_service. Never the wholesale figure the

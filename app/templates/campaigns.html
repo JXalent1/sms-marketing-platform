@@ -126,8 +126,13 @@
         </div>
 
         {# The live counter row. Every figure is filled by the script from
-           /api/campaigns/preview — nothing here is computed in the browser, so
-           the number on screen is the number the server would bill. #}
+           /api/campaigns/preview — nothing here is computed in the browser.
+
+           It measures the raw template, so `{first_name}` counts as twelve
+           characters and no recipient's message is that. It has to stay that
+           cheap: it runs on every keystroke. The exact figure — the template
+           rendered against each resolved recipient — comes from pre-flight in
+           step 3, which is why this row says "estimate" and that one does not. #}
         <dl class="grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-line bg-line sm:grid-cols-3 lg:grid-cols-6">
           <div class="bg-surface px-3 py-2.5">
             <dt class="text-[11px] text-ink-3">Characters</dt>
@@ -146,7 +151,7 @@
             <dd class="mt-0.5 text-[15px] font-semibold tabular-nums text-ink" id="pvRecipients">0</dd>
           </div>
           <div class="bg-surface px-3 py-2.5">
-            <dt class="text-[11px] text-ink-3">Total segments</dt>
+            <dt class="text-[11px] text-ink-3">Total segments (est.)</dt>
             <dd class="mt-0.5 text-[15px] font-semibold tabular-nums text-ink" id="pvTotal">0</dd>
           </div>
           <div class="bg-surface px-3 py-2.5">
@@ -154,6 +159,13 @@
             <dd class="mt-0.5 text-[15px] font-semibold tabular-nums text-ink" id="pvCost">—</dd>
           </div>
         </dl>
+
+        <p class="text-[11px] leading-relaxed text-ink-3">
+          An estimate, measured on the template. Merge tags like
+          <code class="rounded bg-surface-2 px-1 py-0.5">{first_name}</code> change the
+          length once a real name is in them, so the true total can differ. Pre-flight
+          below renders the message for every recipient and reports the exact figure.
+        </p>
 
         {# Unmissable on purpose. One emoji cuts a segment from 160 characters to
            70 and roughly triples the bill, and it is invisible in the text box. #}
@@ -172,7 +184,9 @@
         <span class="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-brand-soft text-[13px] font-semibold text-brand">3</span>
         <div class="min-w-0">
           <h2 class="text-[15px] font-semibold leading-tight text-ink">Pre-flight</h2>
-          <p class="mt-0.5 text-[12px] text-ink-3">Seven checks, run against this exact message and audience.</p>
+          {# No count in the wording: it was "Seven checks" and went stale the
+             moment an eighth was added. #}
+          <p class="mt-0.5 text-[12px] text-ink-3">Every check, run against this exact message and every recipient it resolves to.</p>
         </div>
         <button type="button" id="preflightBtn"
                 class="ml-auto shrink-0 rounded-lg border border-line-strong bg-page px-3 py-1.5 text-[12px] font-medium text-ink

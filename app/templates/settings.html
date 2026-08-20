@@ -1,50 +1,54 @@
 {% extends "base.html" %}
 {% block title %}Settings{% endblock %}
 
+{# Ported onto the shell's tokens. The page heading is gone deliberately: the
+   shell renders `{% block title %}` as the top-bar heading, so this file's own
+   <h1> put the word "Settings" on screen twice. Layout is untouched — this was
+   a class swap, not a redesign. #}
+
 {% block content %}
 <div class="space-y-6">
-    <h1 class="text-2xl font-bold text-gray-900">Settings</h1>
-
-    <div id="dryRunBanner" class="hidden bg-amber-50 border border-amber-200 rounded-xl p-4 text-sm text-amber-800">
+    <div id="dryRunBanner" class="hidden rounded-xl border-l-4 border-warn-ink bg-warn-soft px-4 py-3 text-sm leading-relaxed text-ink">
         <span class="font-semibold">Dry-run mode.</span>
-        Messages are written to the log and never sent. Set <code class="bg-amber-100 px-1 rounded">SMS_PROVIDER</code>
-        in <code class="bg-amber-100 px-1 rounded">.env</code> to go live.
+        Messages are written to the log and never sent. Set <code class="rounded bg-surface-2 px-1 py-0.5">SMS_PROVIDER</code>
+        in <code class="rounded bg-surface-2 px-1 py-0.5">.env</code> to go live.
     </div>
 
-    <div class="bg-white border border-gray-200 rounded-xl px-6 py-6">
-        <h3 class="font-semibold text-gray-900">Auto-reply</h3>
-        <p class="mt-1 text-sm text-gray-500">
-            Sent to anyone who texts <code class="text-xs bg-gray-100 px-1.5 py-0.5 rounded" id="senderNumber">…</code>.
+    <div class="rounded-xl border border-line bg-surface px-6 py-6">
+        <h2 class="font-semibold text-ink">Auto-reply</h2>
+        <p class="mt-1 text-sm text-ink-3">
+            Sent to anyone who texts <code class="rounded bg-surface-2 px-1.5 py-0.5 text-xs" id="senderNumber">…</code>.
             STOP and START are handled automatically and do not use this text.
         </p>
 
         <form class="mt-5 space-y-5" id="autoReplyForm">
             <div>
                 <textarea id="autoReply" rows="8"
-                          class="block w-full rounded-lg border border-gray-300 py-2.5 px-3 text-sm font-mono shadow-sm"></textarea>
-                <div class="mt-2 flex flex-wrap items-center gap-4 text-xs text-gray-400">
+                          class="block w-full rounded-lg border border-line-strong bg-page px-3 py-2.5 font-mono text-sm text-ink
+                                 placeholder:text-ink-3 focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"></textarea>
+                <div class="mt-2 flex flex-wrap items-center gap-4 text-xs text-ink-3">
                     <span><span id="charCount">0</span> characters</span>
                     <span><span id="segCount">0</span> segments</span>
                     <span id="encodingNote"></span>
                 </div>
             </div>
 
-            <div class="bg-slate-50 rounded-lg p-4 border border-slate-200">
-                <h4 class="text-sm font-medium text-gray-700">Preview</h4>
-                <div class="mt-2 bg-white p-3 rounded-lg border border-gray-200">
-                    <p class="text-sm text-gray-900 whitespace-pre-wrap" id="replyPreview"></p>
+            <div class="rounded-lg border border-line bg-surface-2 p-4">
+                <h3 class="text-sm font-medium text-ink-2">Preview</h3>
+                <div class="mt-2 rounded-lg border border-line bg-page p-3">
+                    <p class="whitespace-pre-wrap text-sm text-ink" id="replyPreview"></p>
                 </div>
             </div>
 
             <div class="flex items-center justify-between">
-                <button type="button" id="resetBtn" class="text-sm text-gray-500 hover:text-gray-700 font-medium">Reset to default</button>
-                <button type="submit" class="px-5 py-2.5 rounded-lg text-sm font-medium text-on-brand bg-brand hover:opacity-90">Save</button>
+                <button type="button" id="resetBtn" class="text-sm font-medium text-ink-3 hover:text-ink">Reset to default</button>
+                <button type="submit" class="rounded-lg bg-brand px-5 py-2.5 text-sm font-medium text-on-brand hover:opacity-90">Save</button>
             </div>
         </form>
     </div>
 
-    <div class="bg-white border border-gray-200 rounded-xl px-6 py-6">
-        <h3 class="font-semibold text-gray-900">System</h3>
+    <div class="rounded-xl border border-line bg-surface px-6 py-6">
+        <h2 class="font-semibold text-ink">System</h2>
         <dl class="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2" id="systemInfo"></dl>
     </div>
 </div>
@@ -74,14 +78,14 @@ async function loadSystem() {
     if (d.dry_run) document.getElementById('dryRunBanner').classList.remove('hidden');
 
     const badge = (ok, yes, no) =>
-        `<span class="inline-flex px-2 py-0.5 rounded text-xs font-medium ${ok ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600'}">${ok ? yes : no}</span>`;
+        `<span class="inline-flex px-2 py-0.5 rounded text-xs font-medium ${ok ? 'bg-good-soft text-good-ink' : 'bg-surface-2 text-ink-2'}">${ok ? yes : no}</span>`;
 
     document.getElementById('systemInfo').innerHTML = `
-        <div><dt class="text-sm text-gray-500">Messaging</dt><dd class="mt-0.5">${badge(d.provider_configured, 'Live', 'Dry run')}</dd></div>
-        <div><dt class="text-sm text-gray-500">Sending number</dt><dd class="mt-0.5 text-sm font-mono text-gray-900">${esc(d.sender_number || '—')}</dd></div>
-        <div><dt class="text-sm text-gray-500">Environment</dt><dd class="mt-0.5 text-sm text-gray-900">${esc(d.environment)}</dd></div>
-        <div><dt class="text-sm text-gray-500">Pre-flight balance check</dt><dd class="mt-0.5">${badge(d.preflight_balance_check, 'On', 'Off')}</dd></div>
-        <div><dt class="text-sm text-gray-500">Skip out-of-region numbers</dt><dd class="mt-0.5">${badge(d.skip_non_us, 'On', 'Off')}</dd></div>`;
+        <div><dt class="text-sm text-ink-3">Messaging</dt><dd class="mt-0.5">${badge(d.provider_configured, 'Live', 'Dry run')}</dd></div>
+        <div><dt class="text-sm text-ink-3">Sending number</dt><dd class="mt-0.5 text-sm font-mono text-ink">${esc(d.sender_number || '—')}</dd></div>
+        <div><dt class="text-sm text-ink-3">Environment</dt><dd class="mt-0.5 text-sm text-ink">${esc(d.environment)}</dd></div>
+        <div><dt class="text-sm text-ink-3">Pre-flight balance check</dt><dd class="mt-0.5">${badge(d.preflight_balance_check, 'On', 'Off')}</dd></div>
+        <div><dt class="text-sm text-ink-3">Skip out-of-region numbers</dt><dd class="mt-0.5">${badge(d.skip_non_us, 'On', 'Off')}</dd></div>`;
 }
 
 document.getElementById('autoReply').addEventListener('input', function () {

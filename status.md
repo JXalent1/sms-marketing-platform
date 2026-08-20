@@ -385,3 +385,166 @@ new), green twice in a row on fresh databases. No migration, no `alembic/`, no
 - **`run.sh` builds its own `venv/` from `requirements.txt` on first use**, so
   the first invocation in a fresh worktree takes long enough to look hung. Same
   root cause as the `venv/` vs `.venv/` note above.
+
+---
+
+## Module 5b Part A — Go live prep (appended by session 5b, 2026-08-19)
+
+**Status: Part A complete. Part B is human work and was not attempted.**
+Nothing in this session can send a message. `SMS_PROVIDER` stays `console` in
+every file touched, no live credential was written anywhere, and the only
+provider call added is `get_balance()`, which is a read.
+
+Gate green at both ends. **119 tests at start, 133 at end** (+14: 3 pre-flight,
+11 monitoring). Suite run twice, green both.
+
+### A1 — the 5a gaps
+
+- **`docs/RUNBOOK.md` written.** It did not exist; `sessions/session-5a.md` asked
+  for it and 5a was built without its spec. Deploy · roll back · restore a backup
+  · **stop a campaign mid-send** · rotate the carrier credential · read the logs
+  · check the certificate · disk full · a five-line health sweep. Real commands.
+  It does **not** name the carrier, even though it is ours — the acceptance
+  criterion greps it, and the habit is the control.
+- **`deployment/deploy.sh` hardened**, all five items: `fonts:sync` alongside
+  `build:css` (with a guard that refuses to sync an empty `static/fonts/`, since
+  the `rsync --delete` that follows would delete the server's copy); backup
+  immediately before migrating; migrate before restarting and abort the deploy if
+  it fails; `/health` check after restart with code rollback to `app.prev` on
+  failure; refusal to deploy from a dirty tree.
+  - **The dirty-tree check reports rather than aborts under `--dry-run`.** A dry
+    run's job is to print the later steps for review, and one that exits at step
+    1 because the reviewer has an editor open shows nothing. `--allow-dirty`
+    overrides it on a real run.
+
+### A2 — local environment
+
+`.env.example` now sets `ENVIRONMENT=development` (was `production`) and
+`PUBLIC_BASE_URL=http://localhost:8000`, with the reasoning inline. This closes
+the 3b "Found while working" note below. README gained a "Two commands stand
+between a fresh clone and a working app" section naming `npm run build:css` and
+`alembic upgrade head`, and saying plainly that neither symptom is a regression.
+
+### A3 — monitoring
+
+`app/services/monitoring_service.py`, both jobs registered in `app/main.py`'s
+lifespan and both alerting through `agent/notify.sh`:
+
+| id | trigger | does |
+|---|---|---|
+| `low_balance_alert` | hourly | pages below `BALANCE_ALERT_THRESHOLD`, re-alerts at most every 12h, re-arms on recovery |
+| `daily_failure_digest` | cron 07:00 | yesterday's failures grouped by reason, silent on a clean day |
+
+- **The alert no longer goes over the carrier account it is warning about.**
+  `scripts/balance_alert.py` used `provider.send()`, and its own docstring
+  admitted the hole: at a true zero balance the warning cannot be sent either, so
+  the one moment it matters is the one moment it is dropped. That script is now
+  a thin cron entry point over the same service function — one threshold, one
+  re-alert window, one state file.
+- Startup now logs one line per registered job by id. "Scheduler started" told us
+  a scheduler exists; a job that silently failed to register looks exactly like a
+  quiet night.
+- `notify()` logs `notify.sh`'s stderr at INFO. With no pager credential the
+  script prints the message and exits 0, and discarding that captured output made
+  the alert vanish on exactly the boxes least likely to be watched.
+
+### A4 — `deployment/PRODUCTION_CHECKLIST.md`
+
+Every variable, what it does, what breaks when it is wrong. Placeholders only; no
+real credential, number, hostname or IP. `SMS_PROVIDER`, `PUBLIC_BASE_URL`,
+`SECRET_KEY` and `DATABASE_URL` are called out first as the four that decide
+whether it works at all. `bootstrap.sh`'s closing instructions now point at it
+instead of at `.env.example`.
+
+### A5 — documentation
+
+- **`docs/API.md`**: the retired `/api/contacts/import*` entries replaced with the
+  `/api/imports/{preview,commit,undo}` flow, response shapes included. Also added
+  the undocumented `/api/campaigns/preflight`, corrected `POST /api/campaigns`
+  (`category_id` required unless `cross_category_override`), added the categories
+  section, and fixed the usage responses, which still described a tiered
+  `allowance`/`overage`/`base_fee` model the code has not used since module 1b.
+  Every JSON body was verified against a running instance, not written from
+  memory. This closes two "Found while working" notes below.
+- **`docs/CLIENT_GUIDE.md`** re-read against what shipped. It described "Dashboard
+  / Campaigns" and a four-step send; the product has Today / Compose and a
+  three-step composer with pre-flight. Six real screenshots added under
+  `docs/screenshots/`. There were no `[SCREENSHOT: ...]` markers to fill — 5a
+  never wrote them — so the captures were placed where the sections needed them.
+  No carrier name.
+
+### A6 — the three light-palette screens
+
+`settings.html` and `blocklist.html` ported onto the shell's tokens; a mechanical
+class swap, no restructuring. `usage.html` was already on tokens. All three had a
+page `<h1>` under the shell's top-bar heading, so the page name appeared twice —
+all three removed. `blocklist.html` and `usage.html` also renamed their
+`{% block title %}` to match the nav ("Opt-outs", "Usage & billing"), which
+closes the 3a "nav label and page heading disagree" note. `base.html`'s header
+comment, which documented the light palette as known-and-deliberate, updated to
+say the opposite is now true.
+
+### A7 — pre-flight measures what is actually sent
+
+`build_report()` counted segments off the raw template, where `{first_name}` is
+twelve literal characters and no recipient's message is. It now takes
+`exact_segment_totals()`, which renders the template per resolved recipient —
+using the send path's own `render()`, passed in — and sums the real segments. New
+`merge_expansion` check flags when rendering pushes anyone past a boundary the
+template did not predict. The composer's keystroke counter stays cheap and is now
+labelled an estimate, with a line explaining why.
+
+The `/preflight` endpoint's capacity row is now computed from the exact total,
+which is what `create_campaign()` already stores in `estimated_segments`. That
+makes the composer's capacity verdict and the send path's enforced one the same
+arithmetic rather than two estimates that agree most of the time. **The capacity
+check itself is untouched**, as is the rate, the allowance and the
+billable-status set — this was accuracy, not policy.
+
+**The spec's worked example is arithmetically impossible and was not followed
+literally.** It describes a 158-character template with `{first_name}` crossing a
+boundary for an 11-character name. `{first_name}` is twelve characters, so an
+eleven-character name always makes the message *shorter*; a template at or under
+160 stays at or under 160. Verified, then implemented with the tag that does
+produce the under-count: `{name}` is six characters, so a 158-character template
+holding it is one segment and renders to 163 — two — for a Christopher. Same 158,
+same two names, arithmetic that works. Both directions are tested, and the
+reasoning is written into the test file so the next reader does not re-derive it.
+
+### Verified this session
+
+- `bash agent/gate.sh` green at start (119) and end (133) — both shown
+- Suite twice in a row, 133 both times
+- `bash -n` clean on all four shell scripts; `shellcheck` is not installed
+- `deploy.sh --dry-run` and `bootstrap.sh --dry-run` both exit 0, no side effects
+- `deploy.sh --dry-run` output shows the migrate-before-restart order, the
+  pre-migrate backup, the fonts sync, the health check and the dirty-tree refusal
+- Both monitoring jobs log their registration on startup, by id
+- A simulated $9.90 balance against a $50 threshold pages through `notify.sh` and
+  is held by the re-alert window on the second tick — with a stub provider whose
+  `send()` raises, so a regression that routes the alert back through the carrier
+  fails loudly instead of texting someone
+- `grep -rniE "telnyx|twilio" docs/CLIENT_GUIDE.md docs/RUNBOOK.md` → nothing
+- `grep -rn "SMS_PROVIDER" deployment/` → only `console`
+- Settings, Opt-outs and Usage screenshotted on dark tokens; "Settings" appears
+  once
+
+### Found while working (session 5b)
+
+- **`app/routers/usage.py:46` still reads `WHOLESALE_COST_PER_SEGMENT`.** Session
+  4's note below is unchanged and still module 8's. The runtime test proves the
+  rate does not reach the response; the literal grep is what fails.
+- **`run.sh` still creates `venv/` while the project uses `.venv/`.** Third
+  session in a row this has been noted. `docs/API.md`, `README.md` and now
+  `PRODUCTION_CHECKLIST.md` all assume `.venv`. It is a two-line fix in a file
+  nobody owns.
+- **`agent/notify.sh` sends over the carrier account by default.** It reads
+  `TELNYX_*` — the same credential the low-balance alert is warning about. The
+  monitoring code is now correct (it does not use `provider.send()`), but the
+  transport underneath it can still be pointed at the empty account. `notify.sh`
+  is human-only, so this is a note: **give it a separate credential before
+  go-live**, or the fix in A3 is undone by configuration.
+- **`docs/NEW_CLIENT_CHECKLIST.md` predates the category work.** It describes the
+  uncategorised import flow and does not mention categories, pre-flight or the
+  composer. Not touched — 5b's file list does not include it, and it is the
+  skeleton's doc rather than this client's.

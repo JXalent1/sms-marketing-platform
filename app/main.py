@@ -118,16 +118,49 @@ async def lifespan(app: FastAPI):
     # and a tighter tick would spend a query a second on an empty table.
     # max_instances=1 so a long blast cannot have a second copy of itself
     # started underneath it.
+    from apscheduler.triggers.cron import CronTrigger
     from apscheduler.triggers.interval import IntervalTrigger
     from app.services.campaign_service import run_due_campaigns
+    from app.services import monitoring_service
 
     scheduler.add_job(
         run_due_campaigns,
         IntervalTrigger(minutes=1),
         id="scheduled_campaigns", replace_existing=True, max_instances=1,
     )
+
+    # Monitoring. Both alert through agent/notify.sh, which is the operator's
+    # pager and not a client-facing surface; neither can send a campaign
+    # message. See app/services/monitoring_service.py for why the low-balance
+    # warning does not go over the carrier account it is warning about.
+    #
+    # Hourly, not per-minute: a balance moves at the speed of a campaign, and
+    # the threshold is set high enough that an hour of warning is still hours of
+    # headroom. coalesce so a laptop waking from sleep fires one check, not the
+    # twelve it slept through.
+    scheduler.add_job(
+        monitoring_service.low_balance_job,
+        IntervalTrigger(hours=1),
+        id="low_balance_alert", replace_existing=True, max_instances=1,
+        coalesce=True,
+    )
+
+    # 07:00 local, so yesterday is complete and the digest is on screen before
+    # the day's first campaign is written rather than after it.
+    scheduler.add_job(
+        monitoring_service.failure_digest_job,
+        CronTrigger(hour=7, minute=0),
+        id="daily_failure_digest", replace_existing=True, max_instances=1,
+        coalesce=True,
+    )
+
     scheduler.start()
-    logger.info("Scheduler started | scheduled campaigns checked every minute")
+    for job in scheduler.get_jobs():
+        # One line per job, by id. "Scheduler started" told us a scheduler
+        # exists; it did not tell us which jobs actually registered, and a job
+        # that silently failed to register looks exactly like a quiet night.
+        logger.info(f"Scheduled job registered | id={job.id} | trigger={job.trigger}")
+    logger.info(f"Scheduler started | {len(scheduler.get_jobs())} jobs registered")
 
     yield
 

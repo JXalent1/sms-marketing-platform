@@ -1,54 +1,58 @@
 {% extends "base.html" %}
-{% block title %}Blocklist{% endblock %}
+{# The nav calls this screen "Opt-outs" and so does the top bar, via this block.
+   The page used to head itself "Blocklist" as well, which read as two different
+   screens. One name, in one place. #}
+{% block title %}Opt-outs{% endblock %}
 
 {% block content %}
 <div class="space-y-6">
-    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-        <div>
-            <h1 class="text-2xl font-bold text-gray-900">Blocklist</h1>
-            <p class="text-sm text-gray-500 mt-1">
-                Numbers here are <span class="font-semibold">never</span> messaged. Opt-outs are permanent
-                and are kept independently of the carrier.
-            </p>
-        </div>
-        <div class="bg-white border border-gray-200 rounded-lg px-4 py-2 text-center">
-            <div class="text-2xl font-bold text-red-600" id="blockedCount">—</div>
-            <div class="text-xs text-gray-500 font-medium">Blocked</div>
+    <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+        <p class="max-w-2xl text-sm text-ink-3">
+            Numbers here are <span class="font-semibold text-ink">never</span> messaged. Opt-outs are permanent
+            and are kept independently of the carrier.
+        </p>
+        <div class="shrink-0 rounded-lg border border-line bg-surface px-4 py-2 text-center">
+            <div class="text-2xl font-bold tabular-nums text-crit" id="blockedCount">—</div>
+            <div class="text-xs font-medium text-ink-3">Blocked</div>
         </div>
     </div>
 
-    <div class="bg-white border border-gray-200 rounded-xl p-5">
-        <h2 class="text-sm font-semibold text-gray-900 mb-3">Add a number</h2>
-        <form id="blockForm" class="flex flex-col sm:flex-row gap-3">
+    <div class="rounded-xl border border-line bg-surface p-5">
+        <h2 class="mb-3 text-sm font-semibold text-ink">Add a number</h2>
+        <form id="blockForm" class="flex flex-col gap-3 sm:flex-row">
             <input type="tel" id="blockPhone" placeholder="+15551234567" required
-                   class="flex-1 rounded-lg border border-gray-300 px-3 py-2 text-sm shadow-sm">
-            <select id="blockReason" class="rounded-lg border border-gray-300 px-3 py-2 text-sm shadow-sm bg-white">
+                   class="flex-1 rounded-lg border border-line-strong bg-page px-3 py-2 text-sm text-ink
+                          placeholder:text-ink-3 focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand">
+            <select id="blockReason"
+                    class="rounded-lg border border-line-strong bg-page px-3 py-2 text-sm text-ink
+                           focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand">
                 <option value="manual">Manual block</option>
                 <option value="stop_keyword">Opt-out request</option>
                 <option value="carrier_block">Carrier block</option>
                 <option value="delivery_failure">Delivery failure</option>
             </select>
             <input type="text" id="blockNotes" placeholder="Notes (optional)"
-                   class="flex-1 rounded-lg border border-gray-300 px-3 py-2 text-sm shadow-sm">
-            <button type="submit" class="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-lg text-sm font-medium">Block</button>
+                   class="flex-1 rounded-lg border border-line-strong bg-page px-3 py-2 text-sm text-ink
+                          placeholder:text-ink-3 focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand">
+            <button type="submit" class="rounded-lg bg-crit px-4 py-2 text-sm font-medium text-page hover:opacity-90">Block</button>
         </form>
     </div>
 
-    <div class="bg-white border border-gray-200 rounded-xl overflow-hidden">
+    <div class="overflow-hidden rounded-xl border border-line bg-surface">
         <div class="overflow-x-auto">
-            <table class="min-w-full divide-y divide-gray-200">
-                <thead class="bg-gray-50">
+            <table class="min-w-full divide-y divide-line">
+                <thead class="bg-surface-2">
                     <tr>
-                        <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase">Phone</th>
-                        <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase">Reason</th>
-                        <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase">Source</th>
-                        <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase">Blocked</th>
-                        <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase">Notes</th>
-                        <th class="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase">Actions</th>
+                        <th class="px-4 py-3 text-left text-xs font-semibold uppercase text-ink-3">Phone</th>
+                        <th class="px-4 py-3 text-left text-xs font-semibold uppercase text-ink-3">Reason</th>
+                        <th class="px-4 py-3 text-left text-xs font-semibold uppercase text-ink-3">Source</th>
+                        <th class="px-4 py-3 text-left text-xs font-semibold uppercase text-ink-3">Blocked</th>
+                        <th class="px-4 py-3 text-left text-xs font-semibold uppercase text-ink-3">Notes</th>
+                        <th class="px-4 py-3 text-right text-xs font-semibold uppercase text-ink-3">Actions</th>
                     </tr>
                 </thead>
-                <tbody id="blocklistBody" class="divide-y divide-gray-200">
-                    <tr><td colspan="6" class="px-4 py-8 text-center text-sm text-gray-400">Loading…</td></tr>
+                <tbody id="blocklistBody" class="divide-y divide-line">
+                    <tr><td colspan="6" class="px-4 py-8 text-center text-sm text-ink-3">Loading…</td></tr>
                 </tbody>
             </table>
         </div>
@@ -59,10 +63,10 @@
 {% block scripts %}
 <script>
 const REASONS = {
-    stop_keyword:     { label: 'Opt-out (STOP)',  cls: 'bg-yellow-100 text-yellow-800' },
-    delivery_failure: { label: 'Delivery failure', cls: 'bg-orange-100 text-orange-800' },
-    manual:           { label: 'Manual',           cls: 'bg-gray-100 text-gray-800' },
-    carrier_block:    { label: 'Carrier block',    cls: 'bg-red-100 text-red-800' },
+    stop_keyword:     { label: 'Opt-out (STOP)',   cls: 'bg-warn-soft text-warn-ink' },
+    delivery_failure: { label: 'Delivery failure', cls: 'bg-accent-soft text-accent' },
+    manual:           { label: 'Manual',           cls: 'bg-surface-2 text-ink-2' },
+    carrier_block:    { label: 'Carrier block',    cls: 'bg-crit-soft text-crit' },
 };
 const SOURCES = { auto: 'Automatic', manual: 'Manual' };
 
@@ -72,18 +76,18 @@ async function loadBlocklist() {
 
     const body = document.getElementById('blocklistBody');
     if (!data.numbers.length) {
-        body.innerHTML = '<tr><td colspan="6" class="px-4 py-8 text-center text-sm text-gray-400">No blocked numbers</td></tr>';
+        body.innerHTML = '<tr><td colspan="6" class="px-4 py-8 text-center text-sm text-ink-3">No blocked numbers</td></tr>';
         return;
     }
     body.innerHTML = data.numbers.map(n => {
-        const reason = REASONS[n.reason] || { label: n.reason, cls: 'bg-gray-100 text-gray-800' };
+        const reason = REASONS[n.reason] || { label: n.reason, cls: 'bg-surface-2 text-ink-2' };
         return `
-        <tr class="hover:bg-gray-50">
-            <td class="px-4 py-3 text-sm font-mono font-medium text-gray-900 whitespace-nowrap">${esc(n.phone)}</td>
+        <tr class="hover:bg-surface-2">
+            <td class="px-4 py-3 text-sm font-mono font-medium text-ink whitespace-nowrap">${esc(n.phone)}</td>
             <td class="px-4 py-3 whitespace-nowrap"><span class="inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${reason.cls}">${esc(reason.label)}</span></td>
-            <td class="px-4 py-3 text-sm text-gray-500">${esc(SOURCES[n.source] || n.source || '—')}</td>
-            <td class="px-4 py-3 text-sm text-gray-500 whitespace-nowrap">${esc(fmtDate(n.blocked_at))}</td>
-            <td class="px-4 py-3 text-sm text-gray-500 max-w-xs truncate" title="${esc(n.notes || '')}">${esc(n.notes || '—')}</td>
+            <td class="px-4 py-3 text-sm text-ink-2">${esc(SOURCES[n.source] || n.source || '—')}</td>
+            <td class="px-4 py-3 text-sm text-ink-2 whitespace-nowrap">${esc(fmtDate(n.blocked_at))}</td>
+            <td class="px-4 py-3 text-sm text-ink-2 max-w-xs truncate" title="${esc(n.notes || '')}">${esc(n.notes || '—')}</td>
             <td class="px-4 py-3 text-right whitespace-nowrap">
                 <button onclick="unblock('${esc(n.phone)}')" class="text-sm font-medium text-brand hover:opacity-80">Unblock</button>
             </td>

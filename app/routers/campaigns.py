@@ -23,7 +23,7 @@ from app.services.campaign_service import (
 from app.services import contact_service, preflight_service
 from app.services.blocklist_service import load_blocked_set
 from app.sms.factory import get_provider
-from app.sms.segments import describe, count_segments
+from app.sms.segments import describe
 from app.sms.phone import normalize, scrub_provider_text, find_risky_links
 import logging
 
@@ -104,6 +104,9 @@ def _audience_split(db: Session, audience: Optional[str],
         "suppressed": len(suppressed),
         "opted_out": sum(1 for c in resolved if c.phone in blocked),
         "sample": sendable[0] if sendable else None,
+        # The resolved audience itself, for pre-flight's per-recipient render.
+        # /preview ignores it: that runs on every keystroke and must stay cheap.
+        "sendable": sendable,
     }
 
 
@@ -164,12 +167,21 @@ async def preflight(payload: PreflightRequest, db: Session = Depends(get_db),
         raise HTTPException(status_code=404, detail="Category not found")
 
     split = _audience_split(db, payload.audience, payload.batch_size)
+    service = CampaignService(db)
+
+    # Rendered per recipient, not counted off the raw template. `create_campaign`
+    # already sums real rendered segments into `campaign.estimated_segments`, so
+    # measuring the same way here is what makes the composer's capacity row and
+    # the send path's enforced verdict the same arithmetic instead of two
+    # estimates that agree most of the time.
+    totals = preflight_service.exact_segment_totals(
+        payload.message_template, split["sendable"], service.render
+    )
 
     # The capacity check is denominated in our wholesale cost, so it needs the
     # segment total the campaign would actually queue.
-    per_message = count_segments(payload.message_template or "")
-    total_segments = per_message * split["recipients"]
-    assessment = await CampaignService(db).capacity_assessment(
+    total_segments = totals["total_segments"]
+    assessment = await service.capacity_assessment(
         total_segments, wholesale_estimate(total_segments)
     )
 
@@ -177,6 +189,7 @@ async def preflight(payload: PreflightRequest, db: Session = Depends(get_db),
         db,
         category_slug=category.slug if category else None,
         message_template=payload.message_template,
+        totals=totals,
         sendable_count=split["recipients"],
         suppressed_count=split["suppressed"],
         capacity_assessment=assessment,

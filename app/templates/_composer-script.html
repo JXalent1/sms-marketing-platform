@@ -262,6 +262,15 @@ async function runPreflight() {
             </div>
         </li>`;
     }).join('');
+
+    // Pre-flight measured the template against every resolved recipient, so its
+    // total supersedes the keystroke estimate the summary panel was carrying.
+    // Leaving the estimate up next to a checklist that says otherwise is how a
+    // quote and an invoice end up disagreeing.
+    if (report.counts?.segments_measured) {
+        el('sumSegments').textContent = report.counts.total_segments.toLocaleString();
+        el('sumCost').textContent = money(report.estimated_cost);
+    }
 }
 
 // ─── Commit ─────────────────────────────────────────────────────────────────

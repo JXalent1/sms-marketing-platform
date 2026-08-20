@@ -164,13 +164,16 @@ cat <<EOF
 
 ── Bootstrap complete. Remaining steps are deliberately manual:
 
-  1. Write $APP_DIR/.env from .env.example.
+  1. Write $APP_DIR/.env by working through deployment/PRODUCTION_CHECKLIST.md.
+     Do NOT copy .env.example and edit it from memory — its defaults are for a
+     developer's machine, and ENVIRONMENT is the one that bites.
      Generate SECRET_KEY with:  openssl rand -hex 32
      Generate the admin hash with:  python scripts/hash_password.py
      Leave SMS_PROVIDER=console.
 
   2. From your laptop:  SERVER=$APP_USER@<host> SERVICE=$APP_NAME ./deployment/deploy.sh
-     That builds the stylesheet, syncs the code and runs 'alembic upgrade head'.
+     That builds the stylesheet and fonts, syncs the code, backs up the database,
+     runs 'alembic upgrade head', restarts, and health-checks /health.
 
   3. Certificate:  sudo certbot --nginx -d ${DOMAIN:-<your-domain>}
 
