@@ -113,6 +113,69 @@ Lines 280-283 don't merely omit 5c's new fields — they tell the reader to find
 URL there, which was removed on white-label grounds and has a test pinning its absence.
 Fix the section to match reality and document the degraded fields from A1–A4.
 
+## A7. The delivery webhook never consults the auto-block list
+
+Found by a live campaign: 6,857 recipients, 2,673 undelivered (39%), of which **2,526
+were "Not routable: the destination number is either a landline or a non-routable
+wireless number"** and 100 were "deemed invalid by the carrier".
+
+`AUTO_BLOCK_ERROR_FRAGMENTS` in `app/sms/compliance.py:74` already contains
+`"not routable"` and `"landline"`, above a comment reading *"which is what keeps a list
+from degrading into thousands of guaranteed failures per campaign."* It never fired.
+
+`should_auto_block()` is called from exactly one place — `campaign_service.py:369`, the
+**submission** path, where the provider rejects a send outright. These 2,673 were accepted
+at submission (HTTP 200) and failed later via **delivery webhook**.
+`record_delivery_status()` in `app/routers/webhooks/common.py:76-88` writes `undelivered`
+and the carrier's error text and never consults the block list. Two failure paths, one
+guard, and the guard is on the path that carries the smaller share of failures.
+
+Cost of leaving it: those numbers stay live in the contact list and fail again on every
+send — roughly $24 of wasted sends per campaign, permanently, and a delivery rate of 61%
+where it should be ~99%.
+
+Fix:
+
+- Call `should_auto_block()` on the webhook failure path, blocking with
+  `reason="delivery_failure"` and `source` set to the provider. That reason already exists
+  in `BLOCK_REASONS` with the comment "carrier says unreachable/landline/invalid", so the
+  data model was built for this — only the call site is missing.
+- Add `"deemed invalid"` to `AUTO_BLOCK_ERROR_FRAGMENTS`. The 100 invalid-destination
+  failures match none of the current fragments: the carrier's wording is "the destination
+  phone number was deemed invalid by the carrier", and neither `"is not a valid"` nor
+  `"invalid phone number"` appears in it.
+- **Do not block on temporary failures.** `"Blocked as spam - temporary"` (47 in that
+  campaign) must stay sendable. Verify no current or added fragment matches it.
+
+Tests, both directions:
+
+- a not-routable delivery webhook blocks the number with `reason="delivery_failure"`
+- a temporary-spam delivery webhook does **not** block
+- a delivered webhook still does not block
+- the same webhook delivered twice blocks once (carriers retry for days, and
+  `record_delivery_status` is documented as idempotent — keep it that way)
+
+The 2,626 already-dead numbers from campaign 4 were backfilled onto the blocklist by hand
+before this session. Do not re-run that backfill; do confirm the code path now produces the
+same outcome unaided.
+
+## A8. The Opt-outs page headline counts the wrong thing
+
+After the backfill, `/blocklist` shows a single red **2,626** labelled "Blocked", on a
+screen titled "Opt-outs", beneath copy reading "Opt-outs are permanent". The client will
+read that as 2,626 people opting out. The actual opt-out count is near zero.
+
+The table rows are already correct — `REASONS` in `blocklist.html:65-70` renders a
+distinct "Delivery failure" badge — so this is only the summary stat.
+
+Split the headline: opt-outs (`stop_keyword`) and unreachable numbers
+(`delivery_failure`, `carrier_block`) counted separately, with only the opt-out figure
+carrying the critical/red treatment. An unreachable number is a data-quality fact, not a
+compliance event, and should not be dressed as one.
+
+The dashboard's own "Opt-out rate" tile is already correct — `dashboard_service.py:248`
+filters on `reason == "stop_keyword"`. Match that behaviour here rather than inventing a
+second definition.
 ---
 
 ## Part A acceptance
@@ -133,6 +196,10 @@ Demonstrate each in the transcript. Self-declared completion does not count.
 8. New tests fail against the pre-fix tree — show both directions.
 9. After deploy: seven screens 200 over HTTPS, fonts load, no carrier name in any rendered
    page or API response, and the pill correctly reports a *working* provider.
+10. A not-routable delivery webhook blocks the number as `delivery_failure`; a
+    temporary-spam webhook does not; a repeated webhook blocks only once.
+11. `/blocklist` reports opt-outs and unreachable numbers as separate figures, and only
+    the opt-out figure is styled critical. Show it against the live 2,626 backfilled rows.
 
 Wire this into a `/goal` stop condition with a turn cap, then run a fresh-context review
 pass before declaring done.

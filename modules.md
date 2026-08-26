@@ -31,7 +31,9 @@ client sending real campaigns.
 | 5a | Deploy scaffolding | Done · gaps for 5b | 1b | `deployment/**`, `scripts/backup.sh`, `docs/CLIENT_GUIDE.md`, `README.md` |
 | 5b | **Go live** | Part A done · B3 verified · B4/B5 pending | 3b, 4, 5a | `deployment/**`, `scripts/**`, `.env.example`, `docs/CLIENT_GUIDE.md`, `app/main.py` |
 | 5c | **Live-send blockers** | Part A done · deploy + B pending | 5b Part A | `requirements.txt`, `app/sms/factory.py`, `app/routers/settings.py`, `app/routers/pages.py`, `app/templates/settings.html`, `app/templates/base.html`, `deployment/nginx.conf.template`, `tests/`, `agent/accept-5c.sh` |
-| 5d | **Refuse to send from a degraded box** | Next — must land before client handover | 5c | `app/services/campaign_service.py`, `app/services/billing_service.py`, `app/models/sms_message.py`, `app/sms/factory.py`, `app/main.py`, `.claude/hooks/verify-gate.sh`, `docs/API.md`, `tests/` |
+| 5d | **Refuse to send from a degraded box** | Next — must land before client handover | 5c | `app/services/campaign_service.py`, `app/services/billing_service.py`, `app/models/sms_message.py`, `app/sms/factory.py`, `app/main.py`, `app/sms/compliance.py`, `app/routers/webhooks/common.py`, `app/templates/blocklist.html`, `.claude/hooks/verify-gate.sh`, `docs/API.md`, `tests/` |
+| 5e | **Campaign-first flow & QoL** | Next after 5d | 5d | `app/routers/campaigns.py`, `app/routers/contacts.py`, `app/templates/campaigns.html`, `app/templates/contacts.html`, `app/templates/settings.html`, `app/services/campaign_service.py`, `app/services/import_service.py`, `tests/` |
+| 5f | **Short links & reporting** | After 5e | 5e | `app/models/short_link.py`, `app/routers/links.py`, `app/routers/reports.py`, `app/services/link_service.py`, `app/templates/history.html`, `alembic/versions/`, `tests/` |
 
 **That's the launch — six sessions, but only four waves. See "Parallel plan" below.**
 
@@ -58,6 +60,17 @@ Not cancelled — descoped so the client can start sending. The plan for each is
 - **Redesigned History / Categories-admin / Opt-outs / Usage screens** (was 8) — the
   skeleton's versions of all four already work; they just aren't on the new dark design.
   Functional beats pretty for launch.
+
+#### Found in live use, not yet scheduled
+
+- **No way to add a single contact in the UI.** Contacts offers only CSV import and
+  export. The first time someone phones the auction house and asks to be added, the
+  client has to build a one-row CSV. `POST /api/contacts` already exists — this is a
+  form, not a feature.
+- **Quiet hours.** Nothing stops an 11pm blast but the operator's judgement.
+- **Line-type screening at import.** A live campaign found 2,526 landlines in a 6,857
+  list. 5d stops them recurring *after* a failed send; screening at import stops paying
+  for the first one. Telnyx number lookup is ~$0.004/number.
 
 Nothing in modules 1–5 forecloses any of it. `ContactSource` stays as the ingestion seam,
 categories are a real table from module 2, and the prospect tables are additive.
@@ -349,3 +362,71 @@ Parallelism buys wall-clock, not effort. Two worktrees means two agents' tokens,
 reviews, and a merge step. On a six-session build the saving is roughly one session of
 elapsed time. Worth it here only because launch speed is the goal — if it weren't, I'd
 run the whole thing sequentially and spend the attention on review instead.
+
+---
+
+## Requested 2026-08-24 — how the product actually gets used
+
+Jordan's own words after the first two live campaigns. These reshape the product's
+centre of gravity: the tool was built around a persistent contact database segmented
+into five categories, and in practice he works campaign-by-campaign off a fresh list.
+
+The engine already supports this. `contact_lists` / `contact_list_members` exist,
+campaigns already accept `audience = "list:<id>"`, `contact_service` has a selector
+grammar (`category:food_service&list:12`), and `import_service.commit()` already records
+per-batch provenance so an upload can be undone. What is missing is the *flow*, not the
+model — so this is UI and routing work, not a rebuild.
+
+### Decisions taken (Jordan, 2026-08-24)
+
+- **Categories become an optional tag on upload.** Audience is the list you just
+  uploaded. Tagging stays available so cross-campaign rollups remain possible
+  ("how do estate buyers perform vs memorabilia"), but is never required.
+- **Short links get a short dedicated domain**, not a subdomain of the main site.
+  `go.auctions4america.com/a7k` is 27 chars against `a4a.bz/a7k` at 10 — 11% of a
+  segment, and enough to push a tight message to two segments. Precedent: `es.pn`,
+  `swoo.sh`. Domain is a config value; registration does not block the build.
+  Register to Auctions4America, not the agency, so WHOIS matches the 10DLC brand.
+  Avoid `.link` / `.click` / `.xyz` / `.top` — carriers weight TLD reputation.
+- **Top-up sends go out and count.** Contacts added to an already-sent campaign
+  receive the same message and fold into that campaign's totals.
+
+### Non-negotiable regardless of flow
+
+- **Opt-outs are global and permanent.** A STOP suppresses that number on every
+  future upload, forever. Legal, not preference.
+- **The delivery-failure blocklist applies to every upload.** One live campaign left
+  2,626 dead numbers; re-paying for them on every send is ~$24 a campaign.
+- **The contacts table stays underneath uploads.** Per-person history is what makes
+  "has this buyer ever been texted, did they ever click" answerable.
+
+### 5e — Campaign-first flow & QoL
+
+1. **Upload a list as step one of creating a campaign.** The list is named for the
+   campaign, so a report on 8/25 reads "Italian restaurants" rather than a list id.
+2. **Optional category tag** on that upload.
+3. **Add a single contact from the UI.** `POST /api/contacts` exists; there is no form.
+   The client will hit this the first time somebody phones in.
+4. **Top-up send** — add contacts to an already-sent campaign, send them the same
+   message, count them in that campaign.
+5. **`RECENT_CONTACT_SUPPRESSION_DAYS` becomes a Settings field.** It is currently
+   buried in `.env`. Shipped at 3 days, it silently withheld 6,856 of 6,857 recipients
+   across two campaigns and required SQL to diagnose. Currently set to 0 in production
+   at Jordan's instruction.
+6. **The composer shows suppression before you queue**, not after: "X held back,
+   clears at 10:11am".
+7. **A campaign that sends zero aborts loudly** with the reason on the record. Two
+   campaigns reported `completed` with `sent=0`.
+
+### 5f — Short links & reporting
+
+1. `short_links` table, redirect route, one hop only, closed to outside minting.
+2. Composer merge tag for a campaign's link.
+3. Per-link click stats; per-campaign click-through.
+4. **Per-campaign report** — recipients, delivered, failed, opt-outs, clicks, cost.
+5. **Campaign history and message history screens** (was module 8, deferred at launch).
+
+### Still to brainstorm
+
+**Data streams for A4A** — what recurring sources of *buyers* exist. Deferred with the
+prospecting engine; now the next design conversation, not a build item yet.
