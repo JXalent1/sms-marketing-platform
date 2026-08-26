@@ -16,12 +16,45 @@ MAX_GATE_ATTEMPTS="${MAX_GATE_ATTEMPTS:-4}"
 DECISIONS_DIR="${DECISIONS_DIR:-$REPO_ROOT/decisions}"
 
 INPUT="$(cat)"
-read -r SESSION_ID STOP_ACTIVE <<<"$(python3 - <<PY
+
+# Parsed via the environment, not by pasting stdin into a Python literal.
+# The old form was `json.loads('''$INPUT''')` inside an unquoted heredoc, which
+# had three ways to fail on input we do not control: a literal ''' or a
+# backslash in the payload broke the quoting, `$` expanded, and — the one that
+# actually bit — json.loads rejects raw control characters, so a transcript
+# containing one raised JSONDecodeError. The `read` then assigned nothing,
+# STOP_ACTIVE stayed empty rather than "true", and the MAX_GATE_ATTEMPTS branch
+# below became unreachable: every gate failure bounced forever instead of
+# escalating after four attempts. strict=False accepts the control character;
+# passing the payload as an env var removes the quoting problem underneath it.
+# See decisions/001-gate-interpreter-path.md.
+read -r SESSION_ID STOP_ACTIVE <<<"$(HOOK_INPUT="$INPUT" python3 <<'PY'
 import json
-d = json.loads('''$INPUT''' or '{}')
-print(d.get("session_id", "nosession"), str(d.get("stop_hook_active", False)).lower())
+import os
+import re
+
+try:
+    payload = json.loads(os.environ.get("HOOK_INPUT") or "{}", strict=False)
+    if not isinstance(payload, dict):
+        payload = {}
+except Exception:
+    payload = {}
+
+# Whitespace would split the read below into the wrong fields, and the id
+# becomes a path component. Anything unexpected is treated as no id at all.
+raw_id = str(payload.get("session_id") or "")
+session_id = raw_id if re.fullmatch(r"[A-Za-z0-9._-]{1,128}", raw_id) else ""
+
+print(session_id or "-", str(payload.get("stop_hook_active", False)).lower())
 PY
 )"
+
+# If python3 itself is missing or dies before printing, `read` assigns nothing
+# and SESSION_ID is empty — which would make ATTEMPT_FILE a bare directory path
+# and the counter write fail. Fall back to the same "no id" handling a payload
+# without a session id gets.
+[[ -n "${SESSION_ID:-}" ]] || SESSION_ID="-"
+[[ -n "${STOP_ACTIVE:-}" ]] || STOP_ACTIVE="false"
 
 # ---- 1. Unanswered escalation? Let the agent stop; a human is the blocker. ----
 if compgen -G "$DECISIONS_DIR/*.open.md" >/dev/null 2>&1; then
@@ -31,8 +64,23 @@ if compgen -G "$DECISIONS_DIR/*.open.md" >/dev/null 2>&1; then
 fi
 
 # ---- 2. Loop guard: never bounce forever. ----
-ATTEMPT_FILE="/tmp/gate-attempts-${SESSION_ID}"
+# Keyed on the session id. It used to be a fixed path, because the parse above
+# always failed and SESSION_ID was empty — so the counter survived across
+# sessions and a fresh run was told "Attempt 22 of 4".
+#
+# A missing id is a fresh run, not the shared path: falling back to a common
+# file is what caused that, and inheriting a stranger's count is the worse of
+# the two failures. $$ is unique per invocation, so an unidentified run simply
+# never accumulates.
+ATTEMPT_DIR="${TMPDIR:-/tmp}/gate-attempts-${PROJECT_NAME:-agent}"
+mkdir -p "$ATTEMPT_DIR"
+if [[ "$SESSION_ID" == "-" ]]; then
+  ATTEMPT_FILE="$ATTEMPT_DIR/anon-$$"
+else
+  ATTEMPT_FILE="$ATTEMPT_DIR/$SESSION_ID"
+fi
 ATTEMPTS=$(cat "$ATTEMPT_FILE" 2>/dev/null || echo 0)
+[[ "$ATTEMPTS" =~ ^[0-9]+$ ]] || ATTEMPTS=0
 
 # ---- 3. Run the gate. ----
 GATE_OUT=$(cd "$REPO_ROOT" && eval "$GATE_CMD" 2>&1)

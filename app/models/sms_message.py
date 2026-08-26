@@ -9,10 +9,18 @@ Status lifecycle — the distinction between the first three matters for billing
   failed       carrier rejected the send outright
   blocked      on our blocklist, never attempted
   skipped      filtered before send (wrong region) — non-billable, not a failure
+  not_sent     the send path was degraded — the message never reached a carrier
 
 Bill on ('sent', 'delivered'). Counting only 'sent' silently drops every campaign
 the moment its delivery webhooks land — that bug made a live client's usage meter
 appear to freeze for days.
+
+'not_sent' is the backstop under the pre-flight refusal in campaign_service: a
+box whose carrier failed to start falls back to the console provider, which
+reports every send successful, so before session 5d those rows were written
+'sent' and invoiced at $0.015 for messages nobody received. Keeping the status
+out of BILLABLE_STATUSES is not a pricing concession — a segment that never
+reached a carrier is not a segment. See decisions/002-degraded-box-still-bills.md.
 """
 
 from sqlalchemy import Column, Integer, String, Text, ForeignKey, Index
@@ -20,6 +28,7 @@ from app.core.database import Base
 
 MESSAGE_STATUSES = (
     "pending", "sent", "delivered", "undelivered", "failed", "blocked", "skipped",
+    "not_sent",
 )
 BILLABLE_STATUSES = ("sent", "delivered")
 

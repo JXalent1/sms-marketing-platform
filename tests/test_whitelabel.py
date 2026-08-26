@@ -205,6 +205,72 @@ def test_post_responses_do_not_name_the_carrier(client):
         assert not CARRIER_RE.search(response.text), response.text[:300]
 
 
+def test_carrier_branded_text_written_by_a_webhook_is_scrubbed_on_the_way_out(client):
+    """The auto-block writes carrier free text into a column the client reads.
+
+    Session 5d wired `should_auto_block()` into the delivery webhook, which made
+    `blocked_numbers.notes` the first client-rendered string in this codebase
+    assembled verbatim from text a carrier chose — 2,673 rows in one campaign.
+    Its only defence is `scrub_provider_text()`, and that regex was anchored
+    `\\b(?:telnyx|...)\\b`: the trailing boundary fails the moment an SDK glues
+    the name to a word, which is how SDKs write things. "TelnyxError 40300" went
+    through untouched.
+
+    The sweep above cannot catch this. It walks /api/blocklist, but only over
+    whatever rows happen to exist, and no other module writes carrier-branded
+    notes. This one writes them and reads them back.
+    """
+    from app.models.blocked_number import BlockedNumber
+    from app.models.sms_message import SMSMessage
+    from app.routers.webhooks.common import record_delivery_status
+
+    phone = "+15555550970"
+    external_id = "whitelabel-notes-probe"
+
+    # The wordings that defeated the anchored regex, plus one it always caught.
+    carrier_error = (
+        "TelnyxError 40300: telnyx_api reports the destination is not routable. "
+        "Raised by twilio.rest.exceptions.TwilioRestException. "
+        "See https://developers.telnyx.com/docs/errors"
+    )
+
+    db = SessionLocal()
+    try:
+        db.query(BlockedNumber).filter(BlockedNumber.phone == phone).delete(
+            synchronize_session=False)
+        db.query(SMSMessage).filter(SMSMessage.external_id == external_id).delete(
+            synchronize_session=False)
+        db.add(SMSMessage(phone=phone, message="probe", status="sent",
+                          external_id=external_id, sent_at="2026-08-26T09:00:00"))
+        db.commit()
+        record_delivery_status(db, external_id, "delivery_failed",
+                               carrier_error, source="telnyx")
+        db.commit()
+        stored = db.query(BlockedNumber).filter(BlockedNumber.phone == phone).first()
+        assert stored is not None, (
+            "the probe did not produce a blocklist row, so it scans nothing"
+        )
+        assert CARRIER_RE.search(carrier_error), (
+            "the probe text must name the carrier or this proves nothing"
+        )
+
+        body = client.get("/api/blocklist").text
+        page = client.get("/blocklist").text
+    finally:
+        db.query(BlockedNumber).filter(BlockedNumber.phone == phone).delete(
+            synchronize_session=False)
+        db.query(SMSMessage).filter(SMSMessage.external_id == external_id).delete(
+            synchronize_session=False)
+        db.commit()
+        db.close()
+
+    assert not CARRIER_RE.search(body), (
+        f"the carrier's name reached /api/blocklist through an auto-block note: "
+        f"{CARRIER_RE.search(body).group(0)!r}"
+    )
+    assert not CARRIER_RE.search(page)
+
+
 def test_system_info_exposes_no_webhook_url(client):
     """The webhook URL is PUBLIC_BASE_URL + "/webhooks/" + provider.name.
 

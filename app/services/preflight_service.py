@@ -18,11 +18,12 @@ from `billing_service` at `BILLING_PRICE_PER_SEGMENT`.
 check in `campaign_service` and our own logs, and it must not appear in anything
 built here. Session 1b removed a leak of exactly that kind.
 
-The capacity check itself is *not* implemented here. It lives in
-`campaign_service.CampaignService.capacity_assessment()`, where the send path
-already calls it; this module only re-states its verdict as a checklist row.
-Surfacing it is additive — nothing in this file can weaken it, and nothing here
-is on the path between a send and that check.
+The two checks that can stop a send are *not* implemented here. Both live in
+`campaign_service.CampaignService` — `capacity_assessment()` and
+`send_path_assessment()` — where the send path already calls them; this module
+only re-states their verdicts as checklist rows. Surfacing them is additive:
+nothing in this file can weaken either, and nothing here is on the path between
+a send and those checks.
 """
 
 import re
@@ -170,6 +171,27 @@ def marginal_cost(db: Session, added_segments: int) -> float:
 
 
 # ─── The checks ─────────────────────────────────────────────────────────────
+
+def check_send_path(assessment: dict) -> dict:
+    """Re-state the send path's own degraded verdict as a checklist row.
+
+    `assessment` comes from `CampaignService.send_path_assessment()` — the same
+    call, reading the same `send_mode()`, that refuses to start a campaign on a
+    box whose carrier failed to start. Like the capacity row below it, this
+    computes nothing of its own: a second opinion here would eventually
+    disagree with the one that actually stops the send.
+
+    It is a FAIL, not a WARN, and decision 002 is explicit about why: the
+    operator is the client, and a warning row is something he clicks through on
+    his way to tonight's auction. A *chosen* dry run passes — that is the demo
+    flow, and it is untouched.
+    """
+    return _check(
+        "send_path", "Sending status",
+        PASS if assessment.get("ok") else FAIL,
+        assessment.get("detail") or "",
+    )
+
 
 def check_capacity(assessment: dict) -> dict:
     """Re-state the send path's own capacity verdict as a checklist row.
@@ -357,12 +379,17 @@ def check_category_match(db: Session, category_slug: Optional[str], body: str) -
 
 def build_report(db: Session, *, category_slug: Optional[str], message_template: str,
                  totals: dict, sendable_count: int, suppressed_count: int,
-                 capacity_assessment: dict) -> dict:
+                 capacity_assessment: dict, send_path_assessment: dict) -> dict:
     """Every check, plus the numbers the composer's summary panel renders.
 
-    Checks come back in a fixed order — capacity first, because it is the one
-    that stops a send — so the checklist does not reshuffle itself between
-    keystrokes.
+    Checks come back in a fixed order — the send path first and capacity second,
+    the two that stop a send — so the checklist does not reshuffle itself
+    between keystrokes.
+
+    `send_path_assessment` is a required argument rather than one defaulting to
+    "fine". A caller that forgets it should fail loudly here; a caller that
+    silently skipped the row would draw a clean checklist on a box that cannot
+    send, which is the exact screen session 5d exists to remove.
 
     `totals` comes from `exact_segment_totals()` and is the measured cost of
     this exact audience. Everything downstream of it — the segment total, the
@@ -377,6 +404,7 @@ def build_report(db: Session, *, category_slug: Optional[str], message_template:
     total_segments = totals["total_segments"]
 
     checks = [
+        check_send_path(send_path_assessment),
         check_capacity(capacity_assessment),
         check_opt_out_language(message_template),
         check_brand_identified(message_template),

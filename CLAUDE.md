@@ -49,7 +49,7 @@ These are the commands acceptance criteria reference. Run them and show the outp
   `ModuleNotFoundError: slowapi` and reports **"test suite is red"** — a true statement
   about the wrong interpreter, and a convincing false alarm. Either activate `.venv`
   or run `PATH="$PWD/.venv/bin:$PATH" bash agent/gate.sh`.
-- **Tests:** `python -m pytest tests/ -q` — must exit 0. **145 passing as of session 5c.**
+- **Tests:** `python -m pytest tests/ -q` — must exit 0. **184 passing as of session 5d.**
   A lower count means you are on a stale branch, not that tests vanished.
 - **Migrations:** `alembic upgrade head` — must succeed from a clean DB.
 - **Run it:** `./run.sh` then `curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/login` → `200`
@@ -157,6 +157,63 @@ change to a live table.
   lands on `x.xx5` and about a quarter of the time floats just under, so half-up rounding
   goes one cent low. Do currency arithmetic in `Decimal` from end to end, not just at the
   rounding step.
+- **A safeguard that interrogates the fallback gets the fallback's answer.** The pre-flight
+  capacity check asked `provider.get_balance()` — and on a degraded box that provider is
+  the console stub, which returns `999_999.0` under a comment saying it "never trips the
+  pre-flight check". The most valuable guard in the codebase passed cleanly on the one
+  state it most needed to stop. When a check reads something through an abstraction that
+  has a fallback, ask what the *fallback* answers, and check the fallback's own health
+  before you trust anything it says. `send_path_assessment()` runs before
+  `capacity_assessment()` in `campaign_service.py` for exactly this reason.
+- **A guard with one call site is a guard on one path.** `should_auto_block()` had the
+  right fragments and the right comment since the skeleton, wired into the *submission*
+  failure path only. Most dead numbers are accepted at submission and fail later by
+  delivery webhook, which never called it — so 2,526 landlines stayed on the list and were
+  paid for on every campaign, under a guard that existed to prevent precisely that. When
+  you add a rule, enumerate every path its condition can arrive on, not just the one in
+  front of you.
+- **The table can be right while the headline lies.** `/blocklist` rendered a correct
+  "Delivery failure" badge on every row and a single red **2,626** labelled "Blocked" above
+  them, on a screen titled "Opt-outs". The client reads the number, not the rows. A summary
+  stat is a separate claim from the data under it and needs its own definition — and if
+  another screen already defines that word (`dashboard_service.py` filters opt-outs on
+  `reason == "stop_keyword"`), reuse it rather than inventing a second one.
+- **Count in the database, not in the page.** `/api/blocklist` caps `numbers` at 5,000
+  rows. A headline tallied in JS from that list would under-report the day it overflows,
+  and under-report it as *fewer opt-outs* — the direction nobody sanity-checks.
+- **`/health` is the only alert channel left when the carrier is down**, so it reports send
+  status as well as liveness. It stays **HTTP 200 while degraded**: `deployment/deploy.sh`
+  rolls a release back on a non-200 there, so a 503 for a bad credential would revert every
+  deploy to a degraded box, including the one that fixes it. Monitor the `sending_ok`
+  field. Never route a "cannot send SMS" alert over SMS.
+- **`scrub_provider_text()` has no word boundaries, and putting them back is a leak.**
+  It was `\b(?:telnyx|twilio|…)\b` and the trailing `\b` fails whenever an SDK glues the
+  name to a word — `TelnyxError`, `telnyx_api`, `TwilioRestException` all went through
+  untouched. It only started to matter when a delivery-webhook auto-block began writing
+  carrier free text into `blocked_numbers.notes` at 2,673 rows a campaign. When you probe
+  a scrubber, probe the *glued* spelling: `"Telnyx error"` (with a space) is caught by
+  both versions and proves nothing.
+- **Widening a guard's call sites widens its false positives too.** `should_auto_block()`
+  was written for the submission path, where a carrier rejects outright. Pointed at the
+  delivery-webhook path it sees the entire transient-failure vocabulary, and its fragments
+  are unanchored substrings: `"unreachable"` is Twilio's wording for a switched-off
+  handset, and `"21610"` matches a Brevard County phone number quoted in an error string.
+  Before reusing a matcher on a new path, ask what *else* arrives on that path.
+- **A partial failure must not report success.** When the degraded backstop marks rows
+  `not_sent`, the campaign is `aborted` with a reason, not `completed`. The campaign rail
+  is the entire UI — there is no detail screen — so it renders a status badge and shows a
+  reason only when `abort_reason` is set. A blast that reached nobody reporting "completed"
+  is the same defect as a failed carrier reporting "Dry run", one level down.
+- **Refuse before you queue, not inside the background task.** `POST /{id}/send` used to
+  answer "Campaign sending started" and let the refusal surface seconds later on a poll.
+  Refusing synchronously also leaves the campaign a **draft**: nothing in this codebase
+  moves a campaign back from `aborted`, and decision 002's own justification is that a
+  campaign which never ran can simply be re-run.
+- **Tense is not decoration on a refusal.** One string served both the composer checklist
+  and the stored `abort_reason`, so a draft he had not sent was labelled "Nothing was
+  sent." — which reads as a past campaign having silently failed, on the screen whose only
+  job is to stop him beforehand. Pre-send and post-hoc wordings live together in
+  `send_path_assessment()` so a new surface cannot invent a third.
 
 ## Where things live
 

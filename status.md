@@ -748,3 +748,372 @@ fail. All nine do.
 - **The live box still has the pre-5c nginx config and the hot-patched SDK.** The
   repo is now the truth for both, but neither reaches the server without a deploy
   (SDK) and a human with root (nginx).
+
+## Module 5d Part A — refuse to send from a degraded box (appended by session 5d, 2026-08-26)
+
+**Status: Part A complete except the deploy. Part B is Jordan's and was not
+attempted.** Nothing in this session can send a message: `SMS_PROVIDER` is
+`console` in `.env`, in `tests/conftest.py` and in every subprocess the
+acceptance script starts; the degraded states are reached through
+`tests/_provider_setup.py`, which replaces the carrier class with one whose
+constructor raises and so never builds a carrier object at all. No live
+credential was read. No contact data was imported, modified or deleted.
+
+Gate green at both ends, twice in a row. **145 tests at start, 184 at end**
+(+39: 17 degraded send path, 13 blocklist reasons, 8 hook loop guard, 1
+white-label case for the auto-block notes).
+
+### A1 — a degraded box refuses to start a campaign
+
+`send_path_assessment()` in `campaign_service.py` turns `send_mode()` into the
+same `{ok, detail}` shape `capacity_assessment()` returns, and `preflight()`
+runs it **first**. A box that cannot reach a carrier has no capacity question to
+answer, and the answer it would give is `console.get_balance()`'s 999,999 —
+which is precisely how a degraded box sailed through the check that exists to
+stop exactly this.
+
+- The composer shows it *before* the send, as `check_send_path()` — a pre-flight
+  row of its own, first in the checklist, FAIL not WARN. The composer draws
+  whatever the server returns, so no template changed.
+- `dry_run` is excluded and the console flow is byte-for-byte unchanged.
+  `agent/accept-5d.sh` check 3 proves that rather than asserting it: it runs the
+  same campaign through the console path on the pre-5d tree and on this one and
+  diffs the two results.
+- Module-level, not a method: it reads nothing off the instance, and the
+  test-send endpoint needs the same verdict with no campaign to hang it on.
+
+**Scope note — the test-send endpoint was included, and it is not in the spec.**
+`POST /api/campaigns/test-sms` answered "Test SMS sent to +1…" on the console
+fallback, about a message that reached nobody. That is the same lie A1 exists to
+remove, on the one screen someone uses to decide whether the box works, and it
+is three lines in a file A1 already required editing. Flagged here rather than
+buried: it is one `if` in `routers/campaigns.py` and one test, and it reverts on
+its own if Jordan disagrees.
+
+### A2 — a degraded row is never billable
+
+`not_sent`, added to `MESSAGE_STATUSES` and deliberately outside
+`BILLABLE_STATUSES`. Written in the send loop as step 3, before the provider
+call, checked **per message** rather than once — a provider that degrades
+between the pre-flight and the blast would otherwise leave the first thousand
+rows honest and the rest billable.
+
+`billing_service.py` was not touched. The billable set already lived in
+`sms_message.py` and `compute_usage()` already filters on it, so the correct
+change was a status the query cannot count, not an edit to the query.
+
+The test asserts against the billing query itself, with `sent_at` set so the row
+is inside the cycle window: the only thing keeping it off the invoice is its
+status. It flips the same row to `sent` as a positive control, because "excluded
+from the count" is also true of a `compute_usage()` that is broken outright.
+
+### A3 — an unknown provider degrades instead of 500-ing
+
+The unrecognised-name case now raises *inside* the same `try` that already
+handles a provider failing to construct, so it takes the identical path: console
+fallback, `ProviderFallback` recorded, `send_mode()` reports `unavailable`. No
+programmer-error case was kept, and the docstring says why — the only input is
+`settings.SMS_PROVIDER`, which comes from `.env`, so there is no way to reach it
+except a misconfiguration.
+
+Verified by running the app with `SMS_PROVIDER=telnix`: it boots, all seven
+screens return 200, the pill is red, and the real cause is the one ERROR line in
+the log. Before this it raised at import and every page 500'd.
+
+`active_sender_number()` now returns `""` rather than `"(dry run)"` for an
+unrecognised provider. "(dry run)" is reserved for console being *chosen*;
+saying it here had the Settings page call the box a dry run directly beneath a
+banner saying sending was unavailable. It renders "—" / "not configured".
+
+### A4 — `/health` reports degraded state
+
+`{"status": "degraded", "sending_ok": false, "send_mode": "unavailable",
+"reason": "…"}`. White-label: `reason` is `send_mode().detail`, our wording; the
+SDK exception stays in the log.
+
+**Still HTTP 200 while degraded, and that is a decision, not an oversight.**
+`deployment/deploy.sh:198` health-checks this endpoint after the restart and
+rolls the release back on a non-200. A 503 for a bad carrier credential would
+therefore revert every deploy to a degraded box, including the deploy that fixes
+it. The app being up and the app being able to send are different facts. The
+monitor must be configured on the `sending_ok` field — `docs/API.md` says so in
+the new Health section.
+
+Nothing was routed over SMS and `agent/notify.sh` was not touched, per
+decision 002.
+
+### A5 — `.claude/hooks/verify-gate.sh`
+
+Both bugs from decision 001, plus the one underneath them.
+
+- The parse now reads the payload from an **environment variable** and uses
+  `strict=False`. The old form pasted stdin into a Python triple-quoted literal
+  inside an unquoted heredoc, which had three ways to fail on input we do not
+  control — a literal `'''`, a backslash, `$` expansion — and the control
+  character was only the one that actually bit.
+- The attempt counter is keyed on the session id, and a **missing** id gets a
+  per-invocation path rather than the shared one. Inheriting a stranger's count
+  is what produced "Attempt 22 of 4".
+
+`tests/test_hook_loop_guard.py` runs the real hook in a throwaway sandbox with
+its own `agent.config.sh`, its own decisions directory and a **stub
+`notify.sh`** — the real one sends an SMS through the carrier when a credential
+is in the environment, and the real `decisions/` is the queue the hook itself
+reads, so a test writing a `*.open.md` there would silently block every future
+session from stopping. Three of its seven tests fail against the pre-fix hook,
+with the actual `JSONDecodeError` in the traceback.
+
+### A6 — `docs/API.md`
+
+The Settings entry no longer tells the reader to find the webhook URL there; it
+now documents why that field is absent and which test pins its absence,
+alongside 5c's four `send_mode` fields. New sections for `/health` and the
+`send_path` pre-flight row, the `not_sent` status under billing, and the
+blocklist `counts` object and webhook auto-block.
+
+`docs/RUNBOOK.md:147` and `docs/CLIENT_GUIDE.md:145-150` still describe the pill
+as two-state. Left alone — A6 named `docs/API.md` only, and the client guide is
+the one he actually reads, so it wants a human's eye on the wording.
+
+### A7 — the delivery webhook consults the auto-block list
+
+`should_auto_block()` had exactly one call site: the *submission* path, where a
+provider rejects a send outright. The larger share of dead numbers is accepted
+at submission and fails later by webhook, which never consulted the list — so
+2,673 of one campaign's 6,857 recipients stayed live and would have been paid
+for again on every send.
+
+- The call now also sits in `record_delivery_status()`, **inside** the branch
+  that only runs on the first terminal event, so a carrier retrying for three
+  days blocks the number once. `block_number()` refusing duplicates is the
+  second layer, not the first.
+- `"deemed invalid"` added to `AUTO_BLOCK_ERROR_FRAGMENTS`. The carrier's
+  wording is "the destination phone number was deemed invalid by the carrier",
+  and neither `"is not a valid"` nor `"invalid phone number"` occurs in it.
+- `"Blocked as spam - temporary"` matches nothing, asserted in both directions.
+  Blocking on a transient failure deletes a reachable buyer permanently, which
+  costs far more than one retry.
+- `record_delivery_status()` gained a `source` parameter, passed as the provider
+  from each webhook router. The client never sees it — `_neutral_source()` maps
+  anything but "manual" to "Automatic" — but a two-carrier box needs to know
+  which one condemned a number.
+
+The campaign-4 backfill was **not** re-run. The route test posts the carrier's
+real payload shape and asserts the code path now produces the same outcome
+unaided.
+
+### A8 — the Opt-outs headline
+
+Two figures where there was one: **Opt-outs** (`stop_keyword`, the only one in
+red) and **Unreachable** (`delivery_failure` + `carrier_block`, neutral). A third
+**Manually blocked** tile renders only when there are any — manual blocks are
+neither a request from the person nor a verdict from a carrier, and folding them
+into either would put the headline back to counting the wrong thing.
+
+`OPT_OUT_REASONS` is `("stop_keyword",)`, matching `dashboard_service.py:248`
+rather than inventing a second definition, and a test pins that.
+
+Counted server-side by a grouped query, not tallied in JS from `data.numbers` —
+that list is capped at 5,000 rows, so a client-side tally would under-report a
+long list, and under-report it as *fewer opt-outs*, the direction nobody checks.
+
+Seen in a browser against 7 seeded rows shaped like the live box: `1 Opt-outs ·
+5 Unreachable · 1 Manually blocked`, with only the first red.
+
+### The 500-line rule, twice
+
+`campaign_service.py` reached 559 lines, so the dispatch and scheduling entry
+points moved verbatim to **`app/services/campaign_dispatch.py`** (82 lines). The
+boundary is *when a send begins*, not *how it runs* — nothing about whether a
+campaign may go out moved with it, and both entry points still hand the work to
+the same `send_campaign()` a button press reaches. No logic changed. Importers
+updated: `app/main.py`, `app/routers/campaigns.py`,
+`tests/test_campaign_guardrails.py`.
+
+The review fixes then pushed it back to 524 and the gate caught it again. Rather
+than trim comments, `send_path_assessment()` and the two refusal strings moved to
+**`app/sms/factory.py`**, beside `send_mode()` — which is where they should have
+been from the start, for the reason that module's own docstring gives: the layer
+that knows the carrier's name is the layer responsible for every client-safe
+sentence about it. The function reads nothing from the DB, so the layering rule
+is intact. `campaign_service.py` is 478; `factory.py` is 220. The second time the
+500-line rule forced a split it produced a better design than the one it
+interrupted, which is the argument for having the rule.
+
+### Acceptance
+
+`agent/accept-5d.sh` is the Part A stop condition — the eleven criteria from
+`sessions/session-5d.md`, each as a check that runs rather than a claim, with the
+60-turn cap recorded in its header. Criteria 1-8 and 10-11 pass locally.
+Criterion 9 and the live half of 11 need the deployed site and are opt-in:
+
+    A4A_URL=https://... A4A_PASSWORD=... bash agent/accept-5d.sh --with-remote
+
+The two interesting checks are both differential:
+
+- **Check 3** runs the same campaign through the console path on the pre-fix
+  worktree and on this tree and requires the results to be byte-identical. That
+  is what "the dry-run flow is unchanged" means, rather than a promise.
+- **Check 8b** runs the same *degraded* campaign on both trees using only
+  symbols the pre-fix tree already had, and prints them side by side. Before:
+  `completed`, three rows `sent`, three segments billed. After: `aborted`,
+  nothing written, nothing billable. Check 8 on its own is weak — two of the
+  three new test modules fail at *import* against the pre-fix tree because the
+  symbols they test did not exist, which is true and proves nothing about the
+  bug. 8b is the one with teeth.
+
+### The review pass
+
+Two things beyond the suite, both run rather than reasoned about.
+
+**A leak probe in the degraded state.** Logged in, drove the factory into
+fallback, and scanned the *rendered bytes* of all six shell pages, `/health`,
+`/api/settings/system`, `/api/blocklist`, `/api/usage/current`,
+`/api/campaigns`, `POST /preflight` and `POST /test-sms` for the carrier name
+and for `WHOLESALE_COST_PER_SEGMENT`. The interesting case is the auto-block:
+its notes are built from raw carrier text, so the probe fed it
+`"Telnyx error 40300: Not routable — the destination number is a landline. See
+https://developers.telnyx.com/docs/errors"`. The client sees
+`"Auto-blocked: SMS carrier error 40300: Not routable — the destination number
+is a landline. See"` with `source: "auto"`. Nothing leaked anywhere.
+
+**A mutation check**, because a test that passes on reverted code is
+decoration. Each change was reverted in turn and the matching tests had to go
+red:
+
+| reverted | result |
+|---|---|
+| `app/sms/factory.py` | 3 failed |
+| `/health` in `routers/pages.py` | 1 failed |
+| the webhook auto-block (3 files) | 6 failed |
+| the split blocklist counts (3 files) | collection error, then failures |
+| the composer pre-flight row (2 files) | collection error, then failures |
+| just the `"deemed invalid"` fragment | 2 failed |
+
+No test in the new modules survives its own subject being removed.
+
+### What the fresh-context review changed
+
+Three independent reviewers, none sharing this session's context. Five real
+defects, four of them in code this session wrote. All fixed, each with a test
+that fails when the fix is reverted.
+
+**1. The scrubber's word boundaries let the carrier's name through.**
+`PROVIDER_WORDS` was `\b(?:telnyx|twilio|…)\b`, and the *trailing* `\b` fails the
+moment an SDK glues the name to a word — `TelnyxError`, `telnyx_api`,
+`TwilioRestException` all passed through unscrubbed. This mattered because A7
+made `blocked_numbers.notes` the first client-rendered string in the codebase
+assembled verbatim from carrier free text at volume: 2,673 rows in one campaign,
+each carrying whatever the carrier chose to call itself, rendered in the Notes
+column and its tooltip. My own probe missed it because I used
+`"Telnyx error 40300"` — with a space, which the anchored regex *does* catch.
+Boundaries removed (`app/sms/phone.py:103`), and
+`test_whitelabel.py::test_carrier_branded_text_written_by_a_webhook_is_scrubbed_on_the_way_out`
+writes carrier-branded text through the real webhook and reads it back off
+`/api/blocklist` and `/blocklist`. The suite structurally could not have caught
+this: the existing sweep walks `/api/blocklist` but only over whatever rows
+happen to exist, and no module wrote branded notes.
+
+**2. A delivered message could be permanently blocked by a later failure.**
+`record_delivery_status()`'s guard admits `msg.status == "delivered"`, so
+delivered-then-failed — a carrier retry, a duplicate, or a race between two of
+its workers — reached the new auto-block for a message that provably arrived on
+a handset. Pre-existing condition, brand-new consequence: it used to cost a wrong
+counter, and with A7 it deletes a buyer who received the text. Now guarded on
+`msg.delivered_at is None`. A handset receipt is not revocable by a later failure
+event.
+
+**3. When the A2 backstop fired, the campaign reported `completed`.** Rows were
+written `not_sent` correctly, then the loop fell through to
+`campaign.status = "completed"` with `abort_reason` null. The campaign rail is
+the entire UI — there is no detail screen — and it renders the badge and shows a
+reason only when `abort_reason` is set, so a blast that reached nobody read
+exactly like one that worked. That is the same lie this session exists to remove,
+one level down. The loop now counts degraded rows and aborts the campaign with
+the reason.
+
+**4. The refusal was in the wrong tense on the composer.** One string served both
+surfaces, so a draft he had not sent was labelled "Nothing was sent." — which
+reads as a past campaign having silently failed, on the screen whose only job is
+to stop him *before* he starts. Split into `DEGRADED_REFUSAL_BEFORE` ("This
+campaign will not be started.") and `DEGRADED_REFUSAL_AFTER`, both returned by
+`send_path_assessment()` so no call site invents a third.
+
+**5. The send button answered "Campaign sending started" on a degraded box.**
+The refusal happened in the background task and surfaced when the rail next
+polled. `POST /{id}/send` now refuses synchronously with 409 — and refusing
+*before* the task is queued leaves the campaign a **draft** rather than consuming
+it as `aborted`, which matters because decision 002's own justification is that a
+campaign that never ran can simply be re-run and nothing in this codebase moves
+one back from `aborted`. The background and scheduled paths keep their own
+refusal; this is an additional layer, not a replacement.
+
+Also fixed: `test_blocklist_reasons.py` was the only new module without the
+login-limiter reset its siblings document (`/login` is 10/minute per IP and the
+suite spends 13 logins in one window; the failure would have surfaced as
+`assert "counts" in payload` against a 429 body).
+
+Reviewers confirmed, independently of my own checks: `BILLABLE_STATUSES` is
+byte-identical to HEAD and `billing_service.py` is not in the change set at all;
+`_instance`/`_fallback` in the factory cannot end up describing different
+moments; no test constructs a live provider or reaches a non-loopback socket
+(one reviewer ran the whole suite with `socket.connect` patched to raise —
+180 passed, zero outbound attempts); `agent/gate.sh` and `agent.config.sh` are
+byte-identical; `.env` untouched.
+
+### Found while working (session 5d)
+
+- **The capacity row still reads PASS on a degraded box.** It sits directly under
+  the red "Sending status" refusal, saying "capacity covers the estimated 4
+  segments" — which is the console stub's bottomless balance answering honestly
+  about the wrong provider. The refusal is first, unambiguous, and `report.ok` is
+  false, so nothing invites a send; but a green tick under a red cross is a
+  judgement call worth a human's eye. Not changed here: the capacity check is on
+  the do-not-weaken list and the spec says not to refactor anything else in that
+  file. Candidate for 5e.
+- **`/health` is unauthenticated and now discloses that the box cannot send.**
+  That is the point — a monitor has no session — but it is one bit of
+  operational state a stranger can read. Judged worth it: the alternative is no
+  alert channel at all when the carrier is down.
+- **The scheduled-campaign path inherits the refusal for free**, because
+  `run_due_campaigns()` calls the same `send_campaign()`. Worth stating because
+  it is the property that makes the guard complete: a degraded box cannot send
+  by button *or* by schedule.
+- **ESCALATED — `decisions/003-auto-block-fragments-on-the-webhook-path.open.md`.**
+  A7 is implemented exactly as specified, and the fragment list it now runs on a
+  2,673-event path was written for one that carried a handful. Four problems, all
+  reproduced by running `should_auto_block()`: `"unreachable"` is standard
+  carrier wording for a switched-off handset (Twilio 30003) and also fires on
+  carrier-side outages; the numeric fragments `21610`/`21612`/`40300` are
+  unanchored and collide with Brevard County phone numbers quoted in error text;
+  `"has not been enabled for the region"` blocks the recipient for *our* account
+  misconfiguration; and genuine carrier-level opt-outs are filed as
+  `delivery_failure`, so A8's new headline under-reports the one figure it exists
+  to fix. Escalation item 5 — implement what the spec says, do not tune the
+  blocklist rules yourself — so the file asks rather than guesses. Not blocking:
+  Part A is complete and the gate is green. It should be answered before the
+  client gets a login, and answered against campaign 4's real error strings
+  rather than the carrier documentation the file quotes.
+- **A refused campaign is unrecoverable, and 5d only half-fixed that.** Nothing
+  anywhere moves a campaign back to `draft` (`campaigns.py`,
+  `campaign_service.py:370`, `campaign_dispatch.py:55` all gate on it). The
+  send *button* now refuses before queueing, so a draft survives — but a
+  **scheduled** blast that lands in a degraded window is still consumed
+  permanently and has to be rebuilt. Decision 002's justification is "a campaign
+  that never ran can simply be re-run"; for the scheduled path the code does not
+  permit that. Candidate for 5e.
+- **Neither webhook verifies a signature.** Pre-existing, but the blast radius
+  changed: an unauthenticated POST to `/webhooks/telnyx` or
+  `/webhooks/twilio/status` could previously only flip a message status, and can
+  now create a permanent blocklist row. It still needs a valid `external_id`,
+  which is not guessable, so this is a hardening item rather than an open hole.
+- **A transient webhook consumes a message's one shot.** `record_delivery_status`
+  is idempotent on the first terminal event, so if a transient failure arrives
+  first, a later "not routable" for the same message is dropped and the number is
+  never blocked. Correct idempotency, small cost, worth knowing.
+- **Line-type screening at import is still the bigger win.** A7 stops a dead
+  number recurring after the first failed send; it still costs one send to
+  discover. Already logged in `modules.md` under "Found in live use".
+- **The live box has not been deployed to.** Everything above is in the repo and
+  proven locally; the box still runs the pre-5d code, the pre-5c nginx config and
+  the hot-patched SDK. Criterion 9 cannot pass until someone deploys.

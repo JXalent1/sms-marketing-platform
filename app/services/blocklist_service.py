@@ -4,6 +4,7 @@ Thin on purpose — the value is that every write goes through normalize() so th
 send-path lookup can never miss because of formatting.
 """
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 from app.models.blocked_number import BlockedNumber
 from app.sms.phone import normalize
@@ -74,3 +75,43 @@ def get_all_blocked(db: Session, limit: int = 5000) -> list:
 
 def get_blocked_count(db: Session) -> int:
     return db.query(BlockedNumber).count()
+
+
+# Two kinds of number sit on this list and they mean opposite things to the
+# client. An opt-out is a person who asked not to be texted — a compliance
+# event, and the number he watches. An unreachable number is a data-quality
+# fact: the carrier says a landline or a dead line, and no human decided
+# anything. Reporting one figure labelled "Blocked" made 2,626 auto-blocked
+# landlines read as 2,626 people opting out, on a screen headed "Opt-outs"
+# under copy reading "Opt-outs are permanent".
+#
+# OPT_OUT_REASONS matches dashboard_service's opt-out rate tile, which already
+# filters on reason == "stop_keyword". One definition, deliberately: a second
+# one here would drift, and the two screens would disagree about the single
+# number a client judges his list by.
+OPT_OUT_REASONS = ("stop_keyword",)
+UNREACHABLE_REASONS = ("delivery_failure", "carrier_block")
+
+
+def blocked_counts(db: Session) -> dict:
+    """Blocked numbers split by what the block actually means.
+
+    `other` is everything in neither bucket — manual blocks today. It is
+    returned rather than folded into either, because a manual block is neither
+    a request from the person nor a verdict from a carrier, and quietly adding
+    it to one of them would put the headline back to counting the wrong thing.
+    """
+    rows = db.query(BlockedNumber.reason, func.count(BlockedNumber.id)).group_by(
+        BlockedNumber.reason
+    ).all()
+
+    counts = {"opt_outs": 0, "unreachable": 0, "other": 0, "total": 0}
+    for reason, count in rows:
+        if reason in OPT_OUT_REASONS:
+            counts["opt_outs"] += count
+        elif reason in UNREACHABLE_REASONS:
+            counts["unreachable"] += count
+        else:
+            counts["other"] += count
+        counts["total"] += count
+    return counts

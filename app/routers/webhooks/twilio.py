@@ -49,6 +49,7 @@ async def status_callback(request: Request, db: Session = Depends(get_db)):
             form.get("MessageSid", ""),
             form.get("MessageStatus", ""),
             form.get("ErrorMessage") or form.get("ErrorCode"),
+            source="twilio",
         )
     except Exception as e:
         logger.error(f"Twilio status error: {e}")

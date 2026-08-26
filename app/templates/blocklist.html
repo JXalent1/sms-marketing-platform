@@ -6,14 +6,30 @@
 
 {% block content %}
 <div class="space-y-6">
+    {# Two figures, not one. A single red "Blocked" total counted 2,626
+       auto-blocked landlines as if 2,626 people had opted out, on a screen
+       headed "Opt-outs". Only the opt-out figure is critical: an unreachable
+       number is a data-quality fact, not a compliance event, and dressing it as
+       one has the client reading a healthy list as a disaster. #}
     <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <p class="max-w-2xl text-sm text-ink-3">
             Numbers here are <span class="font-semibold text-ink">never</span> messaged. Opt-outs are permanent
-            and are kept independently of the carrier.
+            and are kept independently of the carrier. Unreachable numbers are ones the carrier
+            could not deliver to — usually landlines — and they cost you money every time they are tried.
         </p>
-        <div class="shrink-0 rounded-lg border border-line bg-surface px-4 py-2 text-center">
-            <div class="text-2xl font-bold tabular-nums text-crit" id="blockedCount">—</div>
-            <div class="text-xs font-medium text-ink-3">Blocked</div>
+        <div class="flex shrink-0 gap-3">
+            <div class="rounded-lg border border-line bg-surface px-4 py-2 text-center">
+                <div class="text-2xl font-bold tabular-nums text-crit" id="optOutCount">—</div>
+                <div class="text-xs font-medium text-ink-3">Opt-outs</div>
+            </div>
+            <div class="rounded-lg border border-line bg-surface px-4 py-2 text-center">
+                <div class="text-2xl font-bold tabular-nums text-ink-2" id="unreachableCount">—</div>
+                <div class="text-xs font-medium text-ink-3">Unreachable</div>
+            </div>
+            <div class="hidden rounded-lg border border-line bg-surface px-4 py-2 text-center" id="otherBlockedTile">
+                <div class="text-2xl font-bold tabular-nums text-ink-2" id="otherBlockedCount">—</div>
+                <div class="text-xs font-medium text-ink-3">Manually blocked</div>
+            </div>
         </div>
     </div>
 
@@ -72,7 +88,17 @@ const SOURCES = { auto: 'Automatic', manual: 'Manual' };
 
 async function loadBlocklist() {
     const data = await api('/api/blocklist');
-    document.getElementById('blockedCount').textContent = data.total.toLocaleString();
+
+    // Counted by the server over the whole table. `data.numbers` is capped, so
+    // tallying it here would quietly under-report a long list.
+    const counts = data.counts || { opt_outs: 0, unreachable: 0, other: 0 };
+    document.getElementById('optOutCount').textContent = counts.opt_outs.toLocaleString();
+    document.getElementById('unreachableCount').textContent = counts.unreachable.toLocaleString();
+    // Manual blocks are neither an opt-out nor a carrier verdict. The tile
+    // appears only when there are some, so the headline is never two figures
+    // that fail to add up to the table below it.
+    document.getElementById('otherBlockedCount').textContent = counts.other.toLocaleString();
+    document.getElementById('otherBlockedTile').classList.toggle('hidden', !counts.other);
 
     const body = document.getElementById('blocklistBody');
     if (!data.numbers.length) {

@@ -7,7 +7,7 @@ from typing import Optional
 from app.core.database import get_db
 from app.core.auth import require_auth
 from app.services.blocklist_service import (
-    block_number, unblock_number, get_all_blocked, get_blocked_count,
+    block_number, unblock_number, get_all_blocked, get_blocked_count, blocked_counts,
 )
 from app.sms.phone import scrub_provider_text
 
@@ -31,9 +31,17 @@ def _neutral_source(source: str) -> str:
 
 @router.get("")
 async def list_blocked(db: Session = Depends(get_db), user: str = Depends(require_auth)):
+    """The blocklist, with the headline figures counted server-side.
+
+    `counts` is a grouped query rather than something the page tallies from
+    `numbers`: that list is capped at 5,000 rows, so a client-side tally would
+    silently under-report the day the list outgrows the cap — and under-report
+    it as *fewer opt-outs*, which is the direction nobody checks.
+    """
     rows = get_all_blocked(db)
     return {
         "total": get_blocked_count(db),
+        "counts": blocked_counts(db),
         "numbers": [{
             "id": r.id,
             "phone": r.phone,

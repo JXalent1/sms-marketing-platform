@@ -57,7 +57,7 @@ async def telnyx_webhook(request: Request, db: Session = Depends(get_db)):
                 first = errors[0]
                 detail = f"{first.get('title', '')}: {first.get('detail', '')}".strip(": ").strip()
 
-            record_delivery_status(db, message_id, status, detail)
+            record_delivery_status(db, message_id, status, detail, source="telnyx")
             return JSONResponse({"status": "ok"})
 
         logger.debug(f"Unhandled Telnyx event: {event_type}")

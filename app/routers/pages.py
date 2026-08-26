@@ -88,8 +88,32 @@ async def logout():
 
 @router.get("/health")
 async def health():
-    """Unauthenticated on purpose — uptime monitors need it. Returns no data."""
-    return {"status": "healthy"}
+    """Unauthenticated on purpose — uptime monitors need it.
+
+    It now answers "can this box send?" as well as "is it up?", because an
+    external uptime monitor is the only alert channel that still works when the
+    carrier does not. `agent/notify.sh` reads the same credential it would be
+    warning about, and an SMS alert about being unable to send SMS is
+    self-defeating — decision 002 rules that out explicitly.
+
+    **Still HTTP 200 while degraded, deliberately.** `deployment/deploy.sh`
+    health-checks this endpoint after the restart and rolls the release back on
+    a non-200. Returning 503 for a bad carrier credential would therefore roll
+    back every deploy on a degraded box, including the deploy that fixes it.
+    The app is up; it is sending that is broken, and the two are different
+    facts. Point the monitor at the `sending_ok` field — see docs/API.md.
+
+    White-label: `reason` is send_mode().detail, which is our wording and names
+    no carrier. The SDK exception behind it stays in the log.
+    """
+    mode = send_mode()
+    degraded = mode.key == "unavailable"
+    return {
+        "status": "degraded" if degraded else "healthy",
+        "sending_ok": not degraded,
+        "send_mode": mode.key,
+        "reason": mode.detail if degraded else None,
+    }
 
 
 # ─── The application shell ──────────────────────────────────────────────────

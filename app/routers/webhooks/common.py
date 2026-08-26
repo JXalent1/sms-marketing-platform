@@ -10,6 +10,8 @@ from app.models.campaign import Campaign
 from app.models.app_setting import get_setting, AUTO_REPLY_KEY
 from app.services.blocklist_service import block_number, unblock_number
 from app.sms import compliance
+from app.sms.compliance import should_auto_block
+from app.sms.phone import scrub_provider_text
 from datetime import datetime
 import logging
 
@@ -42,7 +44,8 @@ def handle_inbound(db: Session, from_number: str, body: str) -> str:
     return get_setting(db, AUTO_REPLY_KEY) or compliance.default_auto_reply()
 
 
-def record_delivery_status(db: Session, message_id: str, status: str, error_detail: str = None):
+def record_delivery_status(db: Session, message_id: str, status: str,
+                           error_detail: str = None, source: str = "webhook"):
     """Persist a carrier's final delivery outcome.
 
     A message is marked 'sent' the instant the provider accepts it (HTTP 200),
@@ -53,6 +56,11 @@ def record_delivery_status(db: Session, message_id: str, status: str, error_deta
 
     Idempotent: only the first terminal event per message moves counters.
     Carriers retry webhooks, sometimes for days.
+
+    `source` is recorded on any auto-block this raises and is the provider that
+    reported the failure. The client never sees it — routers/blocklist.py maps
+    anything but "manual" to "Automatic" — but a two-carrier box needs to know
+    which one condemned a number.
     """
     if not message_id:
         return
@@ -86,3 +94,35 @@ def record_delivery_status(db: Session, message_id: str, status: str, error_deta
         msg.error_message = error_detail or "Carrier did not deliver the message"
         db.commit()
         logger.info(f"Message {message_id} undelivered: {msg.error_message}")
+
+        # A number the carrier calls unreachable is unreachable on every future
+        # campaign too. `should_auto_block()` existed for exactly this and was
+        # wired to exactly one call site — campaign_service's *submission* path,
+        # where the provider rejects a send outright. The larger share of dead
+        # numbers never goes down that path: they are accepted at submission
+        # (HTTP 200) and fail here, minutes later. One live campaign: 6,857
+        # recipients, 2,673 undelivered, of which 2,526 were "not routable:
+        # either a landline or a non-routable wireless number". Two failure
+        # paths, one guard, and the guard was on the smaller one — so the same
+        # dead numbers were re-sent to, and re-paid for, on every campaign.
+        #
+        # Inside the status guard above on purpose: the branch only runs on the
+        # first terminal event for a message, so a carrier retrying this webhook
+        # for three days blocks the number once. block_number() also refuses a
+        # duplicate, which is the second layer rather than the first.
+        #
+        # `delivered_at is None` is the third condition and the one that matters
+        # most. The guard above admits `msg.status == "delivered"`, so the
+        # sequence delivered-then-failed — a carrier retry, a duplicate, or a
+        # race between two of its workers — reaches here for a message that
+        # provably arrived on a handset. Before this session that cost a wrong
+        # counter; with an auto-block on the same path it would permanently
+        # delete a buyer who received the text. A handset receipt is not
+        # revocable by a later failure event.
+        if msg.delivered_at is None and should_auto_block(msg.error_message):
+            block_number(
+                db, msg.phone,
+                reason="delivery_failure",
+                source=source,
+                notes=f"Auto-blocked: {scrub_provider_text(msg.error_message)[:200]}",
+            )

@@ -31,9 +31,10 @@ client sending real campaigns.
 | 5a | Deploy scaffolding | Done · gaps for 5b | 1b | `deployment/**`, `scripts/backup.sh`, `docs/CLIENT_GUIDE.md`, `README.md` |
 | 5b | **Go live** | Part A done · B3 verified · B4/B5 pending | 3b, 4, 5a | `deployment/**`, `scripts/**`, `.env.example`, `docs/CLIENT_GUIDE.md`, `app/main.py` |
 | 5c | **Live-send blockers** | Part A done · deploy + B pending | 5b Part A | `requirements.txt`, `app/sms/factory.py`, `app/routers/settings.py`, `app/routers/pages.py`, `app/templates/settings.html`, `app/templates/base.html`, `deployment/nginx.conf.template`, `tests/`, `agent/accept-5c.sh` |
-| 5d | **Refuse to send from a degraded box** | Next — must land before client handover | 5c | `app/services/campaign_service.py`, `app/services/billing_service.py`, `app/models/sms_message.py`, `app/sms/factory.py`, `app/main.py`, `app/sms/compliance.py`, `app/routers/webhooks/common.py`, `app/templates/blocklist.html`, `.claude/hooks/verify-gate.sh`, `docs/API.md`, `tests/` |
+| 5d | **Refuse to send from a degraded box** | Part A done · deploy pending · B is Jordan's | 5c | `app/services/campaign_service.py`, `app/services/campaign_dispatch.py`, `app/services/preflight_service.py`, `app/services/blocklist_service.py`, `app/models/sms_message.py`, `app/sms/factory.py`, `app/sms/compliance.py`, `app/main.py`, `app/routers/campaigns.py`, `app/routers/pages.py`, `app/routers/blocklist.py`, `app/routers/webhooks/{common,telnyx,twilio}.py`, `app/templates/blocklist.html`, `.claude/hooks/verify-gate.sh`, `docs/API.md`, `tests/`, `agent/accept-5d.sh` |
 | 5e | **Campaign-first flow & QoL** | Next after 5d | 5d | `app/routers/campaigns.py`, `app/routers/contacts.py`, `app/templates/campaigns.html`, `app/templates/contacts.html`, `app/templates/settings.html`, `app/services/campaign_service.py`, `app/services/import_service.py`, `tests/` |
 | 5f | **Short links & reporting** | After 5e | 5e | `app/models/short_link.py`, `app/routers/links.py`, `app/routers/reports.py`, `app/services/link_service.py`, `app/templates/history.html`, `alembic/versions/`, `tests/` |
+| 5g | **Blocklist correctness** | Parallel-safe with 5e · before client handover | 5d | `app/sms/compliance.py`, `app/routers/webhooks/telnyx.py`, `app/routers/webhooks/common.py`, `app/models/sms_message.py`, `app/models/blocked_number.py`, `app/services/blocklist_service.py`, `app/services/dashboard_service.py`, `alembic/versions/`, `tests/` |
 
 **That's the launch — six sessions, but only four waves. See "Parallel plan" below.**
 
@@ -48,6 +49,23 @@ that fail against the pre-fix tree, and security headers in the nginx template. 
 things left are a deploy — the box still runs the hot-patched SDK and the pre-5c nginx
 config, and the nginx half needs root — and Part B, which is Jordan's. Acceptance is
 `agent/accept-5c.sh`; criteria 1-5 pass locally, criterion 6 is `--with-remote`.
+
+5d finished what 5c started: 5c made a failed carrier *visible*, 5d made the product
+*refuse to send* on one, and made the rows such a box writes non-billable. Part A landed
+2026-08-26 — 184 tests (145 + 39), gate green twice, `agent/accept-5d.sh` as the stop
+condition. The deploy is still pending, and Part B is Jordan's.
+
+**5d's file list above is wider than the one this table carried before the session, and
+deliberately so.** The spec's own requirements reach files it did not name: the composer
+pre-flight row lives in `preflight_service.build_report()` and is passed in from
+`routers/campaigns.py`; `/health` is in `routers/pages.py`, not `app/main.py`; the split
+blocklist headline needs a grouped count in `blocklist_service` and `routers/blocklist.py`
+rather than a client-side tally over a capped list; and the webhook auto-block needs the
+provider name from `webhooks/telnyx.py` and `webhooks/twilio.py`.
+`app/services/campaign_dispatch.py` is new because `campaign_service.py` crossed the
+500-line rule. `billing_service.py` was in the list and was **not** touched — the
+non-billable status is a change to `sms_message.py`'s status set, which is where
+`BILLABLE_STATUSES` already lived, and the billing query needed no edit.
 
 ### Deferred until after launch
 

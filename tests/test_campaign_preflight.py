@@ -27,7 +27,11 @@ from tests import _guardrail_setup as setup
 
 PASSWORD = os.environ["ADMIN_PASSWORD"]
 
-EXPECTED_CHECKS = {"capacity", "opt_out_language", "brand_identified",
+# "send_path" joined the set in session 5d: the composer now shows, before the
+# send, whether this box can reach a carrier at all. Asserted as an exact set on
+# purpose — a check that quietly disappears from the checklist is a check the
+# client stops seeing, and this is the one that refuses.
+EXPECTED_CHECKS = {"send_path", "capacity", "opt_out_language", "brand_identified",
                    "segment_count", "merge_expansion", "recent_overlap",
                    "link_shortener", "category_match"}
 

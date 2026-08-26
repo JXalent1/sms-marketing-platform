@@ -69,12 +69,26 @@ def default_auto_reply() -> str:
 
 
 # Error fragments that mean "never text this number again". Matching one of these
-# on a send failure auto-adds the number to the blocklist, which is what keeps a
-# list from degrading into thousands of guaranteed failures per campaign.
+# on a failure auto-adds the number to the blocklist, which is what keeps a list
+# from degrading into thousands of guaranteed failures per campaign.
+#
+# "Never again" is the bar, and it is the reason temporary failures are absent.
+# A carrier's "Blocked as spam - temporary" is a rate-limit, not a dead number:
+# 47 of them in one campaign, all still perfectly reachable an hour later.
+# Blocking on that would delete real buyers from the list permanently, which is
+# a far more expensive mistake than paying for one retry. Before adding a
+# fragment, check it cannot appear in a transient message.
+#
+# "deemed invalid" was added in session 5d. A live campaign produced 100
+# failures reading "the destination phone number was deemed invalid by the
+# carrier", and neither "is not a valid" nor "invalid phone number" occurs in
+# that sentence — the fragments matched the wording of a different carrier
+# response than the one being sent.
 AUTO_BLOCK_ERROR_FRAGMENTS = (
     "unsubscribed", "blacklisted", "opt-out", "opted out", "is not a valid",
     "landline", "not a mobile", "unreachable", "not routable",
     "has not been enabled for the region", "invalid phone number",
+    "deemed invalid",
     "21610", "21612", "40300",
 )
 

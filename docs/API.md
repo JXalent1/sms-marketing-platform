@@ -46,8 +46,9 @@ The composer's step-3 checklist. Read-only, not rate limited.
 // response
 {
   "ok": true,                       // false if any check FAILED
-  "checks": [                       // fixed order, capacity first
-    {"key": "capacity", "label": "Sending capacity", "status": "pass", "reason": "…"}
+  "checks": [                       // fixed order, send_path then capacity
+    {"key": "send_path", "label": "Sending status", "status": "pass", "reason": "…"},
+    {"key": "capacity",  "label": "Sending capacity", "status": "pass", "reason": "…"}
     // opt_out_language · brand_identified · segment_count · merge_expansion
     // recent_overlap · link_shortener · category_match
   ],
@@ -79,8 +80,18 @@ costs two for him — under-quoted at exactly the moment the quote matters.
 keystroke; this endpoint is a deliberate action against a resolved audience and
 is exact. When they disagree, this one is right.
 
-Passing here is **not** permission to send: the capacity row re-states the send
-path's own verdict, it does not replace it.
+Passing here is **not** permission to send: the `send_path` and `capacity` rows
+re-state the send path's own verdicts, they do not replace them.
+
+`send_path` fails when the configured carrier could not start and the app has
+fallen back to the console provider. That is a **refusal**, not a warning — the
+campaign will not run — and it is deliberately not reachable from a *chosen* dry
+run, which passes and behaves exactly as it always has. The distinction is
+`send_mode()`: `unavailable` means the box tried to reach a carrier and could
+not; `dry_run` means someone asked for the console. Before the two were
+distinguishable, a degraded box passed the capacity check on the console
+provider's bottomless balance, marked every row `sent`, and invoiced for
+messages nobody received.
 
 ### `POST /api/campaigns` · rate limited 5/min
 Creates a **draft**. Sends nothing.
@@ -102,9 +113,27 @@ Returns the campaign including `estimated_segments`. It does **not** return
 the server. The client's cost comes from `/preflight` and `/preview`.
 
 ### `POST /api/campaigns/{id}/send` · rate limited 5/min
-Starts the background send. Runs the pre-flight balance check first — if the
-carrier balance can't fund the campaign, it is aborted with `status: "aborted"`
-and an `abort_reason`, having sent nothing.
+**409** while the send path is degraded, before the background task is queued —
+so the answer is immediate rather than surfacing on the next poll, and the
+campaign stays a **draft** that can be sent once the carrier is fixed. Nothing in
+this codebase moves a campaign back from `aborted`, so consuming one that never
+started would mean rebuilding it.
+
+Otherwise it starts the background send. Two pre-flight refusals run there, in
+this order, and either aborts the campaign with `status: "aborted"` and an
+`abort_reason`, having sent nothing:
+
+1. **the send path** — the configured carrier failed to start, so nothing can
+   leave the building. Checked first: a box that cannot reach a carrier has no
+   capacity question to answer, and the answer it *would* give is the console
+   stub's 999,999.
+2. **capacity** — the carrier balance cannot fund the campaign.
+
+Any row the send loop writes while the send path is degraded gets
+`status: "not_sent"`, which is outside the billable set, and the campaign ends
+`aborted` with a reason rather than `completed` — a blast that reached nobody
+must not read like one that worked. That is a backstop, not the mechanism: if
+the refusals above hold, no such row is ever written.
 
 ### `GET /api/campaigns` · `GET /api/campaigns/{id}`
 List, or detail with up to 200 messages plus `delivered_count` /
@@ -122,6 +151,11 @@ disappointing campaign.
 
 ### `POST /api/campaigns/test-sms` · rate limited 5/min
 Send one message to a real handset. `{"phone": "+1...", "message": "..."}`
+
+Refused with `{"success": false, "error": "…"}` while the send path is degraded,
+for the same reason a campaign is: this is the screen someone uses to decide
+whether the box works, and on the console fallback it would answer "Test SMS
+sent" about a message that reached nobody. A chosen dry run is unaffected.
 
 ---
 
@@ -227,12 +261,51 @@ the number.
 
 | Route | Purpose |
 |---|---|
-| `GET /api/blocklist` | All blocked numbers |
+| `GET /api/blocklist` | Blocked numbers (capped at 5,000) plus `counts` |
 | `POST /api/blocklist/block` | `{"phone", "reason", "notes"}` |
 | `POST /api/blocklist/unblock` | `{"phone"}` |
 | `GET /api/blocklist/count` | Count only |
 
 Reasons: `stop_keyword`, `delivery_failure`, `carrier_block`, `manual`.
+
+`GET /api/blocklist` returns `counts`, grouped server-side over the whole table:
+```json
+{"counts": {"opt_outs": 3, "unreachable": 2626, "other": 11, "total": 2640}}
+```
+`opt_outs` is `stop_keyword` alone — the same definition
+`dashboard_service`'s opt-out-rate tile uses, deliberately, so the two screens
+cannot disagree about the one number a client judges his list by. `unreachable`
+is `delivery_failure` + `carrier_block`; `other` is everything else, manual
+blocks today. The split exists because one figure labelled "Blocked" counted
+2,626 auto-blocked landlines as if 2,626 people had opted out, on a screen
+titled "Opt-outs". Only the opt-out figure is styled critical: an unreachable
+number is a data-quality fact, not a compliance event.
+
+Counted server-side rather than tallied from `numbers`, which is capped —
+a client-side tally would under-report a long list, and under-report it as
+*fewer opt-outs*, the direction nobody checks.
+
+**Delivery webhooks auto-block.** A carrier failure matching
+`AUTO_BLOCK_ERROR_FRAGMENTS` ("not routable", "landline", "deemed invalid", …)
+blocks the number with `reason: "delivery_failure"`. This used to fire only on
+the *submission* path, where a provider rejects a send outright — but most dead
+numbers are accepted at submission and fail later via webhook, so they stayed
+live and were paid for again on every campaign. Temporary failures
+("Blocked as spam - temporary") deliberately match nothing: blocking on a
+transient error deletes a reachable buyer permanently, which costs far more than
+one retry.
+
+Three conditions, all required. The message must not already carry a delivery
+receipt (`delivered_at is None`) — the failed branch accepts `status ==
+"delivered"`, so a contradictory failure webhook arriving after a receipt would
+otherwise block a number that provably received the text, and a handset receipt
+is not revocable. The branch runs only on the first terminal event per message,
+so a carrier retrying for days blocks once. `block_number()` refusing duplicates
+is the third layer, not the first.
+
+The fragment list itself is under review — see
+`decisions/003-auto-block-fragments-on-the-webhook-path.open.md`. It was written
+for the low-volume submission path and its entries are unanchored substrings.
 
 ---
 
@@ -253,6 +326,11 @@ Billed on `('sent', 'delivered')`. Counting only `sent` makes the meter appear
 to freeze the moment delivery webhooks land — that bug hit a live client for
 days. Currency arithmetic is `Decimal` end to end: `n × 0.015` for odd `n` lands
 on a half-cent boundary and floats under it about a quarter of the time.
+
+`not_sent`, `undelivered`, `failed`, `blocked` and `skipped` are outside that
+set. `not_sent` is the one added by session 5d: a row queued while the send path
+was degraded, which never reached a carrier. Excluding it is not a pricing
+concession — a segment that never left the building is not a segment.
 
 ### `GET /api/usage/history?cycles=6` · `GET /api/usage/pricing`
 History per cycle; pricing rendered from `.env` so the UI can't drift from what
@@ -277,10 +355,65 @@ is used as the divisor and is never returned.
 |---|---|
 | `GET/PUT /api/settings/auto-reply` | Inbound auto-reply text (+ segment breakdown) |
 | `POST /api/settings/auto-reply/reset` | Restore the default |
-| `GET /api/settings/system` | Provider status, sender number, **webhook URL** |
+| `GET /api/settings/system` | Send mode, sender number, environment flags |
 
-`GET /api/settings/system` is where you find the webhook URL to paste into the
-carrier portal.
+### `GET /api/settings/system`
+```json
+{
+  "provider_configured": true,      // send_mode is "live"
+  "dry_run": false,                 // a dry run was CHOSEN
+  "sending_unavailable": false,     // the carrier failed to start
+  "send_mode": "live",              // live | dry_run | unavailable
+  "send_mode_label": "Live",        // rendered verbatim by every surface
+  "send_mode_detail": "Campaigns are being sent.",
+  "sender_number": "+19545554120",
+  "environment": "production",
+  "skip_non_us": true,
+  "preflight_balance_check": true
+}
+```
+
+Three send modes, not two. `dry_run` means someone **chose** the console
+provider; `unavailable` means a carrier was configured and refused to start. The
+two were one field until session 5c, so a broken live box answered this endpoint
+exactly as a healthy dry-run one did — and the product then described a failed
+carrier as a deliberate dry run on every screen. `send_mode_label` and
+`send_mode_detail` are the only client-safe wording; they come from
+`send_mode()` in `app/sms/factory.py` and nothing else may compose its own.
+
+**There is no `webhook_url` field, and adding one is a white-label regression.**
+It was built as `PUBLIC_BASE_URL + "/webhooks/" + provider.name`, so it printed
+the carrier's name onto a client-facing screen without the name appearing in any
+template — the leak a grep can never find. It is also a setup value only we use:
+the client has no login to the carrier portal. Use
+`settings.webhook_url(provider_name)` directly when configuring, and keep it in
+the deployment notes. `tests/test_whitelabel.py::test_system_info_exposes_no_webhook_url`
+pins its absence.
+
+---
+
+## Health
+
+### `GET /health` — public
+Liveness **and** send status. Unauthenticated because uptime monitors have no
+session.
+```json
+{"status": "degraded", "sending_ok": false, "send_mode": "unavailable",
+ "reason": "Campaigns cannot go out right now. Contact support."}
+```
+`status` is `"healthy"` and `reason` is `null` when sending works.
+
+**Always HTTP 200, including while degraded.** `deployment/deploy.sh`
+health-checks this endpoint after the restart and rolls the release back on a
+non-200, so a 503 for a bad carrier credential would revert every deploy to a
+degraded box — including the one that fixes it. The app being up and the app
+being able to send are different facts. **Configure the uptime monitor on the
+`sending_ok` field, not on the status code**; it is the only alert channel that
+still works when the carrier does not, and an SMS alert about being unable to
+send SMS is self-defeating.
+
+`reason` is `send_mode().detail` — our wording, naming no carrier. The SDK
+exception behind it stays in the log.
 
 ---
 

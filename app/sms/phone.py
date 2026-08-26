@@ -100,7 +100,25 @@ def find_risky_links(message: str) -> list:
     return sorted(set(found))
 
 
-PROVIDER_WORDS = re.compile(r"\b(?:twilio|telnyx|eightbyeight|8x8|bandwidth|vonage)\b", re.IGNORECASE)
+# No word boundaries, deliberately. This was `\b(?:...)\b`, and the trailing \b
+# fails the moment a carrier glues its name to a word character — which is
+# exactly how SDKs write things:
+#
+#   'TelnyxError: bad'                            -> unscrubbed
+#   'telnyx_api failure'                          -> unscrubbed
+#   'twilio.rest.exceptions.TwilioRestException'  -> half scrubbed
+#
+# Found by the session 5d review, after the delivery-webhook auto-block became
+# the first client-rendered string assembled verbatim from carrier free text at
+# volume — 2,673 rows in one campaign, each carrying whatever the carrier chose
+# to call itself. A boundary-anchored scrubber is a scrubber that works on the
+# wordings we happened to test with.
+#
+# The cost is that "bandwidth" is also an ordinary English word and now matches
+# inside longer ones ("bandwidths"). It already matched standalone, so this
+# widens a trade the module had already made, and reading "SMS carrier" where a
+# client expected "bandwidth" is a cosmetic bug. Leaking the carrier's name is not.
+PROVIDER_WORDS = re.compile(r"(?:twilio|telnyx|eightbyeight|8x8|bandwidth|vonage)", re.IGNORECASE)
 PROVIDER_URLS = re.compile(r"https?://\S*(?:twilio|telnyx|8x8|bandwidth|vonage)\S*", re.IGNORECASE)
 
 

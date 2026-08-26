@@ -9,7 +9,9 @@ the ones that cost money:
 
     1. blocklist      free, and legally required
     2. region filter  free; these are guaranteed-undeliverable
-    3. carrier send   costs money
+    3. send path      free; a degraded box reaches no carrier, so nothing here
+                      can succeed and nothing may be billed for trying
+    4. carrier send   costs money
 
 The reference system ran the region check after the send and simply logged the
 rejections as failures — it paid for thousands of attempts it knew would fail.
@@ -23,12 +25,14 @@ from app.models.sms_message import SMSMessage
 from app.models.contact import Contact
 from app.services import contact_service, preflight_service
 from app.services.blocklist_service import load_blocked_set, block_number
-from app.sms.factory import get_provider
+from app.sms.factory import (
+    get_provider, provider_fallback, send_mode, send_path_assessment,
+)
 from app.sms.segments import count_segments
 from app.sms.phone import is_non_us_region, scrub_provider_text, find_risky_links
 from app.sms.compliance import should_auto_block
 from datetime import datetime
-from typing import List, Optional
+from typing import Optional
 import asyncio
 import logging
 
@@ -45,6 +49,14 @@ NO_CATEGORY_ERROR = (
 
 class CampaignError(Exception):
     """Raised for problems the operator can fix (empty audience, no funds)."""
+
+
+# What a row gets when it was queued but the send path could not reach a carrier.
+# Deliberately outside BILLABLE_STATUSES — see app/models/sms_message.py. A DB
+# status, so it stays on this side of the layering boundary; the *wording* the
+# client reads for the same fault lives in app/sms/factory.py next to the rest
+# of it.
+DEGRADED_STATUS = "not_sent"
 
 
 def wholesale_estimate(segments: int) -> float:
@@ -276,7 +288,29 @@ class CampaignService:
         Refusing to start is always cheaper than stopping halfway: a campaign
         that never ran can simply be re-run, while a half-sent one leaves you
         unable to tell who got the message.
+
+        Two refusals now, in this order. The send path is checked before
+        capacity because a box that cannot reach a carrier has no capacity
+        question to answer — and because the answer it *would* give is the
+        console stub's 999,999, which is exactly how a degraded box sailed
+        through the check that exists to stop this.
         """
+        send_path = send_path_assessment()
+        if not send_path["ok"]:
+            # The cause stays here. provider_fallback() carries raw SDK text and
+            # the carrier's name; the client gets send_mode()'s wording and this
+            # gets the line that lets someone fix it.
+            fallback = provider_fallback()
+            logger.error(
+                f"Campaign #{campaign.id} pre-flight FAILED | send path degraded | "
+                f"requested={fallback.requested if fallback else '?'} "
+                f"{fallback.error_type if fallback else '?'}: "
+                f"{fallback.error if fallback else 'no fallback recorded'}"
+            )
+            # The abort wording: this is stored as the campaign's abort_reason
+            # and read back after the fact, not shown to someone still typing.
+            return False, send_path["abort_detail"]
+
         assessment = await self.capacity_assessment(
             campaign.estimated_segments or 0, campaign.estimated_cost or 0
         )
@@ -329,6 +363,7 @@ class CampaignService:
         # One query, not one per recipient.
         blocked = load_blocked_set(self.db)
         total = len(messages)
+        degraded_rows = 0
         logger.info(f"Campaign #{campaign_id} sending {total} messages")
 
         for i, msg in enumerate(messages, 1):
@@ -349,7 +384,30 @@ class CampaignService:
                     self.db.commit()
                     continue
 
-                # 3. Money is spent past this line.
+                # 3. The send path itself — the backstop under the pre-flight
+                #    refusal above, not a substitute for it. The refusal aborts
+                #    the campaign before the loop starts, and `_fallback` only
+                #    changes on an explicit force_reload, which nothing in
+                #    production calls — so today this branch is unreachable
+                #    rather than merely rare. It is here because "unreachable"
+                #    is what a row marked `sent` and invoiced for a message
+                #    nobody received was until session 5d, and because the first
+                #    "reload the provider" admin button makes it reachable.
+                #    Checked per message so a provider that degrades mid-blast
+                #    cannot leave the first thousand rows honest and the rest
+                #    billable. The status is outside BILLABLE_STATUSES and the
+                #    counter it moves is skipped, not sent: a segment that never
+                #    reached a carrier is not billable, which is what the word
+                #    means rather than a concession. See decision 002.
+                if send_mode().key == "unavailable":
+                    msg.status = DEGRADED_STATUS
+                    msg.error_message = send_path_assessment()["abort_detail"]
+                    campaign.skipped_count += 1
+                    degraded_rows += 1
+                    self.db.commit()
+                    continue
+
+                # 4. Money is spent past this line.
                 result = await self.provider.send(msg.phone, msg.message)
 
                 if result.success:
@@ -392,80 +450,29 @@ class CampaignService:
                 campaign.failed_count += 1
                 self.db.commit()
 
-        campaign.status = "completed"
+        # A campaign the backstop above caught did not complete — it reached
+        # nobody. Saying "completed" with no abort reason is the same lie one
+        # level down that this whole session exists to remove: the campaign rail
+        # is the entire UI (there is no detail screen), it renders the status
+        # badge and shows a reason only when abort_reason is set, so a blast that
+        # went nowhere would read exactly like one that worked. The per-message
+        # error is already correct; nothing displays it.
+        if degraded_rows:
+            campaign.status = "aborted"
+            campaign.abort_reason = send_path_assessment()["abort_detail"]
+            logger.error(
+                f"Campaign #{campaign_id} ABORTED mid-send: the send path degraded "
+                f"after pre-flight passed; {degraded_rows} message(s) written "
+                f"{DEGRADED_STATUS} and none billed"
+            )
+        else:
+            campaign.status = "completed"
         campaign.completed_at = datetime.now().isoformat()
         self.db.commit()
 
         logger.info(
-            f"Campaign #{campaign_id} complete: {campaign.sent_count} sent, "
+            f"Campaign #{campaign_id} {campaign.status}: {campaign.sent_count} sent, "
             f"{campaign.failed_count} failed, {campaign.skipped_count} skipped"
         )
         return campaign
 
-
-async def send_campaign_background(campaign_id: int):
-    """Entry point for BackgroundTasks — owns its own DB session.
-
-    A request-scoped session is closed the moment the HTTP response is returned,
-    so a background job must never borrow one.
-    """
-    from app.core.database import SessionLocal
-    db = SessionLocal()
-    try:
-        await CampaignService(db).send_campaign(campaign_id)
-    except Exception as e:
-        logger.error(f"Campaign {campaign_id} background send failed: {e}")
-    finally:
-        db.close()
-
-
-# ─── Scheduled send ─────────────────────────────────────────────────────────
-
-def due_campaign_ids(db: Session, now: Optional[datetime] = None) -> List[int]:
-    """Drafts whose scheduled time has arrived.
-
-    Drafts only. A campaign that is already running, completed or aborted is not
-    due however old its timestamp is, and filtering on status is what stops the
-    minute-by-minute tick from dispatching the same campaign twice.
-
-    Comparison is lexicographic on ISO strings, which is chronological for this
-    format — the same basis `billing_service` uses on `sent_at`.
-    """
-    cutoff = (now or datetime.now()).isoformat()
-    rows = (db.query(Campaign.id)
-            .filter(Campaign.status == "draft",
-                    Campaign.scheduled_at.isnot(None),
-                    Campaign.scheduled_at <= cutoff)
-            .order_by(Campaign.scheduled_at)
-            .all())
-    return [row_id for (row_id,) in rows]
-
-
-async def run_due_campaigns() -> List[int]:
-    """Send every campaign whose time has come. Returns the ids dispatched.
-
-    Deliberately thin: it finds ids and hands each to the same `send_campaign()`
-    a button press reaches, so a scheduled campaign gets the capacity pre-flight,
-    the blocklist, the region filter and the suppression queue exactly as an
-    on-demand one does. Scheduling decides *when*, never *whether*.
-
-    Owns its own session — an APScheduler job has no request to borrow one from.
-    """
-    from app.core.database import SessionLocal
-
-    db = SessionLocal()
-    try:
-        campaign_ids = due_campaign_ids(db)
-        if not campaign_ids:
-            return []
-        logger.info(f"Scheduler: {len(campaign_ids)} campaign(s) due — {campaign_ids}")
-        service = CampaignService(db)
-        for campaign_id in campaign_ids:
-            try:
-                await service.send_campaign(campaign_id)
-            except Exception as e:
-                # One bad campaign must not stop the rest of tonight's schedule.
-                logger.error(f"Scheduled campaign {campaign_id} failed: {e}")
-        return campaign_ids
-    finally:
-        db.close()

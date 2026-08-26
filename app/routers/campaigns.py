@@ -18,11 +18,12 @@ from app.models.campaign import Campaign
 from app.models.category import Category
 from app.models.sms_message import SMSMessage
 from app.services.campaign_service import (
-    CampaignService, CampaignError, send_campaign_background, wholesale_estimate,
+    CampaignService, CampaignError, wholesale_estimate,
 )
+from app.services.campaign_dispatch import send_campaign_background
 from app.services import contact_service, preflight_service
 from app.services.blocklist_service import load_blocked_set
-from app.sms.factory import get_provider
+from app.sms.factory import get_provider, send_path_assessment
 from app.sms.segments import describe
 from app.sms.phone import normalize, scrub_provider_text, find_risky_links
 import logging
@@ -193,6 +194,11 @@ async def preflight(payload: PreflightRequest, db: Session = Depends(get_db),
         sendable_count=split["recipients"],
         suppressed_count=split["suppressed"],
         capacity_assessment=assessment,
+        # The degraded verdict, from the same call the send path enforces. It is
+        # first in the checklist because it is the one check whose failure makes
+        # every row below it moot: a box that cannot reach a carrier has enough
+        # capacity for anything and will deliver none of it.
+        send_path_assessment=send_path_assessment(),
     )
     report["counts"]["opted_out"] = split["opted_out"]
     return report
@@ -233,6 +239,23 @@ async def send_campaign(request: Request, campaign_id: int, background_tasks: Ba
         raise HTTPException(status_code=404, detail="Campaign not found")
     if campaign.status != "draft":
         raise HTTPException(status_code=400, detail=f"Campaign is {campaign.status}, not draft")
+
+    # Refused here, synchronously, as well as in the send path itself. Queueing
+    # the task and answering "Campaign sending started" was optimistic in the
+    # one place it must not be: the refusal happened in the background and
+    # surfaced when the rail next polled, so for those seconds the product told
+    # him his blast had begun. The same argument that made the test-send
+    # endpoint refuse applies harder to the button that sends the blast.
+    #
+    # Refusing before the task is queued also leaves the campaign a **draft**
+    # rather than consuming it as `aborted`. Decision 002's own justification is
+    # that "a campaign that never ran can simply be re-run", and nothing in this
+    # codebase moves a campaign back to draft — so aborting a blast that never
+    # started would have made him rebuild it once the carrier came back.
+    send_path = send_path_assessment()
+    if not send_path["ok"]:
+        logger.error(f"Campaign #{campaign_id} send REFUSED: send path degraded")
+        raise HTTPException(status_code=409, detail=send_path["detail"])
 
     logger.info(f"Campaign #{campaign_id} send triggered by {get_client_ip(request)}")
     background_tasks.add_task(send_campaign_background, campaign_id)
@@ -321,10 +344,20 @@ async def send_test_sms(request: Request, payload: TestSMSRequest,
     Always do this before a blast, to a phone on the carrier your audience uses.
     A message can be accepted by the provider and still be dropped by the carrier;
     only a real handset tells you the truth.
+
+    Refused on a degraded box for the same reason a campaign is (A1): the
+    console fallback reports success, so this would answer "Test SMS sent to
+    +1..." about a message that reached nobody — and this is the one screen a
+    client uses to decide whether the box is working. A *chosen* dry run still
+    answers exactly as it did; the demo flow is untouched.
     """
     phone = normalize(payload.phone)
     if not phone:
         raise HTTPException(status_code=400, detail="Invalid phone number")
+
+    send_path = send_path_assessment()
+    if not send_path["ok"]:
+        return {"success": False, "error": send_path["detail"]}
 
     result = await get_provider().send(phone, payload.message)
     if result.success:

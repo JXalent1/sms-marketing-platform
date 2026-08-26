@@ -35,9 +35,11 @@ from app.main import app
 from app.models.campaign import Campaign
 from app.models.sms_message import SMSMessage, BILLABLE_STATUSES
 from app.services import preflight_service
-from app.services.campaign_service import (
-    CampaignError, CampaignService, due_campaign_ids, run_due_campaigns,
-)
+from app.services.campaign_service import CampaignError, CampaignService
+# Scheduling moved to campaign_dispatch in session 5d, when campaign_service
+# crossed the 500-line rule. Same functions, same behaviour — the split is along
+# "when a send begins" and nothing about *whether* it may moved with it.
+from app.services.campaign_dispatch import due_campaign_ids, run_due_campaigns
 
 from tests import _guardrail_setup as setup
 from tests._guardrail_setup import (

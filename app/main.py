@@ -120,7 +120,7 @@ async def lifespan(app: FastAPI):
     # started underneath it.
     from apscheduler.triggers.cron import CronTrigger
     from apscheduler.triggers.interval import IntervalTrigger
-    from app.services.campaign_service import run_due_campaigns
+    from app.services.campaign_dispatch import run_due_campaigns
     from app.services import monitoring_service
 
     scheduler.add_job(
