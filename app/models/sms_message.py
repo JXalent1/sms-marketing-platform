@@ -51,6 +51,14 @@ class SMSMessage(Base):
     external_id = Column(String(255), nullable=True, index=True)   # provider message ID
     error_message = Column(Text, nullable=True)
 
+    # The carrier's own error code, kept apart from the prose in error_message.
+    # Auto-block rules match codes against THIS column and never against the
+    # message: error prose routinely quotes the destination number, and a plain
+    # substring test for "21610" fires on +1 321-610-xxxx — an assignable
+    # Brevard County number in this client's market. See app/sms/compliance.py
+    # and decisions/003-auto-block-fragments-on-the-webhook-path.md.
+    error_code = Column(String(20), nullable=True)
+
     sent_at = Column(String(50), nullable=True)
     delivered_at = Column(String(50), nullable=True)
 

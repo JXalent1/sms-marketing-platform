@@ -44,12 +44,18 @@ async def status_callback(request: Request, db: Session = Depends(get_db)):
     """
     try:
         form = await request.form()
+        # ErrorCode goes in as a code, not as prose. The `or ErrorCode` fallback
+        # on the detail stays — with no ErrorMessage a bare code is still better
+        # post-mortem material than nothing — but no auto-block rule reads it
+        # there any more, which is the point: the codes that mean "opted out"
+        # and "unreachable" are also fragments of ordinary phone numbers.
         record_delivery_status(
             db,
             form.get("MessageSid", ""),
             form.get("MessageStatus", ""),
             form.get("ErrorMessage") or form.get("ErrorCode"),
             source="twilio",
+            error_code=form.get("ErrorCode"),
         )
     except Exception as e:
         logger.error(f"Twilio status error: {e}")

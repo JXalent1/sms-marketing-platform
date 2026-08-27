@@ -1,6 +1,9 @@
 # Status
 
-_Last updated: 2026-08-20_
+_Header last rewritten 2026-08-20, at module 3a. Sessions 5b through 5g append
+their own sections rather than rewriting it — **the bottom of this file is the
+current state**, and `handoff.md` is the snapshot. Latest: "Module 5g Part A —
+blocklist correctness", 2026-08-26._
 
 ## Where we are
 Module 3a complete — the dark application shell is in, every existing page still
@@ -1117,3 +1120,345 @@ byte-identical; `.env` untouched.
 - **The live box has not been deployed to.** Everything above is in the repo and
   proven locally; the box still runs the pre-5d code, the pre-5c nginx config and
   the hot-patched SDK. Criterion 9 cannot pass until someone deploys.
+
+---
+
+## Module 5g Part A — blocklist correctness (appended by session 5g, 2026-08-26)
+
+**Status: Part A complete except the deploy.** Implements
+`decisions/003-auto-block-fragments-on-the-webhook-path.md` in the order that
+decision rules. Nothing in this session can send a message: `SMS_PROVIDER` is
+`console` in `.env`, in `tests/conftest.py` and in every subprocess the
+acceptance script starts; the classifier probe is a pure function over strings
+and touches no provider and no network. No live credential was read. No contact
+data was imported, modified or deleted, and **nothing was unblocked** — the
+2,959 existing rows are untouched, as the spec requires. This session changes
+what happens to *future* failures.
+
+Gate green at both ends, twice in a row. **184 tests at start, 259 at end**
+(+75: 73 across `tests/test_blocklist_correctness.py` and
+`tests/test_carrier_error_surfaces.py`, 1 SDK-shape case in
+`tests/test_provider_status.py`, 1 index check in `tests/test_migrations.py`).
+Decision 004 added nine more after the fact — see the section at the end of this file.
+One existing test rewritten — see below.
+
+### The problem in one line
+
+5d A7 pointed `should_auto_block()` at the delivery-webhook path, taking it from
+a handful of events per campaign to 3,037. Its fragment list was written for the
+*submission* path, where a carrier refuses outright; the wide path carries the
+whole transient-failure vocabulary as well, and the list was unanchored
+substrings with three bare numeric codes in it. The failure is invisible by
+construction: a wrongly blocked buyer stops appearing in campaigns and leaves one
+`delivery_failure` row among thousands of correct ones.
+
+### A1 — a transient failure never blocks
+
+`TRANSIENT_FAILURE_MARKERS` in `app/sms/compliance.py` — `temporar`, `retry`,
+`congestion`, `try again` — is checked first and beats every other rule,
+including a structured code. `"unreachable"` **stays** in the block list; the
+transient marker is what separates a dead line from a handset switched off during
+a blast.
+
+Deliberately unanchored substrings, and deliberately wider than they need to be.
+That is the inverse of the trade the block fragments make: a transient marker
+causes a *refusal to act*, so over-matching costs half a cent for one more
+attempt, while under-matching deletes a live buyer. Written down in the module,
+because the asymmetry is the only reason the two lists are matched differently.
+
+### A2 — codes come from a column, never from prose
+
+`sms_messages.error_code`, migration `b7e3c9a1d024`, additive and nullable,
+nothing backfilled. `webhooks/telnyx.py` was building `f"{title}: {detail}"` and
+dropping `errors[].code` on the floor; it now carries the code as a code.
+`webhooks/twilio.py` posts `ErrorCode` as its own form field and now passes it
+through as one.
+
+`"21610"`, `"21612"` and `"40300"` left the text fragment list and were **not**
+`\b`-anchored back in. `\b21610\b` still matches a bare code sitting in prose,
+and prose is where the carrier quotes the destination number — +1 321-610-xxxx
+and 321-612-xxxx are assignable Brevard County numbers in this client's own
+market. The codes now match `AUTO_BLOCK_ERROR_CODES` / `CARRIER_OPT_OUT_CODES`
+against the new column only.
+
+`should_auto_block()` kept its one-argument-compatible signature on purpose:
+`campaign_service.py:427` is its other call site and that file belongs to 5e.
+
+### A3 — the provider error is parsed, not stringified
+
+Row 4 of the live corpus is the SDK's `__str__` of an API error, which is the
+response body dict-repr'd into the message — and since 5d that column is the
+source of `blocked_numbers.notes`, which the client reads on the Opt-outs page.
+`describe_send_error()` in `app/sms/providers/telnyx.py` reads `title` and
+`detail` off `exc.body` by name. Duck-typed on the attribute rather than caught
+by SDK class, so the module stays importable without the SDK — and
+`tests/test_provider_status.py` now asserts `APIStatusError.__init__` still takes
+`body`, so a version bump that renames it fails at `pip install` rather than
+silently getting worse.
+
+`strip_payload()` in `app/sms/phone.py` is the backstop, called from inside
+`scrub_provider_text()` so every client-facing surface gets it: any provider,
+any SDK version, any path that reaches a client string without going through
+ours. It cuts at two structural characters in a row (`{'`, `[{`, `{"`) — one
+brace alone is not enough signal to truncate an error message on. All twelve
+`scrub_provider_text()` call sites are error strings; none carries a message
+body, so no template merge tag can be eaten by it.
+
+### A4 — word boundaries
+
+`_anchored()` compiles the word fragments with `\b` on both ends. Anchoring is
+safe here in a way it was not in `scrub_provider_text()` during 5d: that regex
+reads text an SDK assembled, where the carrier's name is glued to a word
+character and a trailing `\b` fails open. These read a carrier's English prose,
+where "landline" is a word. Cheap, and not the rule doing the work.
+
+### A5 — never block a recipient for our own misconfiguration
+
+`"has not been enabled for the region"` is gone from the block list; it is a geo
+permission on the *sending* account (Twilio 21408). It now raises a
+configuration alert, and the recipient stays on the list.
+
+**The signal is a row read back by `/health`, not a text.** `agent/notify.sh`
+sends an SMS over the carrier account and 5d ruled an alert must not travel over
+the thing it is warning about. It is also the wrong shape for this path: these
+arrive on the delivery webhook, thousands in a burst, inside a request that must
+answer promptly — a subprocess per event would turn a carrier's retries into a
+fork bomb. `record_config_alert()` / `active_config_alerts()` in
+`monitoring_service.py`; `config_ok` and `config_issues` on `/health`; the alert
+stops reporting seven days after it was last raised, because a field stuck red
+forever is a field people learn to ignore.
+
+`/health` reads it **without `Depends(get_db)`**. A dependency that raises means
+the handler never runs, which is the same rollback trap as returning 503 one
+layer up — `deployment/deploy.sh` restores the previous release on a non-200
+there. `active_config_alerts()` opens its own session, selects columns rather
+than entities so nothing detaches when it closes, and returns `[]` on anything
+going wrong. Asserted by
+`test_health_survives_a_database_it_cannot_read`.
+
+### A6 — carrier opt-outs get their own reason
+
+`carrier_opt_out` added to `BLOCK_REASONS`; opt-out wordings and code 21610 map
+to it. `OPT_OUT_REASONS` becomes `("stop_keyword", "carrier_opt_out")` and
+`dashboard_service.stat_tiles()` now **imports** that tuple instead of filtering
+on the literal `"stop_keyword"` — same commit, as decision 003 requires, so the
+invariant at `blocklist_service.py:88-91` stays true.
+
+Distinct in the record, combined in the metric. `stop_keyword` is a message this
+system received and can produce on demand; a carrier's opt-out record is not that
+evidence, and collapsing them weakens a compliance record that exists to be
+audited.
+
+### The one existing test that changed
+
+`test_the_opt_out_definition_matches_the_dashboard_tile` asserted the literal
+`OPT_OUT_REASONS == ("stop_keyword",)`. Decision 003 ruling 6 changes that tuple,
+so it had to move — and it was pinning the wrong thing anyway. It tested the
+membership list rather than the property the membership list exists for: it went
+red on an intended change, and it would have stayed **green** on the change that
+actually matters, a second literal filter appearing in `dashboard_service`, which
+is exactly what was sitting there. It now asserts the invariant, and the counts
+are compared row for row in
+`test_the_blocklist_headline_and_the_dashboard_tile_agree`.
+
+### Acceptance
+
+`agent/accept-5g.sh` is the Part A stop condition — the nine criteria from
+`sessions/session-5g.md`, each a check that runs rather than a claim, with the
+60-turn cap recorded in its header. Criteria 1-8 pass locally. Criterion 9 needs
+the deployed site and is opt-in:
+
+    A4A_URL=https://... A4A_PASSWORD=... bash agent/accept-5g.sh --with-remote
+
+**Check 3 is the one with teeth.** It runs one fixed corpus of thirteen strings
+through `should_auto_block()` on the pre-fix worktree and on this tree, using
+only the one-argument signature the pre-fix tree shipped with, and prints both
+verdicts side by side:
+
+                                       before   after
+       A1: congestion                  True     False  <-- changed
+       A1: switched-off handset        True     False  <-- changed
+       A1: upstream outage             True     False  <-- changed
+       A1: will retry                  True     False  <-- changed
+       A2: code inside a uuid          True     False  <-- changed
+       A2: number that is not a code   True     False  <-- changed
+       A2: quoted brevard number       True     False  <-- changed
+       A4: fragment inside a word      True     False  <-- changed
+       A5: region not enabled          True     False  <-- changed
+       live: deemed invalid (112)      True     True
+       live: not routable (2,847)      True     True
+       live: raw payload (2)           True     True
+       live: temporary spam (76)       False    False
+
+It fails if any hazard row did *not* block at the base ref — a fix whose defect
+does not reproduce proves nothing — and it fails if any of the three live
+wordings stops blocking, which is the expensive direction: 2,847 landlines a
+campaign at roughly half a cent each.
+
+**Check 8b answers the question check 8 cannot.** Check 8 (new tests red against
+the pre-fix tree) is true and weak: the modules fail at *import* there, because
+the symbols they test did not exist yet, and "the module is new" is not "these
+tests would catch the bug coming back". So `agent/mutate-5g.py` reverts each of
+the ten fixes **behaviourally** — inside the current API, one at a time, in a
+scratch copy of the tree — and requires at least one test to go red for each:
+
+    R1  transient guard removed              CAUGHT (5 failed)
+    R2  codes matched in prose again         CAUGHT (6 failed)
+    R3  word boundaries removed              CAUGHT (3 failed)
+    R4  region wording blocks again          CAUGHT (4 failed)
+    R5  opt-outs counted as unreachable      CAUGHT (3 failed)
+    R6  dashboard uses the literal again     CAUGHT (1 failed)
+    R7  strip_payload is a no-op             CAUGHT (9 failed)
+    R8  provider stringifies again           CAUGHT (4 failed)
+    R9  webhook drops the carrier code       CAUGHT (2 failed)
+    R10 carrier_opt_out reason not used      CAUGHT (5 failed)
+
+No mutation survives. It also found the one place the suite reads stronger than
+it is: two of the five parametrized transient wordings contain no block fragment
+at all and pass whether or not the guard exists. They are real carrier wordings
+worth keeping, and the parametrize block now says so rather than showing five
+green ticks for three proofs.
+
+### Found while working (session 5g)
+
+- **`\b`-anchoring narrows plurals, and one of them is an opt-out wording.** A
+  regression against HEAD, small and deliberate: `"opt-out"` used to match inside
+  `"opt-outs"` as a plain substring and no longer does. Allowing an optional `s`
+  would restore it and would simultaneously re-break decision 003's own stated
+  example — `\blandlines?\b` matches "landlines-are-fine", which ruling 4 exists
+  to prevent. Ruling 4 asks for the boundaries explicitly, so the narrowing is
+  inherent to what was ordered. For the *dead-number* fragments it is the safe
+  direction; for an opt-out it is a missing compliance record rather than a
+  wasted half-cent, which is why it is written down rather than silently
+  accepted. Not tuned here — the opt-out fragment list is escalation item 5.
+  Absent from this account's traffic: the whole corpus is four strings and none
+  contains "opt-out" in any spelling.
+- **`"opted-out"` (hyphenated) matches no fragment, before or after.** The list
+  has `"opted out"` and `"opt-out"`. Pre-existing, unchanged by this session,
+  same escalation item.
+- **RESOLVED — `decisions/004-unreachable-without-a-transient-adjective.md`,
+  option 2, implemented.** A1's transient guard did not stop the wording A1's own
+  rationale was built on: Twilio 30003's `ErrorMessage` is literally
+  `Unreachable destination handset` — none of the four markers — so it still
+  blocked, as did decision 003's own `SMPP bind failed - SMSC unreachable`. The
+  ruling drops `"unreachable"` from `AUTO_BLOCK_ERROR_FRAGMENTS` rather than
+  adding a second tier of logic: option 3's non-redundant half was the
+  structured-code case, and codes belong in the `error_code` column A2 already
+  built. See "Implementing decision 004" below.
+- **A transient webhook still consumes a message's one shot.** Carried over from
+  5d and now slightly sharper: `record_delivery_status` is idempotent on the
+  first terminal event, so a transient failure arriving first means a later
+  "not routable" for the same message is dropped and the number is never blocked.
+  Correct idempotency, small cost, worth knowing.
+- **Neither webhook verifies a signature.** Carried over from 5d, and the blast
+  radius grew again: an unauthenticated POST can now also write an
+  `app_settings` row via the configuration alert. It still needs a valid
+  `external_id`, which is not guessable, so this remains a hardening item rather
+  than an open hole — but it is the second session in a row where the answer to
+  "what can an unsigned webhook do?" got longer.
+- **`campaign_service.py`'s submission path gets none of 5g.** It is in 5e's
+  file set and was deliberately not touched, so `should_auto_block()` kept a
+  signature it can still call — but that call discards the verdict's `reason` and
+  `alert_key` and hardcodes `delivery_failure` (`campaign_service.py:427-433`).
+  Three consequences, all real and all bounded by the fact that the webhook path
+  carries the overwhelming majority of failures (3,037 against a handful):
+  a carrier opt-out rejected at submission is still filed as an unreachable
+  number; a region-permission refusal at submission raises no operator signal, so
+  `/health` stays green for it; and `21612`/`40300` rejections that used to
+  auto-block there via a prose substring now do not, because `SendResult` has no
+  field to carry a code. That last one is a narrowing in the direction decision
+  003 wanted — matching codes in prose *was* the bug — but it is a behaviour
+  change on a path this session was told not to touch, and it should be stated
+  rather than discovered. One field on `SendResult`, one line in the provider,
+  three in `campaign_service.py`, whenever 5e opens that file.
+- **`sms_messages.error_code` is one namespace for two carriers.** No provider
+  discriminator on the column, and `AUTO_BLOCK_ERROR_CODES` mixes a Twilio code
+  (`21612`) with a Telnyx one (`40300`). No collision today — Twilio uses 2xxxx
+  and 3xxxx, Telnyx 1xxxx and 4xxxx — and nothing enforces that. `source` on the
+  message's blocklist row already records which carrier reported it, so the fix
+  when it matters is to key the code sets by provider rather than to add a
+  column.
+- **What the fresh-context review changed.** Four defects it found and this
+  session fixed: `strip_payload()` cut at the opening brace and discarded
+  everything after it, so a carrier's remediation advice was lost and an error
+  that was *only* payload became the empty string — which rendered as
+  "Auto-blocked:" and nothing else on the client's Opt-outs page; the config
+  alert wrote its row once per event on a path whose whole justification was
+  avoiding per-event work; and the migration used `batch_alter_table`, which
+  rebuilds `sms_messages` and every index on it, under a docstring claiming it
+  touched no index. The first is now a span removal with a bracket scanner, the
+  second is throttled, the third is a plain in-place `ADD COLUMN` with
+  `test_the_error_code_migration_did_not_rebuild_the_sms_message_indexes`
+  pinning it. All four were reproduced before being fixed.
+- **The live box has still not been deployed to.** Criterion 9 cannot pass until
+  someone does. Everything above is in the repo and proven locally; the box runs
+  the pre-5c nginx config, the hot-patched SDK, and pre-5d application code.
+
+---
+
+## Implementing decision 004 — "unreachable" leaves the block list (2026-08-26)
+
+Option 2, as ruled. **259 tests** (250 → 259), gate green twice,
+`agent/accept-5g.sh` checks 1-8b pass.
+
+### The change
+
+One fragment removed from `AUTO_BLOCK_ERROR_FRAGMENTS` in `app/sms/compliance.py`.
+Nothing else in the classifier moved: no second tier, no code table, no new
+branch. That was the ruling's own argument — option 3's text half was already
+done by whichever fragment sat beside `"unreachable"` in the same string, and its
+structured-code half belongs in the `error_code` column A2 built, not in a
+two-tier text rule.
+
+### Rider 1 — the criterion, re-pointed rather than deleted
+
+Acceptance criterion 3 was "a transient-worded error containing `unreachable`
+does not block". With the fragment gone that passes for the wrong reason: the
+string stops blocking because nothing matches it, not because the guard caught
+it. Three changes, in `sessions/session-5g.md`, the suite and
+`agent/accept-5g.sh`:
+
+- **The criterion now requires a live block fragment** in the wording, so the
+  guard is provably the thing that stopped it. Four wordings, each a carrier
+  describing a dead-number failure as temporary — "destination not routable via
+  this route, will retry", "invalid phone number returned by the upstream lookup;
+  temporary failure, retrying", and two more.
+- **The discriminating property is asserted, not judged.**
+  `test_every_transient_wording_would_block_without_the_guard` strips the
+  transient markers out of each wording and requires the result to block. A row
+  that carries no fragment fails that test rather than passing the one above for
+  free. It uses only the public API — it asserts the property instead of
+  re-checking my own arithmetic against the module's regexes.
+- **The `"unreachable"` wordings moved to their own test**, named for the
+  fragment removal rather than the guard, because three of the four carry no
+  transient marker and the guard never sees them. Filing them under the guard is
+  what made the old suite read stronger than it was. Twilio 30003 verbatim and
+  decision 003's SMPP outage are both in it.
+
+Criterion 3's before/after table now labels the two groups separately —
+`A1 guard:` rows, where the guard is what changed the verdict, and
+`004 dropped:` rows, where the fragment removal is. Both must be True at
+`f16998b` and False here; conflating them was the original defect.
+
+### Rider 2 — the residual, recorded at the site
+
+A comment block at `AUTO_BLOCK_ERROR_FRAGMENTS` states the three meanings the
+fragment carried, why the guard could not separate them, and the accepted cost in
+plain terms: **a line the carrier describes only as "unreachable" survives and is
+paid for again on every campaign** — about half a cent a blast, under two dollars
+a year, against a bidder deleted permanently and invisibly. It names line-type
+screening at import as the intended real fix and says not to rebuild a two-tier
+rule, because decision 004 considered and rejected exactly that.
+
+`agent/mutate-5g.py` gained **R11, "unreachable back in the block list"**, which
+must break a test. The residual is a cost argument rather than an obvious one, so
+the fragment is exactly the kind of thing a future session restores in good
+faith; R11 is what makes that loud rather than quiet. Eleven mutations now, all
+CAUGHT.
+
+### Rider 3 — not done, deliberately
+
+A structured transient-code set (30003 and siblings) stays open. The ruling puts
+it behind a second carrier going live or Telnyx populating codes reliably on the
+delivery path; today it would be a table of one entry that A4A's traffic has
+never produced. `sms_messages.error_code` is the seam when it is time.

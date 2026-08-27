@@ -116,6 +116,31 @@ def test_carrier_sdk_matches_the_provider_it_is_used_through():
     )
 
 
+def test_the_sdk_error_shape_the_provider_reads_by_name_still_exists():
+    """`describe_send_error()` reads `.body` off a failed send's exception.
+
+    That attribute is the only reason the client stops seeing the response body
+    dict-repr'd into an error message. If a future SDK renames it, nothing
+    raises: the function falls through to its text backstop and quietly gets
+    worse. Same reasoning as the pin check above — assert the shape the module
+    drives, so it fails at `pip install` rather than on the morning of a sale.
+    """
+    import inspect
+
+    telnyx = pytest.importorskip("telnyx")
+
+    assert hasattr(telnyx, "APIStatusError"), (
+        "the SDK no longer raises APIStatusError — check what app/sms/providers/"
+        "telnyx.py should read the carrier's error fields from"
+    )
+    parameters = inspect.signature(telnyx.APIStatusError.__init__).parameters
+    assert "body" in parameters, (
+        f"APIStatusError no longer carries `body`: {list(parameters)}. "
+        f"describe_send_error() would silently fall back to str(exc), which is "
+        f"the raw payload this was written to keep out of the client's view."
+    )
+
+
 # ─── A failed provider is not a chosen one ──────────────────────────────────
 
 def test_fallback_is_recorded_and_not_only_logged():

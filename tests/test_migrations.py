@@ -55,3 +55,24 @@ def test_migrations_match_the_models():
         diff = compare_metadata(context, Base.metadata)
 
     assert diff == [], f"migrations have drifted from the models: {diff}"
+
+
+def test_the_error_code_migration_did_not_rebuild_the_sms_message_indexes():
+    """Escalation item 8 names index changes on `sms_messages` by name.
+
+    `batch_alter_table` — which every other migration in this project uses —
+    recreates the whole table and rebuilds every index on it. Session 5g's
+    column add does not need that (SQLite adds a nullable column with no default
+    in place) and deliberately does not use it. The scratch database this suite
+    runs against was built by `alembic upgrade head`, so the indexes below are
+    the ones the migration chain actually left behind.
+
+    Found by review: the migration used batch mode and its own docstring claimed
+    it touched no index, which is the opposite of what batch mode does.
+    """
+    from sqlalchemy import inspect
+
+    indexes = {i["name"] for i in inspect(engine).get_indexes("sms_messages")}
+    for expected in ("idx_sms_campaign", "idx_sms_status", "idx_sms_sent_at",
+                     "ix_sms_messages_external_id"):
+        assert expected in indexes, f"{expected} is missing: {sorted(indexes)}"

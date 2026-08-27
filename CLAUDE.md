@@ -49,7 +49,7 @@ These are the commands acceptance criteria reference. Run them and show the outp
   `ModuleNotFoundError: slowapi` and reports **"test suite is red"** — a true statement
   about the wrong interpreter, and a convincing false alarm. Either activate `.venv`
   or run `PATH="$PWD/.venv/bin:$PATH" bash agent/gate.sh`.
-- **Tests:** `python -m pytest tests/ -q` — must exit 0. **184 passing as of session 5d.**
+- **Tests:** `python -m pytest tests/ -q` — must exit 0. **259 passing as of session 5g.**
   A lower count means you are on a stale branch, not that tests vanished.
 - **Migrations:** `alembic upgrade head` — must succeed from a clean DB.
 - **Run it:** `./run.sh` then `curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/login` → `200`
@@ -199,6 +199,18 @@ change to a live table.
   are unanchored substrings: `"unreachable"` is Twilio's wording for a switched-off
   handset, and `"21610"` matches a Brevard County phone number quoted in an error string.
   Before reusing a matcher on a new path, ask what *else* arrives on that path.
+- **A fragment that means more than one thing does not belong in a list that triggers
+  an irreversible action.** `"unreachable"` meant a dead line, a switched-off handset
+  and an upstream outage — two of the three transient, one not even about the
+  recipient. Session 5g added a transient-marker guard to separate them and it could
+  not: Twilio 30003's own `ErrorMessage` is `Unreachable destination handset`, with no
+  marker in it, so the guard only ever caught the wordings a carrier happened to
+  decorate with an adjective. `decisions/004` removed the fragment rather than adding
+  a second tier of logic. Two things generalize. First, when a signal is ambiguous and
+  the errors are asymmetric — half a cent against a bidder deleted invisibly — make
+  the cheap error. Second, **do not build a better heuristic on a lossy proxy when the
+  authoritative check is cheap**: permanence is a property of the line, and line-type
+  lookup answers it for about $0.004.
 - **A partial failure must not report success.** When the degraded backstop marks rows
   `not_sent`, the campaign is `aborted` with a reason, not `completed`. The campaign rail
   is the entire UI — there is no detail screen — so it renders a status badge and shows a
@@ -214,6 +226,38 @@ change to a live table.
   sent." — which reads as a past campaign having silently failed, on the screen whose only
   job is to stop him beforehand. Pre-send and post-hoc wordings live together in
   `send_path_assessment()` so a new surface cannot invent a third.
+- **Which way a matcher should fail depends on what it triggers, and the two lists in one
+  function can differ.** `app/sms/compliance.py` holds both: `AUTO_BLOCK_ERROR_FRAGMENTS`
+  causes an *action* — permanently deleting a buyer — so it is word-anchored and narrow,
+  and an over-match costs a real person. `TRANSIENT_FAILURE_MARKERS` causes a *refusal to
+  act*, so it is deliberately unanchored and wider than it needs to be (`temporar`, not
+  `temporary`), and an over-match costs half a cent for one more send attempt. Anchoring
+  is not a style question. Before you widen or narrow a matcher, ask what happens when it
+  is wrong in each direction, and write the answer next to the list.
+- **A numeric code matched against prose matches phone numbers.** `"21610"` was a plain
+  `in` test against carrier free text, and +1 321-610-xxxx is an assignable Brevard County
+  number in this client's own market — so an error string that merely *quoted* a
+  destination blocked a different, innocent one. Bare codes also live inside UUIDs, byte
+  counts and durations. `\b`-anchoring does not fix this; a bare code in prose still
+  matches. Match codes against a column the carrier populated
+  (`sms_messages.error_code`). The general form: when a rule has to hunt for a field
+  inside a string, look upstream — `telnyx.py:58` was building `f"{title}: {detail}"` and
+  dropping `code` on the floor, and that discard was the actual bug.
+- **Pick an alert channel for the shape of the path it fires on, not only for its
+  independence.** `agent/notify.sh` is the right channel for a nightly digest and the
+  wrong one for a delivery webhook: it shells out with a 20-second timeout, and these
+  arrive thousands at a time inside a request that must answer promptly, so a carrier's
+  retries would become a fork bomb. A5's operator signal is a row read back by `/health`
+  instead. And every field `/health` gains is a new way to fail the endpoint
+  `deployment/deploy.sh` rolls back on — which is why it reads that row *without*
+  `Depends(get_db)`: a dependency that raises means the handler never runs, and there is
+  nothing left to catch it in.
+- **A test that pins a literal fails on the intended change and passes on the dangerous
+  one.** `test_the_opt_out_definition_matches_the_dashboard_tile` asserted
+  `OPT_OUT_REASONS == ("stop_keyword",)`. It went red the moment decision 003 added a
+  member — and it had been green all along over the thing it existed to prevent, a second
+  literal `reason == "stop_keyword"` filter sitting in `dashboard_service`. Assert the
+  property the list exists for (the two screens agree), not the list.
 
 ## Where things live
 
@@ -359,3 +403,50 @@ in `modules.md`. If you find a real bug elsewhere, write it to `status.md` under
 while working" and leave it alone. Drive-by fixes across module boundaries make review
 impossible, and review is the only thing standing between this loop and a repo of
 confident, plausible, wrong code.
+
+### "The new tests fail against the pre-fix tree" is a weak proof
+
+Session 5g found this by testing for it. `accept-5g.sh` check 8 confirmed the new test
+modules fail against the pre-fix tree — true, and nearly meaningless: they failed at
+*import*, because the pre-fix tree lacks the symbols they reference. That says nothing
+about whether they would catch the bug coming back.
+
+The proof with teeth is behavioural mutation: revert each fix one at a time, inside the
+current API, in a scratch copy, and confirm the suite goes red for that specific reason.
+Ten mutations, ten catches, and it surfaced something no amount of reading the tests
+would have shown — two of five parametrized transient wordings contain no block fragment
+at all, so they passed whether or not the guard existed. Five green ticks were standing
+in for three proofs.
+
+`agent/mutate-5g.py` is the harness, wired in as acceptance check 8b. Follow that
+pattern: when a session's value is "this class of bug cannot come back", the acceptance
+criterion is a mutation run, not an import failure. It costs about fifteen seconds.
+
+### A rationale and its mechanism have to be checked against each other
+
+5g A1 justified the transient guard with Twilio 30003, then specified four adjective
+markers as the mechanism. 30003's own `ErrorMessage` — `Unreachable destination handset`
+— carries none of them. The rule could not catch the case that motivated it, and the
+tests looked convincing because their sample data was decorated with adjectives the live
+carrier does not always use.
+
+When a spec says "do X because Y", run Y through X before shipping the spec. See
+`decisions/004`.
+
+### Decide classifier rules against the account's own traffic, not carrier docs
+
+A4A's entire failure corpus is four distinct strings across 3,037 failures. Decisions 003
+and 004 were both settled by dumping the real strings and running the classifier over
+them, which reordered the work and killed one proposed rule outright. Carrier
+documentation describes what a carrier *can* emit; the traffic says what it *does*.
+
+### One synchronous reviewer, not a fan-out
+
+Session 5g ran four fresh-context reviewers. Three produced nothing across roughly a
+dozen idle cycles and five direct requests, including one that said "reply in your NEXT
+message". The one synchronous reviewer found four real defects. The remaining coverage
+came from working the uncovered lens directly — which is also what produced the mutation
+harness.
+
+Default to one synchronous fresh-context review plus `agent/mutate-*.py`. Fan-out costs
+tokens and interruptions and, on this project's evidence, buys nothing.

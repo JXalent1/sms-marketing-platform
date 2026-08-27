@@ -17,7 +17,7 @@ from app.core.auth import (
 from app.core.config import settings
 from app.core.database import get_db
 from app.core import branding
-from app.services import billing_service, contact_query_service
+from app.services import billing_service, contact_query_service, monitoring_service
 from app.sms.factory import send_mode, active_sender_number
 import os
 import logging
@@ -103,16 +103,35 @@ async def health():
     The app is up; it is sending that is broken, and the two are different
     facts. Point the monitor at the `sending_ok` field — see docs/API.md.
 
-    White-label: `reason` is send_mode().detail, which is our wording and names
-    no carrier. The SDK exception behind it stays in the log.
+    `config_ok` is the second thing worth a monitor. A carrier can refuse a
+    destination for a setting on our own sending account — a region that was
+    never enabled — and until session 5g the product's only response was to
+    block the recipient forever for a problem on our side. It cannot be paged
+    over SMS for the reason above, and it cannot be paged per event either:
+    these arrive on the delivery webhook, thousands at a time. So it is raised
+    as a row and reported here, alongside the send state a monitor is already
+    watching. See app/services/monitoring_service.py.
+
+    It reads that row without `Depends(get_db)`, deliberately. A dependency that
+    raises means this handler never runs — the same rollback trap as a 503, one
+    layer up. `active_config_alerts()` opens its own session and returns [] on
+    anything going wrong, so a database this endpoint cannot reach costs the
+    configuration signal and nothing else.
+
+    White-label: `reason` is send_mode().detail, `config_issues` are wordings
+    owned by `compliance.CONFIGURATION_ALERT_DETAIL`, and both name no carrier.
+    The SDK exception behind either stays in the log.
     """
     mode = send_mode()
     degraded = mode.key == "unavailable"
+    alerts = monitoring_service.active_config_alerts()
     return {
         "status": "degraded" if degraded else "healthy",
         "sending_ok": not degraded,
         "send_mode": mode.key,
         "reason": mode.detail if degraded else None,
+        "config_ok": not alerts,
+        "config_issues": alerts,
     }
 
 

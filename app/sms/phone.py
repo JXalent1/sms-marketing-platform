@@ -122,15 +122,132 @@ PROVIDER_WORDS = re.compile(r"(?:twilio|telnyx|eightbyeight|8x8|bandwidth|vonage
 PROVIDER_URLS = re.compile(r"https?://\S*(?:twilio|telnyx|8x8|bandwidth|vonage)\S*", re.IGNORECASE)
 
 
+# A serialized response body embedded in an error string. SDK exceptions render
+# as `"Error code: 400 - {'errors': [{'code': '10002', 'title': ..., 'detail':
+# ...}]}"` — the whole payload, dict-repr'd into the message. Two of those are
+# in `sms_messages.error_message` on the live box, and since session 5d that
+# column feeds `blocked_numbers.notes`, which the client reads.
+#
+# Remove the serialized payload and keep everything else. What is removed is
+# carrier-internal structure of unknown shape: today its visible prefix happens
+# to carry no brand and no personal data, but `detail` on a destination error is
+# exactly where a recipient's phone number appears, and nothing makes today's
+# shape true of tomorrow's.
+#
+# `describe_send_error()` in the Telnyx provider parses those fields properly,
+# which is the actual fix. This is the backstop for every other provider, every
+# other SDK version, and every path that reaches a client-facing string without
+# going through one of ours.
+#
+# Two design points, both found by review rather than by reasoning:
+#
+#   1. It removes a *span*, not a suffix. The first version cut at the opening
+#      brace and discarded the rest of the string, which ate the half of the
+#      message the client needs — "...is not a valid phone number [{'code':
+#      21211}] - see the error reference for how to fix this" lost the fix
+#      instructions. The payload is not always last.
+#   2. It takes TWO structural characters in a row — an opening bracket followed
+#      by another bracket or a quoted key. A lone brace is not enough of a signal
+#      to cut an error message on, and this runs on every client-facing error
+#      string in the app: "Message body {first_name} was rejected" survives it
+#      intact.
+#
+# Both directions are asserted in tests/test_carrier_error_surfaces.py.
+
+_OPENERS = "[{"
+_CLOSERS = "]}"
+_QUOTES = "\"'"
+
+# What a client sees when the error string was nothing but payload. Without it,
+# `notes=f"Auto-blocked: {scrub_provider_text(...)}"` renders "Auto-blocked: "
+# and stops — a blocked number on the Opt-outs page with no reason at all.
+NO_READABLE_DETAIL = "Carrier error, no readable detail"
+
+
+def _payload_span(text: str, start_at: int = 0):
+    """(start, end) of the first serialized payload at or after `start_at`."""
+    index = start_at
+    while index < len(text):
+        if text[index] not in _OPENERS:
+            index += 1
+            continue
+
+        after = index + 1
+        while after < len(text) and text[after].isspace():
+            after += 1
+        if after >= len(text) or text[after] not in _OPENERS + _QUOTES:
+            index += 1
+            continue
+
+        depth = 0
+        quote = None
+        for cursor in range(index, len(text)):
+            character = text[cursor]
+            if quote:
+                if character == quote:
+                    quote = None
+            elif character in _QUOTES:
+                quote = character
+            elif character in _OPENERS:
+                depth += 1
+            elif character in _CLOSERS:
+                depth -= 1
+                if depth == 0:
+                    return index, cursor + 1
+        # Unterminated — a payload the column length cut in half, which is
+        # exactly how row 4 is stored on the live box. The rest is all payload.
+        return index, len(text)
+    return None
+
+
+def strip_payload(text: str) -> str:
+    """Remove any serialized provider payloads from an error string.
+
+    Returns "" if the string was nothing but payload; callers decide what to
+    show instead. `scrub_provider_text()` substitutes NO_READABLE_DETAIL.
+    """
+    if not text:
+        return text
+
+    cleaned = text
+    searched_from = 0
+    while True:
+        span = _payload_span(cleaned, searched_from)
+        if not span:
+            break
+        start, end = span
+        cleaned = cleaned[:start] + " " + cleaned[end:]
+        searched_from = start
+
+    if cleaned == text:
+        return text
+    cleaned = re.sub(r"\s{2,}", " ", cleaned).strip()
+    # Trailing joiners left dangling by the removal: "Failed - [{...}]" would
+    # otherwise render as "Failed -".
+    return cleaned.rstrip("-:,;( ").strip()
+
+
 def scrub_provider_text(text: str) -> str:
     """Strip carrier branding from text that will be shown to the client.
 
     Error strings come back full of provider names and doc links. Clients should
     not learn which carrier you resell, and you should be able to switch
     carriers without the UI contradicting itself.
+
+    Since session 5g it also removes an embedded response body — see
+    `strip_payload()`. Same defect class as the branding it was written for, one
+    level up: there the carrier's *name* survived, here its entire JSON does.
+
+    An error that was *nothing but* payload becomes NO_READABLE_DETAIL rather
+    than the empty string. `blocked_numbers.notes` is built as
+    `f"Auto-blocked: {scrub_provider_text(...)}"`, so returning "" put a blocked
+    number on the client's Opt-outs page under a reason that stopped at the
+    colon — which reads as a bug in the product rather than as a carrier that
+    said nothing useful.
     """
     if not text:
         return text
+    text = strip_payload(text) or NO_READABLE_DETAIL
     text = PROVIDER_URLS.sub("", text)
     text = PROVIDER_WORDS.sub("SMS carrier", text)
     return re.sub(r"[ \t]{2,}", " ", text).strip()

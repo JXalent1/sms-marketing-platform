@@ -34,6 +34,13 @@ These rules are active from the start of the build phase onward.
   Self-declared completion doesn't count.
 - When a review or failed check reveals a reusable lesson, encode it in `CLAUDE.md`.
 
+### Session specs vs resolved decisions
+
+Session specs are not edited after the fact — except when a resolved decision in
+`decisions/` supersedes something in one. Then the spec is wrong, and leaving it wrong is
+worse than editing it. Strike the old text through, state which decision superseded it
+and why, and never silently swap. Precedent: 5g criterion 3, superseded by decision 004.
+
 ### File size
 - No source file exceeds 500 lines. Hard rule.
 

@@ -123,8 +123,27 @@ Demonstrate each in the transcript.
 2. All four real strings above classify correctly: landline blocks, deemed-invalid
    blocks, temporary-spam does **not**, raw-JSON row blocks *and* its stored
    `error_message` is no longer a dict repr.
-3. A transient-worded error containing `"unreachable"` does not block. Show it blocking
-   before the fix and not after.
+3. ~~A transient-worded error containing `"unreachable"` does not block.~~ Show it
+   blocking before the fix and not after.
+
+   **Rewritten by `decisions/004-unreachable-without-a-transient-adjective.md`,
+   rider 1.** That decision removes `"unreachable"` from the fragment list
+   entirely, at which point this criterion would have passed for the wrong
+   reason — the string stops blocking because the fragment is gone, not because
+   the guard caught it, so the test would prove nothing about the guard. The
+   criterion is now:
+
+   > A transient-worded error **that carries a live block fragment** does not
+   > block. Show it blocking before the fix and not after, and show that the same
+   > string blocks with the transient markers removed — so the guard is provably
+   > what stopped it.
+
+   The second half is the part with teeth and is asserted in
+   `test_every_transient_wording_would_block_without_the_guard`, which makes the
+   discriminating property a check rather than the test author's judgement.
+   Separately, `"unreachable"` wordings must not block; that is decision 004's
+   own criterion and is asserted apart from the guard, under
+   `test_an_unreachable_wording_does_not_block`.
 4. An error whose text contains `+13216105555` does not block on the `21610` fragment.
 5. An error carrying structured code `21610` **does** block, as `carrier_opt_out`.
 6. A region-permission error does not block the recipient and raises the operator signal.

@@ -318,15 +318,41 @@ def test_opt_outs_and_unreachable_numbers_are_counted_separately(db):
 def test_the_opt_out_definition_matches_the_dashboard_tile(db):
     """One definition of "opt-out", not two.
 
-    The dashboard's opt-out-rate tile filters on reason == "stop_keyword". A
-    second definition here would have the two screens disagree about the one
-    number a client judges his list by.
-    """
-    from app.services import blocklist_service
+    This asserted the literal `("stop_keyword",)` until session 5g added
+    `carrier_opt_out` to both. Pinning the tuple pinned the wrong thing: it
+    tested the membership list rather than the property the membership list
+    exists for, so it went red on an intended change and would have stayed green
+    on the change that matters — a second literal filter appearing in
+    `dashboard_service`, which is exactly what was there.
 
-    assert blocklist_service.OPT_OUT_REASONS == ("stop_keyword",)
+    What is asserted now is the invariant claimed at blocklist_service.py:88-91:
+    the tile and the Opt-outs headline read the same definition. The count is
+    compared row for row in
+    tests/test_blocklist_correctness.py::test_the_blocklist_headline_and_the_dashboard_tile_agree.
+    """
+    import inspect
+
+    from app.services import blocklist_service, dashboard_service
+
+    assert "stop_keyword" in blocklist_service.OPT_OUT_REASONS
+    # An unreachable number is a data-quality fact, not a compliance event. That
+    # separation is the whole reason this split exists.
     assert "delivery_failure" not in blocklist_service.OPT_OUT_REASONS
     assert "carrier_block" not in blocklist_service.OPT_OUT_REASONS
+
+    # Comments stripped first: this file's own reasoning quotes the literal it
+    # is banning, and a check that cannot survive being explained is a check
+    # nobody will keep.
+    tile_source = "\n".join(line for line in
+                            inspect.getsource(dashboard_service.stat_tiles).splitlines()
+                            if not line.strip().startswith("#"))
+    assert "OPT_OUT_REASONS" in tile_source, (
+        "the dashboard tile has its own definition of an opt-out again"
+    )
+    assert '"stop_keyword"' not in tile_source, (
+        "a literal reason string is back in the tile's filter, so the two "
+        "screens will disagree the next time the set changes"
+    )
 
 
 def test_the_blocklist_api_returns_the_split_counts():

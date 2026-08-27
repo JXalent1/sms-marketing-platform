@@ -9,8 +9,9 @@ from app.models.sms_message import SMSMessage
 from app.models.campaign import Campaign
 from app.models.app_setting import get_setting, AUTO_REPLY_KEY
 from app.services.blocklist_service import block_number, unblock_number
+from app.services.monitoring_service import record_config_alert
 from app.sms import compliance
-from app.sms.compliance import should_auto_block
+from app.sms.compliance import classify_failure
 from app.sms.phone import scrub_provider_text
 from datetime import datetime
 import logging
@@ -45,7 +46,8 @@ def handle_inbound(db: Session, from_number: str, body: str) -> str:
 
 
 def record_delivery_status(db: Session, message_id: str, status: str,
-                           error_detail: str = None, source: str = "webhook"):
+                           error_detail: str = None, source: str = "webhook",
+                           error_code: str = None):
     """Persist a carrier's final delivery outcome.
 
     A message is marked 'sent' the instant the provider accepts it (HTTP 200),
@@ -61,6 +63,11 @@ def record_delivery_status(db: Session, message_id: str, status: str,
     reported the failure. The client never sees it — routers/blocklist.py maps
     anything but "manual" to "Automatic" — but a two-carrier box needs to know
     which one condemned a number.
+
+    `error_code` is the carrier's structured code, kept apart from
+    `error_detail`. Every numeric auto-block rule reads this and none reads the
+    prose: the prose quotes the destination number, and "21610" as a substring
+    test fires on +1 321-610-xxxx.
     """
     if not message_id:
         return
@@ -92,6 +99,7 @@ def record_delivery_status(db: Session, message_id: str, status: str,
 
         msg.status = "undelivered"
         msg.error_message = error_detail or "Carrier did not deliver the message"
+        msg.error_code = error_code or None
         db.commit()
         logger.info(f"Message {message_id} undelivered: {msg.error_message}")
 
@@ -119,10 +127,25 @@ def record_delivery_status(db: Session, message_id: str, status: str,
         # counter; with an auto-block on the same path it would permanently
         # delete a buyer who received the text. A handset receipt is not
         # revocable by a later failure event.
-        if msg.delivered_at is None and should_auto_block(msg.error_message):
+        #
+        # Session 5g replaced the boolean with a verdict. The same failure now
+        # answers three questions rather than one — block or not, under which
+        # reason, and whether the thing that failed was our own account setting
+        # rather than the recipient — because on this path all three arrive
+        # together and answering only the first is what filed carrier opt-outs
+        # as unreachable numbers and blocked buyers for our region permissions.
+        verdict = classify_failure(msg.error_message, msg.error_code)
+
+        # Raised whether or not the number is blocked, and never over SMS: this
+        # is a fault on the sending account, and 5d ruled that an alert must not
+        # travel over the thing it is warning about. /health reports it.
+        if verdict.alert_key:
+            record_config_alert(db, verdict.alert_key, verdict.alert_detail)
+
+        if msg.delivered_at is None and verdict.block:
             block_number(
                 db, msg.phone,
-                reason="delivery_failure",
+                reason=verdict.reason,
                 source=source,
                 notes=f"Auto-blocked: {scrub_provider_text(msg.error_message)[:200]}",
             )

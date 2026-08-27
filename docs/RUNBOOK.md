@@ -248,3 +248,17 @@ df -h / | tail -1
 ```
 
 Five lines. If all five look right, the box is fine.
+
+Read two fields out of `/health`, not just the status code — it is 200 while
+degraded on purpose, so the deploy script cannot roll back the release that
+fixes a degraded box:
+
+- **`sending_ok: false`** — the carrier is not usable. Campaigns refuse to
+  start. See "The carrier stopped working" above.
+- **`config_ok: false`** — sending works, but a destination was refused for a
+  setting on our own account. `config_issues[].detail` says which; today the
+  only one is a region the messaging account was never enabled for. Fix it on
+  the carrier account, not in the app. The flag clears itself seven days after
+  the last occurrence, so a stale one is history rather than an open fault.
+  Nobody is blocked for it — that was the pre-5g behaviour and it silently
+  deleted reachable buyers.

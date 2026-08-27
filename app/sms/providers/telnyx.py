@@ -15,12 +15,52 @@ Notes from running ~200k messages through this:
 from typing import Optional
 from app.core.config import settings
 from app.sms.base import SMSProvider, SendResult
+from app.sms.phone import strip_payload
 
 try:
     import telnyx
     TELNYX_AVAILABLE = True
 except ImportError:                     # keep the app importable without the SDK
     TELNYX_AVAILABLE = False
+
+
+def describe_send_error(exc: Exception) -> str:
+    """One line describing a failed send, assembled from named fields.
+
+    This used to be `str(exc)`, and the SDK's `__str__` for an API error is
+    `"Error code: 400 - {'errors': [{'code': '10002', 'title': ..., 'detail':
+    ...}]}"` — the response body's dict repr. Two of those are sitting in
+    `sms_messages.error_message` on the live box, and since session 5d that
+    column is the source of `blocked_numbers.notes`, which the client reads on
+    the Opt-outs page. `detail` on a destination error is precisely where a
+    recipient's phone number would appear.
+
+    So: read the fields by name, and never let the payload itself through.
+    Duck-typed on `.body` rather than caught by SDK exception class, because
+    this module has to stay importable when the SDK is absent and because the
+    attribute has outlived two of the SDK's class hierarchies.
+
+    Scrubbing is not done here. The caller writes through
+    `scrub_provider_text()` like every other client-visible string, and doing it
+    twice would put a second definition of "client-safe" in the codebase.
+    """
+    body = getattr(exc, "body", None)
+    errors = body.get("errors") if isinstance(body, dict) else None
+    if isinstance(errors, list) and errors and isinstance(errors[0], dict):
+        first = errors[0]
+        parts = [str(first.get(field)).strip()
+                 for field in ("title", "detail")
+                 if first.get(field)]
+        if parts:
+            return ": ".join(parts)
+        code = first.get("code")
+        if code:
+            return f"Carrier error {code}"
+
+    # No structured body — a timeout, a DNS failure, a bug in our own call.
+    # `strip_payload()` is the backstop for an SDK that puts JSON in the message
+    # and nowhere else.
+    return strip_payload(str(exc)) or exc.__class__.__name__
 
 
 class TelnyxProvider(SMSProvider):
@@ -55,7 +95,7 @@ class TelnyxProvider(SMSProvider):
                 raw={"to": to, "from": self.from_number},
             )
         except Exception as e:
-            return SendResult(success=False, error=str(e))
+            return SendResult(success=False, error=describe_send_error(e))
 
     async def get_balance(self) -> Optional[float]:
         """Current account balance in USD.

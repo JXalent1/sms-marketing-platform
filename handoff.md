@@ -1,6 +1,6 @@
 # Handoff
 
-_Last updated: 2026-08-20_
+_Last updated: 2026-08-26 (session 5g). Sections append; the bottom is current._
 
 ## What just happened
 
@@ -380,3 +380,108 @@ provider when it is constructed. Use the context managers in
 - **`docs/API.md`, `docs/RUNBOOK.md` and `docs/CLIENT_GUIDE.md` are now stale on
   the send-mode pill** — all three describe two states. Module 8's files;
   recorded under "Found while working (session 5c)".
+
+---
+
+# Session 5g handoff — blocklist correctness (2026-08-26)
+
+_(Session 5d did not append here. Its handoff is `status.md` → "Module 5d Part A".)_
+
+## Where this leaves things
+
+`decisions/003-auto-block-fragments-on-the-webhook-path.md` is implemented, in the
+order that decision rules. `bash agent/gate.sh` passes at both ends, twice in a
+row: **259 tests**, up from 184. `bash agent/accept-5g.sh` — the Part A stop
+condition — passes checks 1-8. Check 9 needs the deployed box.
+
+Nothing sent. Nothing unblocked. No contact data touched. The 2,959 existing
+blocklist rows are exactly as they were; this session changes what happens to
+*future* failures, which is what the spec asked for and all it asked for.
+
+## What landed
+
+- **`app/sms/compliance.py`** is now a classifier rather than a boolean.
+  `classify_failure(error_message, error_code)` returns `{block, reason,
+  alert_key, alert_detail}`; `should_auto_block()` is the thin wrapper over it
+  and kept a signature `campaign_service.py:427` can still call, because that
+  file belongs to 5e.
+- **`sms_messages.error_code`** (migration `b7e3c9a1d024`, additive, nullable,
+  nothing backfilled), populated from `errors[].code` on the Telnyx webhook and
+  from `ErrorCode` on the Twilio status callback. Numeric rules read it and
+  nothing else.
+- **`describe_send_error()`** in `app/sms/providers/telnyx.py` assembles the
+  error from `title`/`detail` off `exc.body`. **`strip_payload()`** in
+  `app/sms/phone.py` is the backstop, called from inside `scrub_provider_text()`.
+- **`carrier_opt_out`** in `BLOCK_REASONS` and in `OPT_OUT_REASONS`;
+  `dashboard_service.stat_tiles()` imports that tuple instead of filtering on a
+  literal.
+- **A configuration alert** — `record_config_alert()` /
+  `active_config_alerts()` in `monitoring_service.py`, surfaced as `config_ok`
+  and `config_issues` on `/health`.
+
+## Five things worth knowing before you touch any of it
+
+1. **The two fragment lists in `compliance.py` are matched differently on
+   purpose.** The block list is `\b`-anchored and narrow; the transient list is
+   unanchored and deliberately wide. One causes an action that deletes a buyer,
+   the other causes a refusal that costs half a cent. Do not "make them
+   consistent".
+
+   **And `"unreachable"` is not in the block list, deliberately** — decision 004.
+   It meant three things, two of them transient, and the guard could not separate
+   them because Twilio 30003's own wording carries no marker. The residual is
+   written out at the fragment list: a line described only as unreachable
+   survives. `agent/mutate-5g.py` R11 fails if it comes back.
+2. **Codes never go back into the text list.** Not even `\b`-anchored — decision
+   003 rules that out by name, because `\b21610\b` still matches a bare code in
+   prose and prose is where the carrier quotes the destination number.
+3. **`/health` reads the alert without `Depends(get_db)`.** That is not an
+   oversight. `deployment/deploy.sh` rolls the release back on a non-200 there,
+   so a dependency that raises would revert the deploy that fixes the box —
+   the same trap as returning 503, one layer up. `active_config_alerts()` opens
+   its own session, selects columns rather than entities, and returns `[]` on
+   anything going wrong.
+4. **`agent/mutate-5g.py` is the check with teeth, not check 8.** If you change
+   a 5g rule, add a mutation for it. The harness reverts each fix inside the
+   current API and requires a test to notice; a rule with no mutation is a rule
+   nobody will find out has regressed.
+5. **The two 5g test modules split along "what a failure does" / "what a failure
+   says"**, with `tests/_carrier_failure_setup.py` holding the live error corpus
+   and the fixtures. Same 500-line-rule pattern as `_guardrail_setup.py`. The
+   four corpus strings are verbatim from the live box — paraphrasing them tests
+   our paraphrase, which is precisely how "deemed invalid" got missed.
+
+## Verified this session
+
+- `agent/gate.sh` green twice, all six checks, at 259 tests
+- Migration `b7e3c9a1d024` applies to a clean database, downgrades, and
+  re-applies
+- `agent/accept-5g.sh` checks 1-8b, including the before/after classifier table
+  against `f16998b`: nine hazard wordings blocked a buyer on the pre-fix tree
+  and none does here, while all three live wordings that must block still do
+- Check 8b: each of the eleven fixes reverted behaviourally, one at a time, in a
+  scratch copy of the tree (`agent/mutate-5g.py`). Every one breaks at least one
+  test that names it — no mutation survives
+- Decision 004 implemented: `"unreachable"` removed, acceptance criterion 3
+  re-pointed at wordings that carry a live fragment, and the discriminating
+  property itself asserted in
+  `test_every_transient_wording_would_block_without_the_guard`
+- Adversarial classifier probe run by hand over ints, empty strings, padded
+  codes, `None`, plurals, punctuation and mixed case
+- All twelve `scrub_provider_text()` call sites reviewed: every one is an error
+  string, none a message body, so `strip_payload()` cannot eat a merge tag
+
+## Not done, and deliberately
+
+- **The deploy, and therefore acceptance criterion 9.** Run it, then
+  `A4A_URL=... A4A_PASSWORD=... bash agent/accept-5g.sh --with-remote`. The box
+  still runs the pre-5c nginx config, the hot-patched SDK and pre-5d code.
+- **Re-adjudicating the existing 2,959 rows.** Out of scope by name. Whether any
+  past block was wrong is a separate question and a separate decision.
+- **Line-type screening at import.** Endorsed in decision 003, belongs with the
+  import flow, still logged in `modules.md` under "Found in live use".
+- **The submission path's reason and code.** `campaign_service.py` still files
+  everything as `delivery_failure` and `SendResult` has no field to carry a
+  code. It is in 5e's file set. Three lines, whenever 5e touches it.
+- **Anything in 5e's file set**, including the `campaign_service.py` capacity-row
+  and campaign-recovery items carried over from 5d.

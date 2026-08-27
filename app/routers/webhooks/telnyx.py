@@ -51,13 +51,23 @@ async def telnyx_webhook(request: Request, db: Session = Depends(get_db)):
             to_info = payload.get("to") or [{}]
             status = to_info[0].get("status", event_type) if to_info else event_type
 
+            # `code` used to be dropped on the floor here, which forced every
+            # numeric auto-block rule to look for it in the prose below — and
+            # the prose is carrier-controlled text that quotes the destination
+            # number. A plain substring test for "21610" therefore fired on
+            # +1 321-610-xxxx, an assignable Brevard County number in this
+            # client's market. Carry the code as a code.
             errors = payload.get("errors") or []
             detail = None
+            code = None
             if errors:
                 first = errors[0]
                 detail = f"{first.get('title', '')}: {first.get('detail', '')}".strip(": ").strip()
+                code = first.get("code")
+                code = str(code).strip() if code is not None else None
 
-            record_delivery_status(db, message_id, status, detail, source="telnyx")
+            record_delivery_status(db, message_id, status, detail, source="telnyx",
+                                   error_code=code)
             return JSONResponse({"status": "ok"})
 
         logger.debug(f"Unhandled Telnyx event: {event_type}")

@@ -32,7 +32,7 @@ from app.models.blocked_number import BlockedNumber
 from app.models.category import Category, ContactCategory
 from app.models.contact import Contact
 from app.models.sms_message import SMSMessage
-from app.services import billing_service, contact_service
+from app.services import billing_service, blocklist_service, contact_service
 
 # What counts as "this category has been texted".
 #
@@ -244,9 +244,15 @@ def stat_tiles(db: Session) -> List[dict]:
     # Opt-outs against what was actually sent in the same window. A raw count of
     # STOPs is meaningless without the denominator: 40 opt-outs is healthy after
     # 20,000 messages and alarming after 300.
+    #
+    # Filtered on blocklist_service.OPT_OUT_REASONS rather than a literal, so
+    # this tile and the Opt-outs screen's headline cannot come to disagree. It
+    # was `reason == "stop_keyword"` until session 5g added `carrier_opt_out`;
+    # a literal here would have left the two screens reporting different
+    # opt-out counts from the same table.
     sent_30 = _count_in_window(db, SENT_STATUSES, start_30, now)
     opt_outs = (db.query(func.count(BlockedNumber.id))
-                .filter(BlockedNumber.reason == "stop_keyword",
+                .filter(BlockedNumber.reason.in_(blocklist_service.OPT_OUT_REASONS),
                         BlockedNumber.blocked_at >= start_30)
                 .scalar()) or 0
     rate = f"{(opt_outs / sent_30 * 100):.2f}%" if sent_30 else "—"

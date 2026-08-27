@@ -171,6 +171,138 @@ async def check_low_balance(now: Optional[datetime] = None) -> dict:
             "remaining_segments": remaining}
 
 
+# ─── Configuration alerts ───────────────────────────────────────────────────
+#
+# Raised when a carrier refuses a destination for a setting on OUR sending
+# account rather than anything about the recipient — today that is a geo
+# permission (Twilio 21408, "has not been enabled for the region"). Until
+# session 5g those failures blocked the recipient permanently, for a problem
+# enabling the region would have fixed.
+#
+# **Not routed through notify()**, and that is the whole design. notify.sh sends
+# an SMS over the carrier account, and 5d ruled that an alert must not depend on
+# the thing it is warning about. It is also the wrong shape: these arrive on the
+# delivery-webhook path, thousands of events in a burst, inside a request that
+# must return 200 promptly — a subprocess per event would turn a carrier's
+# retries into a fork bomb.
+#
+# So the signal is a row, read back by /health, which CLAUDE.md already names as
+# the alert channel that survives a dead carrier. An uptime monitor watching
+# `config_ok` sees it within one poll; nothing is texted; nothing blocks the
+# webhook beyond one small write.
+
+CONFIG_ALERT_PREFIX = "config_alert:"
+
+# How long a raised alert keeps reporting. A configuration error that stopped
+# happening a fortnight ago is history, not an alarm, and a /health field stuck
+# red forever is a field people learn to ignore. Anything still misconfigured
+# re-raises on the next failure and refreshes the timestamp.
+CONFIG_ALERT_WINDOW_DAYS = 7
+
+# Don't rewrite the row on every event. A misconfigured region fails *every*
+# recipient in that region, so one campaign is a burst of thousands, and each
+# write is a SELECT + UPDATE + commit inside a webhook handler that has to
+# return 200 promptly. The value is idempotent by key, so all but the first
+# write in a burst say what the row already says. Refreshing at most every
+# quarter of an hour keeps the timestamp meaningful against a seven-day window
+# and takes the write off the hot path — the same reasoning that ruled out a
+# subprocess per event, one order of magnitude down.
+CONFIG_ALERT_REFRESH_MINUTES = 15
+
+
+def _raised_within(stored: str, now: datetime, minutes: int) -> bool:
+    try:
+        return now - datetime.fromisoformat(json.loads(stored)["at"]) < timedelta(
+            minutes=minutes)
+    except (ValueError, TypeError, KeyError):
+        return False        # unreadable row — rewrite it
+
+
+def record_config_alert(db, key: str, detail: str, now: Optional[datetime] = None) -> None:
+    """Note that our own sending configuration refused a destination.
+
+    Never raises. This runs inside a carrier webhook; a monitoring write that
+    takes the handler down would cost delivery statuses for every message in
+    flight, which is a far worse outcome than a missed alert.
+    """
+    now = now or datetime.now()
+    setting_key = f"{CONFIG_ALERT_PREFIX}{key}"
+    try:
+        from app.models.app_setting import get_setting, set_setting
+
+        stored = get_setting(db, setting_key)
+        if stored and _raised_within(stored, now, CONFIG_ALERT_REFRESH_MINUTES):
+            return                      # already raised, still current
+
+        set_setting(db, setting_key,
+                    json.dumps({"at": now.isoformat(), "detail": detail}),
+                    description="Operator alert raised by app/sms/compliance.py")
+    except Exception as e:
+        # Roll back before returning: the caller carries on to decide whether to
+        # block the number, and handing it a session with a failed transaction
+        # on it would turn a missed alert into a lost blocklist write.
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        logger.error(f"could not record config alert {key}: {e}")
+        return
+    # Also in the log, where the rest of the story is. The log is the record;
+    # /health is the thing anyone is actually watching.
+    logger.error(f"CONFIGURATION ALERT {key}: {detail}")
+
+
+def active_config_alerts(db=None, now: Optional[datetime] = None) -> list:
+    """Alerts raised inside the reporting window, newest first.
+
+    Returns [] on any failure, including a database that will not open. /health
+    calls this and must keep answering 200: `deployment/deploy.sh` rolls the
+    release back on a non-200 there, so any new way for that endpoint to fail is
+    a new way to revert the deploy that fixes the box. That is also why /health
+    does not take this session through `Depends(get_db)` — a dependency that
+    raises means the handler never runs at all, and there is nothing left to
+    catch it in.
+
+    `db` is optional for the same reason `failure_digest()` opens its own: the
+    callers are a request handler and a scheduler job, and only one of them has
+    a session to hand.
+    """
+    now = now or datetime.now()
+    own_session = db is None
+    session = db
+    try:
+        from app.models.app_setting import AppSetting
+
+        if own_session:
+            session = SessionLocal()
+        # Columns, not entities: when this opens its own session it closes it
+        # below, and a detached ORM row raises the moment anything reads an
+        # attribute off it — inside the endpoint whose whole job is not to fail.
+        rows = session.query(AppSetting.key, AppSetting.value).filter(
+            AppSetting.key.like(f"{CONFIG_ALERT_PREFIX}%")).all()
+    except Exception as e:
+        logger.warning(f"could not read config alerts: {e}")
+        return []
+    finally:
+        if own_session and session is not None:
+            session.close()
+
+    active = []
+    for key, value in rows:
+        try:
+            payload = json.loads(value or "{}")
+            raised = datetime.fromisoformat(payload["at"])
+        except (ValueError, TypeError, KeyError):
+            continue
+        if now - raised < timedelta(days=CONFIG_ALERT_WINDOW_DAYS):
+            active.append({
+                "key": key[len(CONFIG_ALERT_PREFIX):],
+                "detail": payload.get("detail", ""),
+                "since": payload["at"],
+            })
+    return sorted(active, key=lambda a: a["since"], reverse=True)
+
+
 # ─── Job 2: daily failure digest ────────────────────────────────────────────
 
 def failure_digest(day: Optional[datetime] = None) -> dict:

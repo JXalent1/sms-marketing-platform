@@ -399,7 +399,11 @@ Liveness **and** send status. Unauthenticated because uptime monitors have no
 session.
 ```json
 {"status": "degraded", "sending_ok": false, "send_mode": "unavailable",
- "reason": "Campaigns cannot go out right now. Contact support."}
+ "reason": "Campaigns cannot go out right now. Contact support.",
+ "config_ok": false,
+ "config_issues": [{"key": "region_not_enabled",
+                    "detail": "A destination was refused because this messaging account is not enabled for its region. Nothing is wrong with the recipient — enable the region on the messaging account.",
+                    "since": "2026-08-26T09:14:02"}]}
 ```
 `status` is `"healthy"` and `reason` is `null` when sending works.
 
@@ -414,6 +418,22 @@ send SMS is self-defeating.
 
 `reason` is `send_mode().detail` — our wording, naming no carrier. The SDK
 exception behind it stays in the log.
+
+**`config_ok` is the second field worth a monitor** (session 5g). It goes false
+when a carrier refuses a destination for a setting on *our* sending account
+rather than anything about the recipient — today that means a region the
+messaging account was never enabled for. Sending still works for every other
+destination, so `sending_ok` stays true and this is the only place it surfaces.
+
+It cannot be paged over SMS, for the reason above. It cannot be paged per event
+either: these arrive on the delivery webhook, thousands at a time, inside a
+request that must answer promptly. So it is written as a row and reported here.
+An alert stops being reported `CONFIG_ALERT_WINDOW_DAYS` (7) after it was last
+raised — anything still misconfigured re-raises on the next failure. `detail`
+wordings live in `compliance.CONFIGURATION_ALERT_DETAIL` and name no carrier.
+
+Until 5g the product's only response to this was to block the recipient forever
+for a problem on our side.
 
 ---
 

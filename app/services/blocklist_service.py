@@ -85,11 +85,18 @@ def get_blocked_count(db: Session) -> int:
 # landlines read as 2,626 people opting out, on a screen headed "Opt-outs"
 # under copy reading "Opt-outs are permanent".
 #
-# OPT_OUT_REASONS matches dashboard_service's opt-out rate tile, which already
-# filters on reason == "stop_keyword". One definition, deliberately: a second
-# one here would drift, and the two screens would disagree about the single
-# number a client judges his list by.
-OPT_OUT_REASONS = ("stop_keyword",)
+# OPT_OUT_REASONS is the one definition of "opt-out" in this codebase.
+# dashboard_service's opt-out-rate tile imports it rather than repeating its
+# filter; a second definition would drift, and the two screens would disagree
+# about the single number a client judges his list by.
+#
+# `carrier_opt_out` joined it in session 5g. Both are a person asking not to be
+# texted, which is the question this figure answers, so both belong in it — the
+# reasons stay separate rows because they are separate evidence (see
+# blocked_number.py). Leaving carrier opt-outs filed under `delivery_failure`
+# put them in the *unreachable* bucket, which is the same defect this split was
+# built to fix, arriving from the other direction.
+OPT_OUT_REASONS = ("stop_keyword", "carrier_opt_out")
 UNREACHABLE_REASONS = ("delivery_failure", "carrier_block")
 
 

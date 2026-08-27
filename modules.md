@@ -32,9 +32,9 @@ client sending real campaigns.
 | 5b | **Go live** | Part A done · B3 verified · B4/B5 pending | 3b, 4, 5a | `deployment/**`, `scripts/**`, `.env.example`, `docs/CLIENT_GUIDE.md`, `app/main.py` |
 | 5c | **Live-send blockers** | Part A done · deploy + B pending | 5b Part A | `requirements.txt`, `app/sms/factory.py`, `app/routers/settings.py`, `app/routers/pages.py`, `app/templates/settings.html`, `app/templates/base.html`, `deployment/nginx.conf.template`, `tests/`, `agent/accept-5c.sh` |
 | 5d | **Refuse to send from a degraded box** | Part A done · deploy pending · B is Jordan's | 5c | `app/services/campaign_service.py`, `app/services/campaign_dispatch.py`, `app/services/preflight_service.py`, `app/services/blocklist_service.py`, `app/models/sms_message.py`, `app/sms/factory.py`, `app/sms/compliance.py`, `app/main.py`, `app/routers/campaigns.py`, `app/routers/pages.py`, `app/routers/blocklist.py`, `app/routers/webhooks/{common,telnyx,twilio}.py`, `app/templates/blocklist.html`, `.claude/hooks/verify-gate.sh`, `docs/API.md`, `tests/`, `agent/accept-5d.sh` |
-| 5e | **Campaign-first flow & QoL** | Next after 5d | 5d | `app/routers/campaigns.py`, `app/routers/contacts.py`, `app/templates/campaigns.html`, `app/templates/contacts.html`, `app/templates/settings.html`, `app/services/campaign_service.py`, `app/services/import_service.py`, `tests/` |
+| 5e | **Campaign-first flow & QoL** | Specced · next | 5d | `app/routers/campaigns.py`, `app/routers/contacts.py`, `app/templates/campaigns.html`, `app/templates/contacts.html`, `app/templates/settings.html`, `app/services/campaign_service.py`, `app/services/import_service.py`, `tests/` |
 | 5f | **Short links & reporting** | After 5e | 5e | `app/models/short_link.py`, `app/routers/links.py`, `app/routers/reports.py`, `app/services/link_service.py`, `app/templates/history.html`, `alembic/versions/`, `tests/` |
-| 5g | **Blocklist correctness** | Parallel-safe with 5e · before client handover | 5d | `app/sms/compliance.py`, `app/routers/webhooks/telnyx.py`, `app/routers/webhooks/common.py`, `app/models/sms_message.py`, `app/models/blocked_number.py`, `app/services/blocklist_service.py`, `app/services/dashboard_service.py`, `alembic/versions/`, `tests/` |
+| 5g | **Blocklist correctness** | Part A done 2026-08-26 · deploy pending | 5d | `app/sms/compliance.py`, `app/sms/phone.py`, `app/sms/providers/telnyx.py`, `app/routers/webhooks/telnyx.py`, `app/routers/webhooks/twilio.py`, `app/routers/webhooks/common.py`, `app/routers/pages.py`, `app/models/sms_message.py`, `app/models/blocked_number.py`, `app/services/blocklist_service.py`, `app/services/dashboard_service.py`, `app/services/monitoring_service.py`, `alembic/versions/`, `tests/` |
 
 **That's the launch — six sessions, but only four waves. See "Parallel plan" below.**
 
@@ -443,6 +443,50 @@ model — so this is UI and routing work, not a rebuild.
 3. Per-link click stats; per-campaign click-through.
 4. **Per-campaign report** — recipients, delivered, failed, opt-outs, clicks, cost.
 5. **Campaign history and message history screens** (was module 8, deferred at launch).
+
+### 5g — Blocklist correctness
+
+Part A landed 2026-08-26. Implements `decisions/003-auto-block-fragments-on-the-webhook-path.md`
+in the order that decision rules: the transient guard first, then structured codes,
+then the payload parse, then boundaries, then the misconfiguration signal, then the
+opt-out reason. 259 tests (184 + 75), gate green twice, `agent/accept-5g.sh` as the
+stop condition. The deploy — acceptance criterion 9 — is still pending, as it is for
+5c and 5d.
+
+1. **A transient failure never blocks.** `temporar`, `retry`, `congestion`,
+   `try again` beat every other rule — a carrier calling a dead-number wording
+   temporary is the one that knows.
+1b. **`"unreachable"` left the fragment list** (`decisions/004`). It meant three
+   things and two were transient, and the guard could not separate them: Twilio
+   30003's own `ErrorMessage` is `Unreachable destination handset`, which carries no
+   marker. Accepted residual, recorded at the fragment list: a line described *only*
+   as unreachable survives and is paid for again — half a cent a blast against a
+   bidder deleted permanently. Line-type screening at import is the real fix.
+2. **Carrier codes match `sms_messages.error_code`, never prose.** `21610`, `21612`
+   and `40300` left the text fragment list and were *not* `\b`-anchored back in.
+3. **`error_message` is assembled from named fields.** The SDK's `__str__` of an API
+   error is the response body dict-repr'd, and that column feeds
+   `blocked_numbers.notes`, which the client reads.
+4. **Word fragments are word-bounded.** Defence in depth, not the main event.
+5. **A region-permission error blocks nobody** and raises an operator signal on
+   `/health` — not over SMS, and not a subprocess per webhook event.
+6. **`carrier_opt_out` is its own block reason**, counted in the opt-out figures.
+   `OPT_OUT_REASONS` and the dashboard tile changed in the same commit, and the tile
+   now imports the definition rather than repeating it.
+
+**5g's file list above is narrower than the change set, on the same basis as 5d's.**
+The spec's own text reaches five files the table did not name.
+`app/routers/webhooks/twilio.py` posts `ErrorCode` as its own form field, so A2's
+"match codes against a structured field" is only half-wired without it.
+`app/sms/providers/telnyx.py` is where A3's dict repr is created — `str(e)` on the
+SDK exception — and `app/sms/phone.py` is where `scrub_provider_text()` lives, which
+A3 names explicitly; the payload strip is there as the backstop for every provider we
+do not parse. A5 says "raise an operator-visible signal" and forbids texting it, which
+means `app/services/monitoring_service.py` (the alert channel) and
+`app/routers/pages.py` (`/health`, which CLAUDE.md already names as the channel that
+survives a dead carrier). Nothing in 5e's file set was touched — including
+`campaign_service.py`, which is why `should_auto_block()` kept its one-argument
+signature.
 
 ### Still to brainstorm
 
