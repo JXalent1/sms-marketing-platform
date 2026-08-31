@@ -15,6 +15,8 @@
 {% block title %}Contacts{% endblock %}
 
 {% block page_actions %}
+<button type="button" id="addToggle"
+        class="inline-flex h-9 items-center rounded-lg border border-line-strong bg-surface px-3 text-[13px] font-medium text-ink hover:bg-surface-2">Add contact</button>
 <button type="button" id="importToggle"
         class="inline-flex h-9 items-center rounded-lg border border-line-strong bg-surface px-3 text-[13px] font-medium text-ink hover:bg-surface-2">Import CSV</button>
 <button type="button" id="exportAll"
@@ -32,6 +34,76 @@
 
 {% block content %}
 <div class="mx-auto max-w-[1200px] space-y-4">
+
+  {# ─── One contact, by hand ────────────────────────────────────────────────
+     Somebody phones the auction house and asks to be added. Until now the
+     answer was "build a one-row CSV" — the endpoint existed and had no form in
+     front of it.
+
+     It gets the same two guards an import has: the number is normalised to
+     E.164, and a number on the opt-out list is refused rather than quietly
+     added. The refusal says why and says where to change it, because "nothing
+     happened" on a form somebody just filled in reads as a broken button. #}
+  <section id="addPanel" class="hidden rounded-xl border border-line bg-surface p-5">
+    <h2 class="text-[15px] font-semibold text-ink">Add one contact</h2>
+    <p class="mt-1 text-[13px] text-ink-2">
+      For the caller who asks to be added. Anything typed here is checked against
+      your opt-out list first.
+    </p>
+    <form id="addForm" class="mt-3 space-y-3">
+      <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <div>
+          <label for="addPhone" class="block text-[12px] font-medium text-ink-2">
+            Phone <span class="text-crit" aria-hidden="true">*</span></label>
+          <input type="tel" id="addPhone" required placeholder="(954) 555-0142" autocomplete="off"
+                 class="mt-1 block w-full rounded-lg border border-line-strong bg-page px-3 py-2 text-[13px] text-ink
+                        placeholder:text-ink-3 focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand">
+        </div>
+        <div>
+          <label for="addName" class="block text-[12px] font-medium text-ink-2">Name</label>
+          <input type="text" id="addName" autocomplete="off"
+                 class="mt-1 block w-full rounded-lg border border-line-strong bg-page px-3 py-2 text-[13px] text-ink
+                        focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand">
+        </div>
+        <div>
+          <label for="addCompany" class="block text-[12px] font-medium text-ink-2">Company</label>
+          <input type="text" id="addCompany" autocomplete="off"
+                 class="mt-1 block w-full rounded-lg border border-line-strong bg-page px-3 py-2 text-[13px] text-ink
+                        focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand">
+        </div>
+        <div>
+          <label for="addEmail" class="block text-[12px] font-medium text-ink-2">Email</label>
+          <input type="email" id="addEmail" autocomplete="off"
+                 class="mt-1 block w-full rounded-lg border border-line-strong bg-page px-3 py-2 text-[13px] text-ink
+                        focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand">
+        </div>
+        <div>
+          <label for="addCategory" class="block text-[12px] font-medium text-ink-2">
+            Category <span class="font-normal text-ink-3">(optional)</span></label>
+          <select id="addCategory"
+                  class="mt-1 block w-full rounded-lg border border-line-strong bg-page px-3 py-2 text-[13px] text-ink
+                         focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand">
+            <option value="">No category</option>
+            {% for tab in category_tabs if tab.id %}
+            <option value="{{ tab.id }}">{{ tab.label }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div>
+          <label for="addList" class="block text-[12px] font-medium text-ink-2">
+            Add to list <span class="font-normal text-ink-3">(optional)</span></label>
+          <input type="text" id="addList" autocomplete="off" placeholder="Existing or new list name"
+                 class="mt-1 block w-full rounded-lg border border-line-strong bg-page px-3 py-2 text-[13px] text-ink
+                        placeholder:text-ink-3 focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand">
+        </div>
+      </div>
+      <div class="flex items-center gap-3">
+        <button type="submit"
+                class="rounded-lg bg-brand px-3.5 py-2 text-[13px] font-semibold text-on-brand hover:opacity-90">Add contact</button>
+        <p id="addError" class="hidden text-[12px] leading-relaxed text-crit"></p>
+      </div>
+    </form>
+  </section>
 
   {# ─── Category-first import ───────────────────────────────────────────────
      The category is chosen before the file is read, and it is required. The
@@ -308,6 +380,55 @@ document.getElementById('bulkExport').addEventListener('click', () => {
 });
 document.getElementById('exportAll').addEventListener('click', () => {
     window.location = '/api/contacts/export.csv?' + params();
+});
+
+// ─── Add one contact ───────────────────────────────────────────────────────
+
+document.getElementById('addToggle').addEventListener('click', () => {
+    const panel = document.getElementById('addPanel');
+    panel.classList.toggle('hidden');
+    if (!panel.classList.contains('hidden')) document.getElementById('addPhone').focus();
+});
+
+document.getElementById('addForm').addEventListener('submit', async function (e) {
+    e.preventDefault();
+    const error = document.getElementById('addError');
+    error.classList.add('hidden');
+
+    const value = (id) => document.getElementById(id).value.trim();
+    const category = value('addCategory');
+    const button = this.querySelector('button[type=submit]');
+    button.disabled = true;
+    try {
+        const res = await fetch('/api/contacts', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                phone: value('addPhone'),
+                full_name: value('addName') || null,
+                email: value('addEmail') || null,
+                company: value('addCompany') || null,
+                list_name: value('addList') || null,
+                category_id: category ? parseInt(category, 10) : null,
+            }),
+        });
+        const data = await res.json();
+        if (!res.ok || !data.success) {
+            // Shown in the panel rather than as a toast. A blocklisted number is
+            // three sentences explaining what to do about it, and a toast that
+            // fades is the wrong shape for something he has to act on.
+            error.textContent = data.detail || 'Could not add that contact';
+            error.classList.remove('hidden');
+            return;
+        }
+        showToast(`Added ${data.phone}`);
+        this.reset();
+        document.getElementById('addPhone').focus();
+        loadContacts();
+        refreshTabCounts();
+    } finally {
+        button.disabled = false;
+    }
 });
 
 // ─── Import ────────────────────────────────────────────────────────────────

@@ -485,3 +485,117 @@ blocklist rows are exactly as they were; this session changes what happens to
   code. It is in 5e's file set. Three lines, whenever 5e touches it.
 - **Anything in 5e's file set**, including the `campaign_service.py` capacity-row
   and campaign-recovery items carried over from 5d.
+
+---
+
+# Session 5e handoff — campaign-first flow & QoL (2026-08-27)
+
+## Where this leaves things
+
+`sessions/session-5e.md` Part A is implemented. `bash agent/gate.sh` passes at
+both ends, twice in a row: **319 tests**, up from 259. `bash agent/accept-5e.sh`
+— the Part A stop condition — passes checks 1-10. Check 11 needs the deployed box.
+
+Nothing sent. No live credential read. No contact data touched outside the
+suite's scratch database and a local dev one.
+
+One escalation is open and does **not** block:
+`decisions/005-topping-up-a-contact-the-window-held-back.open.md`.
+
+## What landed
+
+| | |
+|---|---|
+| Upload as step one | `app/routers/campaign_uploads.py`, `app/services/campaign_builder.py` |
+| Optional category tag | `app/services/import_service.py`, `app/routers/imports.py` |
+| Add one contact | `app/routers/contacts.py`, `app/templates/contacts.html` |
+| Top-up | `app/services/campaign_topup.py`, migration `c4f1a80b6e37` |
+| The hold-back window | `app/services/suppression_service.py`, `app/routers/settings.py`, `settings.html` |
+| A run that reached nobody | `app/services/campaign_outcome.py`, `campaign_service.py` |
+| Composer | `campaigns.html`, `_composer-script.html`, `_composer-upload.html` (new) |
+
+## Seven things worth knowing before you touch any of it
+
+1. **A campaign now has three ways to record who it is for**, not two: a
+   category, a typed cross-category override, or an audience that is a list
+   uploaded for it. The third is not an escape from the rule — `POST
+   /api/campaigns` is unchanged and still demands one of the first two for
+   `all`, `category:` and an existing list, because for those the audience does
+   not say which auction the message is about. `list_audience=True` is passed
+   only by the upload flow. See `campaign_builder.py`'s module docstring.
+
+2. **A top-up's candidate set is "members of this campaign's list added after the
+   campaign was created"** — read from `contact_list_members.added_at`, never
+   inferred by subtracting message rows. The review found two live defects in
+   the subtract version: it defeated `batch_size`, and on an `all` audience it
+   offered to text everyone imported since for a different auction. A top-up
+   therefore requires a `list:` audience and refuses anything else by name.
+
+3. **`add_to_list()` stamps `added_at` itself, and that is load-bearing.** The
+   column's server default is SQLite's `CURRENT_TIMESTAMP` — UTC, where every
+   other timestamp in this app is local. Two clocks in one column made every
+   hand-added contact look up to five hours newer than it was. One writer, one
+   clock; the comparison parses rather than compares strings, because the column
+   also carries two ISO spellings.
+
+4. **The hold-back window lives in `suppression_service.py` and every function
+   there takes a Session, with no default.** A caller that forgot would fall back
+   to the `.env` value and the Settings field would silently stop applying on
+   that one path — the same shape as a guard wired into one of its call sites.
+   The *rule* is unchanged and is on the escalation list; only the source of the
+   number moved.
+
+5. **A7 is scoped to the run, not the campaign.** A first send that reaches
+   nobody is `aborted` with a reason; a *top-up* that reaches nobody keeps
+   `completed` and stores a reason fronted with "Top-up of N recipients:". A
+   campaign that reached 1,200 people did complete, and one later event cannot
+   revoke that — the same argument that stopped a late failure webhook from
+   un-delivering a message in 5d. The sentence carries the distinction because
+   the badge beside it cannot.
+
+6. **Both composer partials share one scope, and `composerMode` is declared in
+   the first.** `_composer-upload.html` owns what changes it; declaring it there
+   would leave it in its temporal dead zone when the first `/preview` response
+   lands. Both `refreshPreview()` and `runPreflight()` guard on it — the review
+   found the second one missing, which had "Run checks" drawing a capacity
+   verdict over every contact in the database under a composer pointed at a file.
+
+7. **`agent/mutate-5e.py` is the check with teeth, not the test count.** 28
+   mutations, all caught, none unapplied. If you change a 5e rule, add a mutation for it — and
+   write one you can actually *reach*: the first run reported two green ticks for
+   mutations of dead defaults, and a third that was being "caught" by an
+   unrelated test leaking a stored setting between modules.
+
+## Verified this session
+
+- `agent/gate.sh` green twice, all six checks, at 319 tests
+- `agent/accept-5e.sh` checks 1-10, including the mutation run
+- Migration `c4f1a80b6e37` applies to a clean database; `test_migrations.py`
+  asserts the four `sms_messages` indexes and both added columns survive
+- The whole flow driven against a running instance: a 5-row CSV with a repeat and
+  an unusable number → preview counts → campaign named "Italian restaurants" on
+  its own list, `category_id` NULL, 3 recipients → sent → one contact added by
+  hand → topped up → 4 sent, 4 recipients, `3 + 1 added 27 Aug`, and **every
+  recipient holding exactly one message row**
+- The window raised to 7 in the running app: `/preview` reported 4 held back and
+  a clearing time, and the checklist row read "…in the last 7 days… The hold
+  clears at 10:47am on 3 Sep"
+- A campaign whose audience was fully held back came out `aborted` with the
+  reason on the record, where before 5e it would have read `completed, sent 0`
+- All seven screens 200 over a real server; no carrier name in any of them
+- Every `<script>` block in the four touched templates parsed with `node --check`
+
+## Not done, and deliberately
+
+- **The deploy, and therefore acceptance criterion 11.** Run it, then
+  `A4A_URL=... A4A_PASSWORD=... bash agent/accept-5e.sh --with-remote`.
+- **`decisions/005`** — whether a top-up should reach somebody the window held
+  back once the hold has cleared. Escalation item 5, and the fix needs a new
+  `MESSAGE_STATUSES` member to stop `skipped` meaning two things.
+- **The pre-flight capacity floor.** `wholesale_estimate()` rounds to 2dp, so a
+  one-segment top-up needs $0.00 and passes on an empty account. Pre-existing,
+  and the fix is a change to the guard — escalation item 3.
+- **The submission path's block reason and code**, carried over from 5g. Three
+  lines plus a field on `SendResult`, but it is blocklist behaviour on a path 5e
+  was not sent to change.
+- **All of Part B**, and anything in 5f (short links, click stats, reports).

@@ -59,6 +59,14 @@ const money = (value) => (value === null || value === undefined)
 let selectedCategory = null;      // {id, slug, label, color_token}
 let lastPreview = null;
 
+// Which step-1 tab is active: 'upload' (the default) or 'existing'. Declared
+// here rather than in _composer-upload.html, which owns the behaviour, because
+// the loaders at the bottom of this file resolve asynchronously and read it —
+// a `let` in the later partial would still be in its temporal dead zone when
+// the first /preview response lands, and the page would die on a ReferenceError
+// nobody sees until the network is slow.
+let composerMode = 'upload';
+
 // ─── Step 1: category and audience ──────────────────────────────────────────
 
 async function loadCategories() {
@@ -77,6 +85,13 @@ async function loadCategories() {
                 class="${chipClass(c.color_token, false)}">
             ${esc(c.label)} <span class="tabular-nums opacity-70">${c.count.toLocaleString()}</span>
         </button>`).join('');
+
+    // The upload tab's optional tag, from the same fetch. "No category" stays
+    // first and stays selected: untagged is the default outcome, not a fallback
+    // somebody has to choose.
+    el('uploadCategory').innerHTML =
+        '<option value="">No category</option>' +
+        categories.map(c => `<option value="${c.id}">${esc(c.label)}</option>`).join('');
 
     box.querySelectorAll('.category-chip').forEach(chip => {
         chip.addEventListener('click', () => {
@@ -153,6 +168,10 @@ async function refreshPreview() {
     const template = el('message').value;
     const audience = el('audience').value;
     if (!template) { return; }
+    // In upload mode the audience does not exist yet, and the dropdown still
+    // holds whatever the other tab was pointing at. Counting that would put one
+    // audience's numbers on screen while he commits to another.
+    if (composerMode === 'upload') { return; }
 
     const data = await api('/api/campaigns/preview', {
         method: 'POST',
@@ -181,8 +200,40 @@ async function refreshPreview() {
     el('sumSegments').textContent = data.total_segments.toLocaleString();
     el('sumCost').textContent = money(data.estimated_cost);
 
+    paintSuppression(data);
     paintUnicodeWarning(data);
     paintLinkWarning(data);
+}
+
+// A6 — what the hold-back rule is doing to this audience, before it is queued.
+// Silent at a window of 0: nothing is held back, and explaining a rule that is
+// not running is noise. Silent with nothing held back for the same reason.
+function paintSuppression(data) {
+    const note = el('sumSuppressedNote');
+    const days = data.suppression_days ?? 0;
+    const held = data.suppressed || 0;
+    if (days <= 0 || !held) { note.classList.add('hidden'); note.textContent = ''; return; }
+
+    const when = data.suppression_clears_at ? clockTime(data.suppression_clears_at) : null;
+    note.textContent =
+        `${held.toLocaleString()} held back — texted in the last ${days} day` +
+        `${days === 1 ? '' : 's'}` +
+        (when ? `, clears ${when}.` : '.');
+    note.classList.remove('hidden');
+}
+
+// "10:11am", or "10:11am on 29 Aug" when it is not today. Deliberately the same
+// shape as the server's own wording in the pre-flight row — two renderings of
+// one fact should not read as two different facts.
+function clockTime(iso) {
+    const when = new Date(iso);
+    if (isNaN(when)) return null;
+    const time = when.toLocaleTimeString('en-US',
+        { hour: 'numeric', minute: '2-digit' }).replace(' ', '').toLowerCase();
+    const today = new Date();
+    return when.toDateString() === today.toDateString()
+        ? time
+        : `${time} on ${when.getDate()} ${when.toLocaleString('en-US', { month: 'short' })}`;
 }
 
 function paintUnicodeWarning(data) {
@@ -229,6 +280,21 @@ async function runPreflight() {
     const list = el('preflightList');
     const message = el('message').value;
     const audience = el('audience').value;
+
+    // The same guard `refreshPreview` carries, and for a worse reason. In upload
+    // mode the audience dropdown still holds whatever the other tab pointed at —
+    // "All contacts" on a fresh page — so without this the checklist would draw
+    // a full report, capacity verdict included, computed over every contact in
+    // the database, underneath a composer whose audience is a file. This is the
+    // one screen whose job is to stop a bad send; it must not answer confidently
+    // about a different audience. Found by review.
+    if (composerMode === 'upload') {
+        list.innerHTML = '<li class="px-5 py-4 text-[13px] text-ink-3">'
+            + 'Checks run against the list this upload creates, so they run once the '
+            + 'campaign is created — nothing is sent until you press Send. '
+            + 'Use “Check the file” above to see what the upload will do.</li>';
+        return;
+    }
 
     if (!message || !audience) {
         list.innerHTML = '<li class="px-5 py-4 text-[13px] text-ink-3">Write the message and pick an audience first.</li>';
@@ -281,6 +347,11 @@ el('composer').addEventListener('submit', async function (e) {
     const audience = el('audience').value;
     const message = el('message').value;
     const override = el('crossCategory').checked;
+
+    // Upload mode is a different endpoint — multipart, because the file and the
+    // campaign it is for have to arrive together or a rejected campaign leaves
+    // an orphan list behind. Defined in _composer-upload.html.
+    if (composerMode === 'upload') { return createFromUpload(name, message); }
 
     if (!selectedCategory && !override) {
         const error = el('categoryError');
@@ -370,7 +441,7 @@ async function loadCampaigns() {
             </div>
             <p class="mt-0.5 text-[11px] text-ink-3">
                 ${esc(c.category_label || (c.cross_category_override ? 'Cross-category' : '—'))}
-                · ${c.total_recipients.toLocaleString()} recipients${c.suppressed_count ? ` · ${c.suppressed_count.toLocaleString()} held back` : ''}
+                · ${recipientLine(c)}${c.suppressed_count ? ` · ${c.suppressed_count.toLocaleString()} held back` : ''}
             </p>
             ${c.scheduled_at ? `<p class="mt-0.5 text-[11px] text-brand">Scheduled ${esc(fmtDate(c.scheduled_at))}</p>` : ''}
             ${c.abort_reason ? `<p class="mt-1 text-[11px] text-warn-ink">${esc(c.abort_reason)}</p>` : ''}
@@ -379,7 +450,32 @@ async function loadCampaigns() {
                         class="mt-1.5 rounded-md bg-good px-2.5 py-1 text-[11px] font-medium text-white hover:opacity-90">
                     Send now
                 </button>` : ''}
+            ${c.status === 'completed' ? `
+                <button type="button" onclick="topUpCampaign(${c.id})"
+                        class="mt-1.5 rounded-md border border-line-strong bg-page px-2.5 py-1 text-[11px] font-medium text-ink hover:bg-surface-2">
+                    Top up
+                </button>` : ''}
         </li>`).join('');
+}
+
+// "1,200 + 5 added 26 Aug" rather than a total that quietly changed. The server
+// counted the top-ups; this only renders them, and it renders every one rather
+// than collapsing them into "+N", because two separate additions on two days is
+// what the reader is trying to reconstruct.
+function recipientLine(c) {
+    const total = (c.total_recipients || 0);
+    const tops = c.top_ups || [];
+    if (!tops.length) return `${total.toLocaleString()} recipients`;
+
+    const added = tops.reduce((sum, t) => sum + t.recipients, 0);
+    const parts = tops.map(t => `${t.recipients.toLocaleString()} added ${esc(shortDate(t.added_at))}`);
+    return `${(total - added).toLocaleString()} + ${parts.join(' + ')}`;
+}
+
+function shortDate(iso) {
+    const when = new Date(iso);
+    if (isNaN(when)) return iso;
+    return `${when.getDate()} ${when.toLocaleString('en-US', { month: 'short' })}`;
 }
 
 async function sendCampaign(id) {

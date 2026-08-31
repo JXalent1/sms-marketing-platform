@@ -62,6 +62,15 @@ class SMSMessage(Base):
     sent_at = Column(String(50), nullable=True)
     delivered_at = Column(String(50), nullable=True)
 
+    # When this row was added to a campaign that had already sent. NULL is the
+    # original send — the honest value, not "unknown".
+    #
+    # A top-up folds into the campaign's totals by design (modules.md, 2026-08-24),
+    # so without this the campaign's recipient count simply changes and a report
+    # three weeks later cannot say why. One `GROUP BY top_up_at` turns that back
+    # into "1,200 + 5 added 26 Aug". See app/services/campaign_topup.py.
+    top_up_at = Column(String(50), nullable=True)
+
     __table_args__ = (
         Index("idx_sms_campaign", "campaign_id"),
         Index("idx_sms_status", "status"),

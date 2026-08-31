@@ -1,8 +1,14 @@
-"""Campaign creation and the send loop.
+"""The send loop, and the two refusals that can stop it.
 
 This is the module you will modify most for a new client, and the one where
 mistakes are expensive — every branch here is a decision about someone else's
 money and someone else's phone.
+
+Campaign *creation* moved to `campaign_builder.py` in 5e, when this file crossed
+the 500-line rule for the third time. The seam is deciding what a campaign is
+against running it; `create_campaign()` and `resolve_category()` remain here as
+thin delegates so every existing caller, including the API and the suite, keeps
+the same entry points.
 
 Ordering in the send loop is deliberate. Filters that cost nothing run before
 the ones that cost money:
@@ -23,13 +29,21 @@ from app.models.campaign import Campaign
 from app.models.category import Category
 from app.models.sms_message import SMSMessage
 from app.models.contact import Contact
-from app.services import contact_service, preflight_service
+from app.services import campaign_outcome
 from app.services.blocklist_service import load_blocked_set, block_number
+# Re-exported deliberately: these three names were defined here before 5e split
+# creation out, and `routers/campaigns.py`, `campaign_dispatch.py` and the suite
+# all reach for them at this address. Moving the definitions without keeping the
+# names would be a rename dressed up as a refactor.
+from app.services.campaign_builder import (        # noqa: F401  (re-export)
+    CampaignError, NO_CATEGORY_ERROR, create_campaign as _build_campaign,
+    resolve_category as _resolve_category, wholesale_estimate,
+)
 from app.sms.factory import (
     get_provider, provider_fallback, send_mode, send_path_assessment,
 )
 from app.sms.segments import count_segments
-from app.sms.phone import is_non_us_region, scrub_provider_text, find_risky_links
+from app.sms.phone import is_non_us_region, scrub_provider_text
 from app.sms.compliance import should_auto_block
 from datetime import datetime
 from typing import Optional
@@ -38,36 +52,12 @@ import logging
 
 logger = logging.getLogger("campaign")
 
-# Every campaign carries the niche it is for, or a recorded decision not to.
-NO_CATEGORY_ERROR = (
-    "This campaign has no category. Pick the auction it is for — the category is "
-    "what keeps a memorabilia buyer from being texted about a walk-in cooler. If "
-    "this really is meant to go to every niche at once, set the cross-category "
-    "override explicitly and it will be recorded on the campaign."
-)
-
-
-class CampaignError(Exception):
-    """Raised for problems the operator can fix (empty audience, no funds)."""
-
-
 # What a row gets when it was queued but the send path could not reach a carrier.
 # Deliberately outside BILLABLE_STATUSES — see app/models/sms_message.py. A DB
 # status, so it stays on this side of the layering boundary; the *wording* the
 # client reads for the same fault lives in app/sms/factory.py next to the rest
 # of it.
 DEGRADED_STATUS = "not_sent"
-
-
-def wholesale_estimate(segments: int) -> float:
-    """What `segments` costs US, at our blended carrier rate.
-
-    OUR cost, not his. It exists to convert a carrier balance into a capacity
-    estimate for the pre-flight check and to fill `campaigns.estimated_cost`,
-    which never crosses the API boundary. His number comes from billing_service
-    at BILLING_PRICE_PER_SEGMENT and is roughly 40% higher.
-    """
-    return round((segments or 0) * settings.WHOLESALE_COST_PER_SEGMENT, 2)
 
 
 class CampaignService:
@@ -102,122 +92,36 @@ class CampaignService:
     # ─── Creation ───────────────────────────────────────────────────────────
 
     def resolve_category(self, category_id: Optional[int],
-                         cross_category_override: bool) -> Optional[Category]:
-        """The category rule, in one place.
+                         cross_category_override: bool,
+                         list_audience: bool = False) -> Optional[Category]:
+        """The category rule — see `campaign_builder.resolve_category()`.
 
-        A campaign gets a real category or an explicitly-typed override. There is
-        no third case and no default — the moment "no category" becomes a value
-        the form can submit by accident, the guarantee this module exists for is
-        gone.
+        Kept as a method because that is where the rule has been enforced since
+        module 4, and because "the rule lives in the service, not the router" is
+        the property a test pins. The rule itself did not move layers; it moved
+        file, and the delegation is what makes that true rather than claimed.
         """
-        if category_id is None:
-            if cross_category_override:
-                return None
-            raise CampaignError(NO_CATEGORY_ERROR)
-
-        category = self.db.get(Category, category_id)
-        if category is None:
-            raise CampaignError(
-                f"No category with id {category_id}. A campaign cannot point at a "
-                f"category that does not exist."
-            )
-        return category
+        return _resolve_category(self.db, category_id, cross_category_override,
+                                 list_audience)
 
     def create_campaign(self, name: str, message_template: str, audience: str,
                         batch_size: Optional[int] = None,
                         category_id: Optional[int] = None,
                         cross_category_override: bool = False,
-                        scheduled_at: Optional[str] = None) -> Campaign:
-        """Build a campaign and queue one pending SMSMessage per recipient.
+                        scheduled_at: Optional[str] = None,
+                        list_audience: bool = False) -> Campaign:
+        """Build a draft — see `campaign_builder.create_campaign()`.
 
-        Recipients texted inside the suppression window are queued too, as
-        `skipped`. Recording them rather than dropping them is what makes the
-        number visible before the send instead of inferable afterwards: the
-        composer shows "1,204 will receive this, 37 held back" while there is
-        still time to change the audience.
+        `self.render` is handed over rather than re-implemented there: the
+        renderer whose output is billed has to be the one that measured it.
         """
-        category = self.resolve_category(category_id, cross_category_override)
-
-        recipients = contact_service.resolve_audience(self.db, audience)
-        if not recipients:
-            raise CampaignError(f"No contacts matched audience {audience!r}")
-
-        # Suppression before the cap, not after. "Send to the first 50" has to
-        # mean fifty people receive it; capping first and suppressing second
-        # would silently deliver forty.
-        sendable, suppressed = preflight_service.partition_recent(recipients)
-
-        if batch_size and batch_size > 0:
-            sendable = sendable[:batch_size]
-
-        # Warn loudly about links carriers will silently eat (see phone.py).
-        risky = find_risky_links(message_template)
-        if risky:
-            logger.warning(
-                f"Campaign '{name}' contains public shortener link(s) {risky}. "
-                f"Carriers commonly spam-block these; use a first-party domain."
-            )
-
-        campaign = Campaign(
-            name=name,
-            message_template=message_template,
-            audience=audience,
-            audience_label=contact_service.audience_label(self.db, audience),
-            category_id=category.id if category else None,
-            cross_category_override=1 if (category is None) else 0,
-            total_recipients=len(sendable),
-            suppressed_count=len(suppressed),
-            # Held-back contacts are skipped, exactly like a blocklisted or
-            # out-of-region number: queued, never sent, never billed. The send
-            # loop adds its own skips to this as it runs.
-            skipped_count=len(suppressed),
-            scheduled_at=scheduled_at or None,
-            status="draft",
-            created_at=datetime.now().isoformat(),
+        return _build_campaign(
+            self.db, self.render,
+            name=name, message_template=message_template, audience=audience,
+            batch_size=batch_size, category_id=category_id,
+            cross_category_override=cross_category_override,
+            scheduled_at=scheduled_at, list_audience=list_audience,
         )
-        self.db.add(campaign)
-        self.db.commit()
-        self.db.refresh(campaign)
-
-        estimated_segments = 0
-        for contact in sendable:
-            body = self.render(message_template, contact)
-            estimated_segments += count_segments(body)
-            self.db.add(SMSMessage(
-                campaign_id=campaign.id,
-                contact_id=contact.id,
-                phone=contact.phone,
-                message=body,
-                status="pending",
-            ))
-
-        held_back = preflight_service.suppression_reason()
-        for contact in suppressed:
-            self.db.add(SMSMessage(
-                campaign_id=campaign.id,
-                contact_id=contact.id,
-                phone=contact.phone,
-                message=self.render(message_template, contact),
-                status="skipped",
-                error_message=held_back,
-            ))
-
-        campaign.estimated_segments = estimated_segments
-        # Wholesale, i.e. what this campaign costs US. It funds the pre-flight
-        # capacity check below and our own logs, and it is deliberately absent
-        # from the campaign API payload — see _campaign_dict in routers/campaigns.py.
-        campaign.estimated_cost = wholesale_estimate(estimated_segments)
-        self.db.commit()
-
-        logger.info(
-            f"Campaign #{campaign.id} '{name}' created | category "
-            f"{category.slug if category else 'CROSS-CATEGORY OVERRIDE'} "
-            f"| {len(sendable)} recipients ({len(suppressed)} suppressed) "
-            f"| ~{estimated_segments} segments | est. wholesale cost "
-            f"${campaign.estimated_cost:.2f}"
-            + (f" | scheduled for {scheduled_at}" if scheduled_at else "")
-        )
-        return campaign
 
     # ─── Pre-flight ─────────────────────────────────────────────────────────
 
@@ -275,7 +179,8 @@ class CampaignService:
                        f"segments"),
         }
 
-    async def preflight(self, campaign: Campaign) -> tuple[bool, str]:
+    async def preflight(self, campaign: Campaign, segments: Optional[int] = None,
+                        cost: Optional[float] = None) -> tuple[bool, str]:
         """Check the account can fund the whole campaign before sending any of it.
 
         This exists because of a failure that recurred five times in the
@@ -294,6 +199,15 @@ class CampaignService:
         question to answer — and because the answer it *would* give is the
         console stub's 999,999, which is exactly how a degraded box sailed
         through the check that exists to stop this.
+
+        `segments`/`cost` override the campaign's stored figures, and exist for
+        one caller: a top-up, whose capacity question is about the handful of
+        recipients being added rather than the thousands the campaign already
+        reached and paid for. Charging a top-up against the original blast's
+        estimate would refuse a five-message top-up on the grounds that a
+        6,857-message campaign is unaffordable. Nothing about the check itself
+        changes — same threshold, same margin, same wording, applied to the
+        segments this run will actually queue.
         """
         send_path = send_path_assessment()
         if not send_path["ok"]:
@@ -312,7 +226,8 @@ class CampaignService:
             return False, send_path["abort_detail"]
 
         assessment = await self.capacity_assessment(
-            campaign.estimated_segments or 0, campaign.estimated_cost or 0
+            campaign.estimated_segments if segments is None else segments,
+            campaign.estimated_cost if cost is None else cost,
         )
 
         # The money view of the same verdict, for our log only.
@@ -350,9 +265,28 @@ class CampaignService:
             return campaign
 
         logger.info(f"Campaign #{campaign_id} pre-flight OK: {detail}")
+        return await self.run_send_loop(campaign)
+
+    async def run_send_loop(self, campaign: Campaign, *, top_up: bool = False,
+                            suppressed_this_run: int = 0) -> Campaign:
+        """Hand every pending row to the carrier, then adjudicate the run.
+
+        Split out of `send_campaign()` so a top-up runs the *same* loop rather
+        than a second, thinner one — the argument `campaign_dispatch.py` makes
+        about the scheduler, one level down. Everything that decides whether a
+        message goes out is in here and nowhere else: the blocklist, the region
+        filter, the degraded-path backstop, and the order they run in.
+
+        Callers are responsible for the pre-flight refusal before this is
+        reached. This is not a second place to skip it — it is what runs once it
+        has passed.
+        """
+        campaign_id = campaign.id
+        previously_sent = campaign.sent_count or 0
 
         campaign.status = "running"
-        campaign.started_at = datetime.now().isoformat()
+        if not top_up:
+            campaign.started_at = datetime.now().isoformat()
         self.db.commit()
 
         messages = self.db.query(SMSMessage).filter(
@@ -364,7 +298,13 @@ class CampaignService:
         blocked = load_blocked_set(self.db)
         total = len(messages)
         degraded_rows = 0
-        logger.info(f"Campaign #{campaign_id} sending {total} messages")
+        # This run's own outcomes. The campaign's lifetime counters cannot answer
+        # "did this run reach anybody" once a campaign can be sent to more than
+        # once, and a top-up that reached nobody sitting under a campaign that
+        # reached 1,200 is exactly the case the counters would hide.
+        run = {"sent": 0, "blocked": 0, "region_skipped": 0, "failed": 0}
+        logger.info(f"Campaign #{campaign_id} sending {total} messages"
+                    + (" (top-up)" if top_up else ""))
 
         for i, msg in enumerate(messages, 1):
             try:
@@ -373,6 +313,7 @@ class CampaignService:
                     msg.status = "blocked"
                     msg.error_message = "Number is on the blocklist"
                     campaign.skipped_count += 1
+                    run["blocked"] += 1
                     self.db.commit()
                     continue
 
@@ -381,6 +322,7 @@ class CampaignService:
                     msg.status = "skipped"
                     msg.error_message = "Destination region not enabled for sending"
                     campaign.skipped_count += 1
+                    run["region_skipped"] += 1
                     self.db.commit()
                     continue
 
@@ -417,6 +359,7 @@ class CampaignService:
                     # Trust the carrier's count; fall back to our estimate.
                     msg.segments = result.parts or count_segments(msg.message)
                     campaign.sent_count += 1
+                    run["sent"] += 1
 
                     if msg.contact_id:
                         contact = self.db.get(Contact, msg.contact_id)
@@ -434,6 +377,7 @@ class CampaignService:
                     msg.status = "failed"
                     msg.error_message = scrub_provider_text(error)
                     campaign.failed_count += 1
+                    run["failed"] += 1
                     logger.error(f"  [{i}/{total}] FAILED {msg.phone}: {msg.error_message}")
 
                 self.db.commit()
@@ -448,31 +392,72 @@ class CampaignService:
                 # campaign detail view.
                 msg.error_message = scrub_provider_text(str(e))
                 campaign.failed_count += 1
+                run["failed"] += 1
                 self.db.commit()
 
+        # ─── Did this run reach anybody? ────────────────────────────────────
+        #
         # A campaign the backstop above caught did not complete — it reached
         # nobody. Saying "completed" with no abort reason is the same lie one
-        # level down that this whole session exists to remove: the campaign rail
-        # is the entire UI (there is no detail screen), it renders the status
-        # badge and shows a reason only when abort_reason is set, so a blast that
-        # went nowhere would read exactly like one that worked. The per-message
-        # error is already correct; nothing displays it.
+        # level down that session 5d exists to remove: the campaign rail is the
+        # entire UI (there is no detail screen), it renders the status badge and
+        # shows a reason only when abort_reason is set, so a blast that went
+        # nowhere would read exactly like one that worked. The per-message error
+        # is already correct; nothing displays it.
+        #
+        # 5e A7 generalises that. A degraded send path is one way to reach
+        # nobody; a fully-suppressed audience, a list that is entirely opted out
+        # and an audience that resolved to zero are the ways it actually
+        # happened in production — twice, both reported `completed` with
+        # sent_count 0.
+        reason = None
         if degraded_rows:
-            campaign.status = "aborted"
-            campaign.abort_reason = send_path_assessment()["abort_detail"]
+            reason = send_path_assessment()["abort_detail"]
             logger.error(
-                f"Campaign #{campaign_id} ABORTED mid-send: the send path degraded "
+                f"Campaign #{campaign_id} reached nobody: the send path degraded "
                 f"after pre-flight passed; {degraded_rows} message(s) written "
                 f"{DEGRADED_STATUS} and none billed"
             )
+        elif run["sent"] == 0:
+            reason = campaign_outcome.zero_send_reason(
+                queued=total,
+                blocked=run["blocked"],
+                region_skipped=run["region_skipped"],
+                failed=run["failed"],
+                suppressed=(suppressed_this_run if top_up
+                            else (campaign.suppressed_count or 0)),
+            )
+            logger.error(f"Campaign #{campaign_id} reached nobody: {reason}")
+
+        if reason and not top_up:
+            campaign.status = "aborted"
+            campaign.abort_reason = reason
+        elif reason:
+            # A top-up keeps `completed`, and that is not a softening of the rule
+            # above. The original blast reached `previously_sent` people and one
+            # later event cannot revoke that — the same argument that stopped a
+            # late failure webhook from un-delivering a message in 5d. What must
+            # not happen is silence, so the reason is still stored and the rail
+            # still renders it; `top_up_reason()` fronts it with the fact that it
+            # describes the top-up rather than the campaign, because the badge
+            # beside it says "completed" and the sentence has to survive that.
+            campaign.status = "completed"
+            campaign.abort_reason = campaign_outcome.top_up_reason(total, reason)
         else:
             campaign.status = "completed"
+            if top_up:
+                # A successful top-up clears a reason an earlier one left behind.
+                # A stale warning under a run that worked is its own small lie.
+                campaign.abort_reason = None
+
         campaign.completed_at = datetime.now().isoformat()
         self.db.commit()
 
         logger.info(
             f"Campaign #{campaign_id} {campaign.status}: {campaign.sent_count} sent, "
             f"{campaign.failed_count} failed, {campaign.skipped_count} skipped"
+            + (f" (top-up added {run['sent']} of {total}; "
+               f"{previously_sent} already sent)" if top_up else "")
         )
         return campaign
 

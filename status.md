@@ -1462,3 +1462,274 @@ A structured transient-code set (30003 and siblings) stays open. The ruling puts
 it behind a second carrier going live or Telnyx populating codes reliably on the
 delivery path; today it would be a table of one entry that A4A's traffic has
 never produced. `sms_messages.error_code` is the seam when it is time.
+
+---
+
+## Module 5e Part A — campaign-first flow & QoL (appended by session 5e, 2026-08-27)
+
+**Status: Part A complete except the deploy.** Nothing in this session can send
+a message: `SMS_PROVIDER` is `console` in `.env`, in `tests/conftest.py` and in
+every subprocess the acceptance script starts. No live credential was read. No
+contact data was imported, modified or deleted outside the suite's own scratch
+database and a local dev database.
+
+Gate green at both ends, twice in a row. **259 tests at start, 319 at end**
+(+60: 17 campaign-first flow, 19 top-up and zero-send, 21 suppression window,
+plus 2 white-label cases and 1 migration case in existing modules). One existing
+test moved layer and two were made self-sufficient — see below.
+
+### A1 — the upload is step one of creating a campaign
+
+`POST /api/campaigns/from-upload` (multipart) commits the CSV through the
+*existing* importer and creates the campaign on the list it produced.
+`POST /api/campaigns/upload-preview` is the same `import_service.preview()` the
+Contacts screen calls — reusing it is what makes the composer's counts and the
+commit's counts the same counts.
+
+- The list is named for the campaign, so a report three weeks later reads
+  "Italian restaurants" rather than a list id. `ContactList.name` is unique, so
+  collisions suffix (`… (2)`) rather than erroring: two campaigns of the same
+  name is the ordinary case, and without the suffix the second is an
+  IntegrityError partway through a commit with a list already written.
+- **The import is rolled back if the campaign cannot be created.** Otherwise a
+  rejected campaign leaves a named list and a few hundred contacts behind, and
+  the next attempt collides with the name it just orphaned. `undo()` is the
+  existing, tested reversal.
+- **The spec's file reference is stale and was not followed literally.** A1 says
+  to reuse `POST /api/contacts/import/preview` and `/import`; session 3b retired
+  both, and they answer 400 naming `/api/imports/*`. The intent — reuse the
+  importer, do not write a second one — is honoured through
+  `import_service.preview()`/`commit()` directly.
+
+### A2 — the category tag is optional on that upload
+
+`import_service` takes `Optional[Category]` throughout. `category_id` stays a
+**required positional argument with no default**, so `None` is a value somebody
+passed rather than one that drifted.
+
+- `/api/imports/*` — the standalone Contacts-screen import — **still refuses
+  without a category**, and says so in a sentence rather than a 422. That import
+  produces contacts and no campaign, so an untagged one is the untagged blob the
+  category work exists to prevent. The campaign upload is different: the list it
+  creates is the campaign's entire audience, so the targeting *is* the list.
+- **`undo()`'s marker moved from `category_id` to `source`.** "No category means
+  this is not an import batch" stopped being true the moment an upload could
+  legitimately carry none, and an untagged campaign upload would have been told
+  it was not an import — with no way to reverse it.
+- A campaign from an upload records `category_id` NULL **and**
+  `cross_category_override` 0. Recording it as an override would put a decision
+  nobody made into the audit trail and make the column useless as evidence.
+  `resolve_category()` gained a third way to satisfy the rule, not an escape from
+  it: `POST /api/campaigns` is byte-for-byte unchanged and still demands a
+  category or a typed override for `all`, `category:` and an existing list.
+
+### A3 — one contact, by hand
+
+`POST /api/contacts` gained a form, company, an optional category, and the two
+guards an import has always had: E.164 normalisation, and a blocklist check. A
+blocklisted number is **refused with a sentence naming Opt-outs**, not silently
+skipped — unlike a 6,000-row file this is one number somebody deliberately typed.
+Both guards run before anything is written.
+
+### A4 — top-up send on an already-sent campaign
+
+`POST /api/campaigns/{id}/top-up`, refusing **synchronously** before anything is
+queued (5d's lesson from `POST /{id}/send`; here it matters twice over, because a
+refusal after the rows were written would leave a completed campaign carrying
+orphan `pending` messages). `campaign_topup.assess()` is the single verdict both
+the router and the send path read.
+
+- **"Added since" is read from `contact_list_members.added_at`, not inferred by
+  subtracting message rows.** The review found two defects in the subtract-rows
+  version, both live: a campaign capped with `batch_size` had its withheld
+  remainder delivered to on one click, and a campaign on `all` texted everyone
+  imported afterwards for a *different auction*. A top-up now needs a `list:`
+  audience and says so.
+- `add_to_list()` now stamps `added_at` explicitly. The column's server default
+  is SQLite's `CURRENT_TIMESTAMP`, which is **UTC** while every other timestamp
+  here is local — two clocks in one column, and comparing them made every
+  hand-added contact look up to five hours newer than it was.
+- The guard against re-sending is on the **phone number**, not the contact id: a
+  contact deleted and re-imported is a new row with the same person holding the
+  handset.
+- `sms_messages.top_up_at` (migration `c4f1a80b6e37`, additive, nullable, nothing
+  backfilled, in-place `ADD COLUMN`) keeps the addition distinguishable, so a
+  report reads "1,200 + 5 added 26 Aug" rather than a silently different number.
+  Counted by one grouped query for the whole rail, not one per row.
+
+### A5 — the hold-back window is a Settings field
+
+`app/services/suppression_service.py` — its own module, and the 500-line rule is
+only the second reason. This is the one rule that decides whether a real person
+gets a text they did not ask for, it is on the escalation list by name, and it
+shipped at 3 days and withheld 6,856 of 6,857 recipients across two campaigns
+before anyone could see what was doing it.
+
+**The rule is not tuned.** The comparison, its blindness to category and the
+lexicographic-on-ISO trick moved file verbatim. What changed is where the
+*number* comes from: `.env` is the default, a stored value overrides it, and it is
+read fresh on every call — so a change takes effect on the next send with nothing
+to invalidate and no worker holding an old copy. Every function takes a Session
+and none may default it, because a caller that forgot would silently fall back to
+`.env` on that one path.
+
+### A6 — suppression is visible before the campaign is queued
+
+`/preview` and `/preflight` both return `suppression_days` and
+`suppression_clears_at`, and the composer draws them. The clearing time is the
+**latest** held-back contact's `last_messaged_at` plus the window: the question is
+"when can I send this to all of them", and the earliest gives a time at which most
+of the hold is still in force. At a window of 0 both are silent, and the checklist
+row says the rule is *off* rather than reporting "nobody was texted in the last 0
+days", which reads as a fact about the audience instead of about the rule.
+
+### A7 — a run that reached nobody aborts loudly
+
+`campaign_outcome.zero_send_reason()` — pure functions over counts, no session,
+no writes. A run that put no message on a carrier ends `aborted` with a sentence
+naming the cause: everyone suppressed, everyone opted out, everyone out of
+region, everyone rejected, or a mixed breakdown that accounts for every recipient
+(the remainder is named rather than dropped, because a breakdown that does not add
+up invites "so the rest went out, then").
+
+- Scoped to the **run**, not the campaign's lifetime. A top-up that reaches
+  nobody keeps `completed` — the original blast really did reach 1,200 people and
+  one later event cannot revoke that, the same argument that stopped a late
+  failure webhook from un-delivering a message in 5d — but still stores a reason,
+  fronted with "Top-up of N recipients:" so the sentence survives the badge next
+  to it saying completed. A later successful top-up clears it.
+- A deliberate dry run is not special-cased into looking like a failure, and a
+  test asserts that by driving a successful console send.
+
+### The 500-line rule, twice more
+
+`campaign_service.py` crossed it for the third time, so **creation** moved to
+`campaign_builder.py` — the seam is *deciding what a campaign is* against
+*running it*, matching `campaign_dispatch.py` on the other side of *when a send
+begins*. `CampaignService.create_campaign()` and `.resolve_category()` remain as
+thin delegates so every existing caller keeps its entry point, and `CampaignError`
+/ `NO_CATEGORY_ERROR` / `wholesale_estimate` are re-exported from their old
+address.
+
+`preflight_service.py` then crossed it too, and suppression moved out — see A5.
+
+### Acceptance
+
+`agent/accept-5e.sh` is the Part A stop condition — the eleven criteria from
+`sessions/session-5e.md`, each a check that runs rather than a claim, with the
+60-turn cap recorded in its header. Criteria 1-10 pass locally. Criterion 11 needs
+the deployed site and is opt-in:
+
+    A4A_URL=https://... A4A_PASSWORD=... bash agent/accept-5e.sh --with-remote
+
+**Check 10 is the one with teeth**, and CLAUDE.md is explicit about why it is not
+"the new tests fail against the pre-fix tree". `agent/mutate-5e.py` reverts each
+fix behaviourally, one at a time, in a scratch copy, and requires a test to go
+red for each — 28 mutations, none surviving. It earned its cost immediately:
+
+- Two mutations survived the first run — `M2` mutated a default no caller
+  reaches, and `M7` mutated a redundancy (`upsert_contact()` normalises
+  internally). Both were retargeted at the behaviour that actually matters.
+- A third was being "caught" by an unrelated test that leaked a stored setting
+  between modules, which inflated every CAUGHT verdict it appeared in.
+- `M18` was then genuinely **not** caught: the test called `check_recent_overlap`
+  directly, so mutating `build_report`'s call site was invisible to it. It now
+  drives `/api/campaigns/preflight`.
+
+### What the fresh-context review changed
+
+One synchronous reviewer, per the 5g lesson. Six real defects, five fixed here
+and one escalated. Each fix has a test that fails when it is reverted (`M23`-`M27`).
+
+1. **A top-up defeated the campaign's cap.** `batch_size` is applied at build
+   time and never persisted, so "everyone the audience resolves to now, minus
+   everyone with a message row" could not tell the withheld remainder from
+   somebody added since. A campaign capped at 2 of 10 offered to send to the
+   other 8 on one click.
+2. **A top-up on an `all` or `category:` audience texted everyone imported
+   since.** Last month's memorabilia message to tonight's restaurant buyers, one
+   click, behind a confirm dialog that said "everyone added to its list" about a
+   campaign with no list. Both fixed by A4's `added_at` window above.
+3. **"Run checks" ran pre-flight against the wrong audience.** `refreshPreview()`
+   guards on upload mode and `runPreflight()` did not, while the audience
+   dropdown defaults to "All contacts" — so the checklist drew a full report,
+   capacity verdict included, over every contact in the database, under a
+   composer whose audience was a file. The same shape as `should_auto_block()`
+   having one call site for two paths.
+4. **A7's reason recommended a remedy that cannot work.** It said "lower the
+   hold-back window, or wait for it to clear"; suppression is frozen into
+   `skipped` rows at build time and nothing moves a campaign back from `aborted`,
+   so a client following that advice watches the same campaign fail the same way
+   — and may already have had the window at 0. It now says to create the campaign
+   again.
+5. **The manual-add form accepted a `category_id` that named nothing** and
+   answered `tagged: true`. `tag_contact()` validates the tag's source and never
+   the category, and SQLite does not enforce the FK here, so it wrote a dangling
+   row that would then keep the contact alive forever through
+   `_still_referenced()` on an undo.
+6. **A test was vacuous when run alone.**
+   `test_the_checklist_row_and_the_summary_panel_quote_one_window` read a list a
+   previous test had seeded, so in isolation two of its three assertions compared
+   `0 == 0` — and `accept-5e.sh` runs each criterion's tests in isolation, so it
+   reported green while proving nothing. It seeds its own contacts now, and
+   asserts the hold is non-empty before comparing.
+
+The reviewer independently confirmed: `count_sms_segments()`, `BILLABLE_STATUSES`,
+`billing_service.py`, the rounding and the billable-status set are untouched;
+`ix_contacts_phone` and every `sms_messages` index survive; the suppression *rule*
+is not tuned; no new client-facing string names the carrier; there is no import
+cycle among the new service modules; and no refusal path leaves orphan `pending`
+rows.
+
+### Found while working (session 5e)
+
+- **ESCALATED —
+  `decisions/005-topping-up-a-contact-the-window-held-back.open.md`.** A contact
+  the window held back gets a `skipped` row, and `skipped` also means "region not
+  enabled" — two meanings on one column, and a top-up has to tell them apart. So
+  a buyer who was merely *deferred* can never be reached inside that campaign,
+  even after the hold clears. Escalation item 5, and the fix needs a new
+  `MESSAGE_STATUSES` member. Not urgent while the window is 0 (production's
+  setting); urgent the moment anybody raises it.
+- **The capacity check is inert for a top-up of one or two segments.**
+  `wholesale_estimate()` rounds to 2dp, so ~$0.004 becomes `0.0`, `required`
+  becomes `0.0`, and `balance < 0.0` is never true. Pre-existing — it is true of
+  any campaign that small — but 5e's `preflight(segments=…, cost=…)` override
+  makes small numbers reachable on a new path. **Not changed here: the pre-flight
+  capacity check is escalation item 3** and the correct fix is a floor on
+  `required`, which is a change to the guard. Impact is a few failed messages, not
+  a half-sent blast, and the degraded-path check still runs first.
+- **`undo()`'s new `source == "csv"` marker also matches lists built by
+  `ContactSource.ingest()`** (`app/sources/base.py:72`), which sets
+  `source=self.name`. No caller exists today and `add_to_list()` never sets
+  `created_contact`, so nothing would be deleted — but the prospecting engine is
+  scheduled and will add sources. Worth a dedicated column when it does.
+- **`campaign_service.py`'s submission path still files everything as
+  `delivery_failure`.** Carried over from 5g, which left `should_auto_block()` a
+  one-argument signature because that file belonged to 5e. This session opened it
+  and did **not** take the fix: it is three lines plus a field on `SendResult`,
+  and it is blocklist behaviour — escalation item 5 — on a path 5e was not sent to
+  change. Still open, still bounded by the webhook path carrying the
+  overwhelming majority of failures.
+- **`assess()` runs twice per top-up**, once in the router to refuse
+  synchronously and once on the path that does the work. That is deliberate — the
+  check has to live where the work happens — but each pass resolves the campaign's
+  list. Fine at 6,857 rows; worth remembering at 50,000.
+- **Two rapid "Top up" clicks are safe but silent.** Both can pass the router's
+  `assess()`, and the second background task then sees `status == "running"` and
+  refuses — so the top-up is dropped rather than duplicated, with nothing on
+  screen saying so.
+- **`docs/API.md` documents none of 5e.** `POST /api/campaigns/from-upload`,
+  `/upload-preview` and `/{id}/top-up` are new; `/preview` and `/preflight` gained
+  `suppression_days` and `suppression_clears_at`; `GET`/`PUT /api/settings/suppression`
+  are new; the campaign payload gained `top_ups`. 5d updated that file because its
+  spec named it (A6); 5e's does not, and docs are module 8's. Worth doing before the
+  client's integration, such as it is, and before 5f adds more.
+- **`_composer-script.html` is at 493 lines and `contacts.html` at 488.** Both under
+  the rule and neither has room for the next feature. The composer's natural next
+  split is the pre-flight checklist renderer, which is self-contained; Contacts'
+  is the bulk-action bar. Flagged now because the 500-line rule has twice produced a
+  better design when it forced a split and twice been discovered mid-session.
+- **The live box has still not been deployed to.** Criterion 11 cannot pass until
+  someone does. The box still runs the pre-5c nginx config, the hot-patched SDK,
+  and pre-5d application code.

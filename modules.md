@@ -32,9 +32,10 @@ client sending real campaigns.
 | 5b | **Go live** | Part A done · B3 verified · B4/B5 pending | 3b, 4, 5a | `deployment/**`, `scripts/**`, `.env.example`, `docs/CLIENT_GUIDE.md`, `app/main.py` |
 | 5c | **Live-send blockers** | Part A done · deploy + B pending | 5b Part A | `requirements.txt`, `app/sms/factory.py`, `app/routers/settings.py`, `app/routers/pages.py`, `app/templates/settings.html`, `app/templates/base.html`, `deployment/nginx.conf.template`, `tests/`, `agent/accept-5c.sh` |
 | 5d | **Refuse to send from a degraded box** | Part A done · deploy pending · B is Jordan's | 5c | `app/services/campaign_service.py`, `app/services/campaign_dispatch.py`, `app/services/preflight_service.py`, `app/services/blocklist_service.py`, `app/models/sms_message.py`, `app/sms/factory.py`, `app/sms/compliance.py`, `app/main.py`, `app/routers/campaigns.py`, `app/routers/pages.py`, `app/routers/blocklist.py`, `app/routers/webhooks/{common,telnyx,twilio}.py`, `app/templates/blocklist.html`, `.claude/hooks/verify-gate.sh`, `docs/API.md`, `tests/`, `agent/accept-5d.sh` |
-| 5e | **Campaign-first flow & QoL** | Specced · next | 5d | `app/routers/campaigns.py`, `app/routers/contacts.py`, `app/templates/campaigns.html`, `app/templates/contacts.html`, `app/templates/settings.html`, `app/services/campaign_service.py`, `app/services/import_service.py`, `tests/` |
+| 5e | **Campaign-first flow & QoL** | Part A done 2026-08-27 · deploy pending | 5d | `app/routers/campaigns.py`, `app/routers/campaign_uploads.py`, `app/routers/contacts.py`, `app/routers/imports.py`, `app/routers/settings.py`, `app/templates/campaigns.html`, `app/templates/_composer-script.html`, `app/templates/_composer-upload.html`, `app/templates/contacts.html`, `app/templates/settings.html`, `app/services/campaign_service.py`, `app/services/campaign_builder.py`, `app/services/campaign_outcome.py`, `app/services/campaign_topup.py`, `app/services/suppression_service.py`, `app/services/preflight_service.py`, `app/services/import_service.py`, `app/services/contact_service.py`, `app/models/sms_message.py`, `alembic/versions/`, `tests/` |
 | 5f | **Short links & reporting** | After 5e | 5e | `app/models/short_link.py`, `app/routers/links.py`, `app/routers/reports.py`, `app/services/link_service.py`, `app/templates/history.html`, `alembic/versions/`, `tests/` |
 | 5g | **Blocklist correctness** | Part A done 2026-08-26 · deploy pending | 5d | `app/sms/compliance.py`, `app/sms/phone.py`, `app/sms/providers/telnyx.py`, `app/routers/webhooks/telnyx.py`, `app/routers/webhooks/twilio.py`, `app/routers/webhooks/common.py`, `app/routers/pages.py`, `app/models/sms_message.py`, `app/models/blocked_number.py`, `app/services/blocklist_service.py`, `app/services/dashboard_service.py`, `app/services/monitoring_service.py`, `alembic/versions/`, `tests/` |
+| 5h | **Held-back rows & the capacity floor** | Parallel-safe with 5f · before client handover | 5e | `app/models/sms_message.py`, `app/services/campaign_builder.py`, `app/services/campaign_service.py`, `app/services/preflight_service.py`, `alembic/versions/`, `tests/` |
 
 **That's the launch — six sessions, but only four waves. See "Parallel plan" below.**
 
@@ -81,10 +82,10 @@ Not cancelled — descoped so the client can start sending. The plan for each is
 
 #### Found in live use, not yet scheduled
 
-- **No way to add a single contact in the UI.** Contacts offers only CSV import and
-  export. The first time someone phones the auction house and asks to be added, the
-  client has to build a one-row CSV. `POST /api/contacts` already exists — this is a
-  form, not a feature.
+- ~~**No way to add a single contact in the UI.**~~ **Closed by 5e A3, 2026-08-27.**
+  The form is on the Contacts screen and the endpoint gained the two guards an import
+  has: E.164 normalisation, and a blocklist check that refuses rather than silently
+  skipping.
 - **Quiet hours.** Nothing stops an 11pm blast but the operator's judgement.
 - **Line-type screening at import.** A live campaign found 2,526 landlines in a 6,857
   list. 5d stops them recurring *after* a failed send; screening at import stops paying
@@ -435,6 +436,33 @@ model — so this is UI and routing work, not a rebuild.
    clears at 10:11am".
 7. **A campaign that sends zero aborts loudly** with the reason on the record. Two
    campaigns reported `completed` with `sent=0`.
+
+**5e's file list above is wider than the one this table carried before the session, on
+the same basis as 5d's and 5g's.** The spec's own requirements reach files it did not
+name. `campaign_service.py` crossed the 500-line rule for the third time, so campaign
+*creation* moved to `campaign_builder.py` — the seam is deciding what a campaign is
+against running it, matching `campaign_dispatch.py` on the other side of *when a send
+begins*. `preflight_service.py` then crossed it too and the hold-back window moved to
+`suppression_service.py`, which it deserved on its own merits: it is the one rule that
+decides whether a real person gets a text they did not ask for, and it is on the
+escalation list by name. A5 says "surface it in Settings", which means
+`app/routers/settings.py`. A4's top-up needs a record of what was added and when, which
+is one additive nullable column (`sms_messages.top_up_at`) and therefore
+`alembic/versions/` and `app/models/sms_message.py`. A1's upload endpoints are multipart
+and `app/routers/campaigns.py` was at the line limit, so they are in
+`campaign_uploads.py` under the same prefix. A2 reaches `app/routers/imports.py`, which
+had to keep requiring a category while the service stopped doing so.
+`app/services/contact_service.py` is the one file outside every reading of the spec:
+`add_to_list()` left `added_at` to a server default that writes UTC while the rest of the
+app writes local time, and A4's "added since" comparison cannot be correct with two
+clocks in one column.
+
+**Part A landed 2026-08-27.** 319 tests (259 + 60), gate green twice,
+`agent/accept-5e.sh` as the stop condition, `agent/mutate-5e.py` as the check with teeth
+(28 behavioural mutations, all caught). One synchronous fresh-context review found six
+defects — two of them live ways for a top-up to text people nobody chose — five fixed
+here and one escalated as `decisions/005`. The deploy is still pending, as it is for 5c,
+5d and 5g.
 
 ### 5f — Short links & reporting
 

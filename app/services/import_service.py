@@ -5,9 +5,20 @@ client's risk actually is: an import that tags 4,000 people with the wrong niche
 is not undone by deleting a list, and an import he cannot see the shape of
 before committing is one he will not trust enough to run.
 
-**The category is chosen before the file is parsed and is required at every
-step.** A preview without one cannot answer "how many of these do I already
-have?", which is the only question the preview exists to answer.
+**The category is chosen before the file is parsed, and every caller has to say
+what it is — including when the answer is "none".** `category_id` is a required
+positional argument with no default, so it cannot be forgotten; `None` is a value
+somebody passed rather than a value that drifted.
+
+Untagged became a legitimate answer when the campaign-first flow landed (5e A2).
+The category requirement existed because an untagged blob of contacts is one
+nobody can safely text — but that reasoning is about an audience assembled *from*
+categories. When a file is uploaded as step one of one campaign, the list it
+creates **is** the targeting, and the campaign points at that list and nothing
+else. So `/api/imports/*` — the standalone Contacts-screen import, which produces
+no campaign and no audience — still refuses without a category, and the campaign
+upload path passes one through when the client chose one. The requirement moved
+up a layer; it did not go away.
 
 The counts
 ──────────
@@ -59,24 +70,51 @@ def _chunked(items: List, size: int = _CHUNK) -> Iterable[List]:
         yield items[i:i + size]
 
 
-def _require_category(db: Session, category_id: Optional[int]) -> Category:
+def require_category(db: Session, category_id: Optional[int]) -> Category:
+    """Resolve a category that must exist. For callers where untagged is wrong.
+
+    `/api/imports/preview` and `/commit` are those callers: a standalone import
+    with no category produces exactly the untagged blob the category work exists
+    to prevent. Kept here rather than in the router so a script cannot route
+    around it by not being HTTP — the same argument that puts the campaign's
+    category rule in the service.
+    """
     if category_id is None:
         raise ValueError(
             "Choose a category before importing. An untagged upload is a list of "
             "people nobody can safely text about anything."
         )
+    return _resolve_category(db, category_id)
+
+
+def _resolve_category(db: Session, category_id: Optional[int]) -> Optional[Category]:
+    """A category or None. An id that names nothing is still an error.
+
+    None means "the caller chose not to tag this upload". A missing row means the
+    caller pointed at a category that does not exist, and silently treating that
+    as untagged would turn a typo into a quietly untagged import.
+    """
+    if category_id is None:
+        return None
     row = db.get(Category, int(category_id))
     if row is None:
         raise LookupError(f"No category with id {category_id}")
     return row
 
 
-def _analyze(db: Session, content: bytes, category: Category) -> Tuple[dict, list]:
+def _analyze(db: Session, content: bytes,
+             category: Optional[Category]) -> Tuple[dict, list]:
     """Parse and bucket, touching nothing.
 
     Returns (counts, plan). The plan is one entry per distinct usable number,
     in file order: (phone, record, bucket). commit() applies the same plan it
     reports, so the "actuals" it returns cannot drift from what it did.
+
+    With no category the `already_in_category` bucket is unreachable and reports
+    0, which is the truth rather than a missing figure: nothing can already be in
+    a category the upload is not tagging. Every number we already hold falls to
+    `existing_contacts`, and the identity `valid_phones = opted_out +
+    already_in_category + existing_contacts + new_contacts` still holds.
     """
     total_rows = CSVContactSource.count_data_rows(content)
 
@@ -112,11 +150,12 @@ def _analyze(db: Session, content: bytes, category: Category) -> Tuple[dict, lis
 
     tagged = set()
     existing_ids = list(existing.values())
-    for chunk in _chunked(existing_ids):
-        tagged.update(row[0] for row in db.query(ContactCategory.contact_id).filter(
-            ContactCategory.category_id == category.id,
-            ContactCategory.contact_id.in_(chunk),
-        ).all())
+    if category is not None:
+        for chunk in _chunked(existing_ids):
+            tagged.update(row[0] for row in db.query(ContactCategory.contact_id).filter(
+                ContactCategory.category_id == category.id,
+                ContactCategory.contact_id.in_(chunk),
+            ).all())
 
     blocked = blocklist_service.load_blocked_set(db)
 
@@ -135,8 +174,8 @@ def _analyze(db: Session, content: bytes, category: Category) -> Tuple[dict, lis
         plan.append((phone, record, bucket))
 
     counts.update({
-        "category_id": category.id,
-        "category_label": category.label,
+        "category_id": category.id if category else None,
+        "category_label": category.label if category else None,
         "rows": total_rows,
         "valid_phones": len(plan_records),
         "unusable": unusable,
@@ -145,45 +184,66 @@ def _analyze(db: Session, content: bytes, category: Category) -> Tuple[dict, lis
     return counts, plan
 
 
-def preview(db: Session, content: bytes, category_id: int) -> dict:
+def preview(db: Session, content: bytes, category_id: Optional[int]) -> dict:
     """Counts and the detected column mapping. Writes nothing.
 
     Worth the extra click every time: a CSV whose phone column was not
     recognized imports zero rows and looks identical to a successful import of
     an empty file.
     """
-    category = _require_category(db, category_id)
+    category = _resolve_category(db, category_id)
     counts, _ = _analyze(db, content, category)
     return {**counts, **CSVContactSource.preview(content)}
 
 
 # ─── Commit ─────────────────────────────────────────────────────────────────
 
-def _batch_list_name(db: Session, category: Category, on: date = None) -> str:
-    """"{Label} — {YYYY-MM-DD} upload", with a counter if he uploads twice."""
-    base = f"{category.label} — {(on or date.today()).isoformat()} upload"
-    name, n = base, 1
-    while db.query(ContactList).filter(ContactList.name == name).first():
+def batch_list_name(db: Session, category: Optional[Category],
+                    on: date = None, name: Optional[str] = None) -> str:
+    """The name this import's batch list gets, guaranteed not to collide.
+
+    `ContactList.name` is unique, so a collision is an IntegrityError halfway
+    through a commit rather than a message anyone can act on. Suffixing is the
+    only behaviour that keeps "upload a list as step one" working on the second
+    campaign of the day with the same name.
+
+    `name` is the campaign's name when a campaign is driving the upload — a
+    report three weeks later has to read "Italian restaurants", not "list 47" and
+    not "Food Service — 2026-08-25 upload". Without one it falls back to the
+    category-and-date form the Contacts screen has always produced, and to a
+    plain dated upload when there is no category either.
+    """
+    if name and name.strip():
+        base = name.strip()
+    elif category is not None:
+        base = f"{category.label} — {(on or date.today()).isoformat()} upload"
+    else:
+        base = f"Upload — {(on or date.today()).isoformat()}"
+
+    candidate, n = base, 1
+    while db.query(ContactList).filter(ContactList.name == candidate).first():
         n += 1
-        name = f"{base} ({n})"
-    return name
+        candidate = f"{base} ({n})"
+    return candidate
 
 
-def commit(db: Session, content: bytes, category_id: int) -> dict:
-    """Import the file into one category. Returns the same counts as actuals.
+def commit(db: Session, content: bytes, category_id: Optional[int],
+           list_name: Optional[str] = None) -> dict:
+    """Import the file, optionally into one category. Returns counts as actuals.
 
     Opted-out numbers are skipped outright — not created, not tagged, not added
     to the batch list. An opt-out is not a filter applied at send time; it means
     we should not be building an audience around that person at all.
     """
-    category = _require_category(db, category_id)
+    category = _resolve_category(db, category_id)
     counts, plan = _analyze(db, content, category)
 
     batch = ContactList(
-        name=_batch_list_name(db, category),
-        description=f"CSV import into {category.label}",
+        name=batch_list_name(db, category, name=list_name),
+        description=(f"CSV import into {category.label}" if category
+                     else "CSV import, no category"),
         source=CSVContactSource.name,
-        category_id=category.id,
+        category_id=category.id if category else None,
         created_at=datetime.now().isoformat(),
     )
     db.add(batch)
@@ -200,9 +260,11 @@ def commit(db: Session, content: bytes, category_id: int) -> dict:
         )
         db.flush()      # id is None until flush; the membership row needs it
 
-        created_tag = category_service.tag_contact(
-            db, contact.id, category.id, source="upload", commit=False,
-        )
+        created_tag = False
+        if category is not None:
+            created_tag = category_service.tag_contact(
+                db, contact.id, category.id, source="upload", commit=False,
+            )
         db.add(ContactListMember(
             list_id=batch.id,
             contact_id=contact.id,
@@ -214,7 +276,7 @@ def commit(db: Session, content: bytes, category_id: int) -> dict:
     db.commit()
     logger.info(
         "import committed: list=%s category=%s new=%s tagged=%s skipped_opt_out=%s",
-        batch.id, category.slug, counts["new_contacts"],
+        batch.id, category.slug if category else "(none)", counts["new_contacts"],
         counts["new_contacts"] + counts["existing_contacts"], counts["opted_out"],
     )
     return {**counts, "list_id": batch.id, "list_name": batch.name}
@@ -240,7 +302,16 @@ def undo(db: Session, list_id: int) -> dict:
     batch = db.get(ContactList, list_id)
     if batch is None:
         raise LookupError(f"No list with id {list_id}")
-    if batch.category_id is None:
+
+    # What makes a list an import batch is that an import built it, which is
+    # exactly what `source` records. This used to test `category_id is None`,
+    # and that stopped being the same question the moment an upload could
+    # legitimately carry no category (5e A2): an untagged campaign upload would
+    # have been told it was "not an import batch" and left with no way to undo
+    # it. Reading the field that means "which source built this" instead of the
+    # one that happens to be set alongside it is the overloaded-string lesson
+    # applied one column over.
+    if batch.source != CSVContactSource.name:
         raise ValueError(
             f"{batch.name!r} is not an import batch — undo only reverses an import. "
             "Delete the list instead; that removes membership and nothing else."
@@ -252,13 +323,18 @@ def undo(db: Session, list_id: int) -> dict:
     created_ids = sorted({m.contact_id for m in members if m.created_contact})
     tagged_ids = sorted({m.contact_id for m in members if m.created_tag})
 
+    # An untagged batch added no tags, so there are none to reverse. Guarded
+    # explicitly rather than left to `category_id == NULL` matching no rows:
+    # relying on a comparison to fail is how a later schema change turns a
+    # deliberate no-op into a deletion nobody asked for.
     tags_removed = 0
-    for chunk in _chunked(tagged_ids):
-        tags_removed += db.query(ContactCategory).filter(
-            ContactCategory.category_id == batch.category_id,
-            ContactCategory.contact_id.in_(chunk),
-            ContactCategory.source == "upload",
-        ).delete(synchronize_session=False)
+    if batch.category_id is not None:
+        for chunk in _chunked(tagged_ids):
+            tags_removed += db.query(ContactCategory).filter(
+                ContactCategory.category_id == batch.category_id,
+                ContactCategory.contact_id.in_(chunk),
+                ContactCategory.source == "upload",
+            ).delete(synchronize_session=False)
 
     memberships_removed = db.query(ContactListMember).filter(
         ContactListMember.list_id == list_id

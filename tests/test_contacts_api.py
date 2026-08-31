@@ -257,10 +257,27 @@ def test_uncategorised_import_is_rejected_and_names_its_replacement(client):
 
 
 def test_the_category_first_import_still_requires_a_category(client):
-    """The replacement is not a rename: it refuses an upload with no category."""
-    response = client.post("/api/imports/preview",
-                           files={"file": ("list.csv", b"phone\n9545551234\n", "text/csv")})
-    assert response.status_code == 422       # category_id is a required form field
+    """The replacement is not a rename: it refuses an upload with no category.
+
+    5e A2 made the category optional in `import_service`, because a file uploaded
+    as step one of a campaign is targeted by the list it creates. It did **not**
+    make it optional here. This is the standalone Contacts-screen import: it
+    produces contacts and no campaign, so an untagged one is the untagged blob
+    the category work exists to prevent.
+
+    Both endpoints, and both in the same test, because the preview is where he
+    decides and the commit is what writes — a requirement enforced on only the
+    first is a requirement a script routes around.
+
+    The refusal is a 400 carrying the sentence, not FastAPI's 422 for a missing
+    form field. That is the change 5e made and it is an improvement: the rule now
+    lives in the service, where a caller that is not HTTP meets it too.
+    """
+    for path in ("/api/imports/preview", "/api/imports/commit"):
+        response = client.post(path, files={"file": ("list.csv",
+                                                     b"phone\n9545551234\n", "text/csv")})
+        assert response.status_code == 400, path
+        assert "Choose a category" in response.json()["detail"], path
 
 
 # ─── The page ───────────────────────────────────────────────────────────────

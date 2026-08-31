@@ -258,6 +258,43 @@ change to a live table.
   member — and it had been green all along over the thing it existed to prevent, a second
   literal `reason == "stop_keyword"` filter sitting in `dashboard_service`. Assert the
   property the list exists for (the two screens agree), not the list.
+- **A guard on the wrong set is not a guard.** 5e's top-up had a correct, tested rule —
+  never re-send to a number this campaign already has a message row for — sitting on top
+  of a candidate set built by re-resolving the campaign's audience selector and
+  subtracting those rows. Every test asked "does the guard stop a re-send?" and the
+  answer was yes. Nobody asked what was in the set before the guard ran, and the answer
+  was: everyone a `batch_size` cap had deliberately withheld, and on an `all` audience,
+  every contact imported afterwards for a different auction. One click, last month's
+  message, an audience nobody chose. When a rule filters a set, test the set as well as
+  the filter.
+- **A column with a server default has a second writer, and it may keep a different
+  clock.** `contact_list_members.added_at` defaults to SQLite's `CURRENT_TIMESTAMP`,
+  which is **UTC**; everything else in this application writes `datetime.now()`, which is
+  local. Rows from the two writers are not comparable, and the error is silently
+  one-directional — every defaulted row reads up to five hours newer than it is. The same
+  column also carried two ISO spellings (`T` versus a space), which breaks a
+  lexicographic comparison the same way. If you are going to compare a timestamp column,
+  make one writer own it and parse rather than compare strings.
+- **Run each acceptance criterion's tests in isolation, because that is how they will
+  fail.** `accept-5e.sh` invokes pytest once per criterion, which is what caught two
+  tests that only passed inside a full run: one leaned on contacts another module had
+  seeded, and one read a list an earlier test in its own file had filled — the latter
+  *passing* in isolation with two assertions comparing `0 == 0`, which is worse than
+  failing. A test that needs its neighbours is a test that proves nothing about the
+  criterion it is named for.
+- **Write mutations you can reach.** `agent/mutate-5e.py`'s first run reported CAUGHT for
+  two mutations that changed nothing: one flipped a default argument every caller passes
+  explicitly, the other passed a raw phone number to a function that normalises
+  internally. A third was "caught" only because an unrelated test was leaking a stored
+  setting between modules, which inflated every verdict it appeared in. Before trusting a
+  green mutation run, check that each mutation is on a path something executes and that
+  the tests failing for it are the tests that name it.
+- **`skipped` means two things on `sms_messages`, and something will eventually have to
+  tell them apart.** The suppression window writes it at draft time for a contact who is
+  merely *deferred*; the send loop writes it for a destination region that is permanently
+  not enabled. `decisions/005` is the first consumer that needs the distinction. This is
+  the overloaded-column mistake this file opens with, caught on the way in rather than
+  after five consumers re-derived it.
 
 ## Where things live
 

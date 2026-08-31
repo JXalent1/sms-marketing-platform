@@ -1,0 +1,173 @@
+{# The campaign-first flow: upload as step one, and topping up afterwards.
+
+   Included by campaigns.html after _composer-script.html and sharing its scope —
+   `el`, `schedulePreview`, `runPreflight` and `loadCampaigns` are defined there.
+   A second partial rather than a second file under app/static/, for the reason
+   the first one gives: Tailwind's content scan is `./app/templates/**/*.html`,
+   so class names built here are compiled into app.css and the same strings in a
+   .js file would be purged.
+
+   The rule this file keeps, like its sibling: every count comes from the API.
+   Nothing here projects how many people a file will reach — the importer's
+   preview is the only thing that knows, and a second estimate computed in the
+   browser would eventually disagree with the commit. #}
+<script>
+// `composerMode` itself is declared in _composer-script.html — see the note
+// there. This file owns what changes it and what that does.
+const MODE_ON  = 'bg-brand-soft text-brand';
+const MODE_OFF = 'text-ink-3 hover:text-ink';
+
+function setMode(mode) {
+    composerMode = mode;
+    document.querySelectorAll('.audience-mode').forEach(tab => {
+        const on = tab.dataset.mode === mode;
+        tab.className = 'audience-mode rounded-md px-3 py-1.5 text-[13px] font-medium '
+                      + (on ? MODE_ON : MODE_OFF);
+        tab.setAttribute('aria-selected', String(on));
+    });
+    el('uploadPane').classList.toggle('hidden', mode !== 'upload');
+    el('existingPane').classList.toggle('hidden', mode === 'upload');
+
+    // The summary panel describes an audience that does not exist yet in upload
+    // mode. Zeroing it is honest; leaving the previous tab's numbers up would
+    // have him reading one audience's figures while committing to another.
+    if (mode === 'upload') { resetSummary(); } else { schedulePreview(); }
+}
+
+function resetSummary() {
+    ['sumRecipients', 'sumSuppressed', 'sumOptedOut', 'sumSegments']
+        .forEach(id => { el(id).textContent = '0'; });
+    el('sumCost').textContent = '—';
+    el('sumSuppressedNote').classList.add('hidden');
+    el('sumCategory').textContent = '—';
+}
+
+document.querySelectorAll('.audience-mode').forEach(tab => {
+    tab.addEventListener('click', () => setMode(tab.dataset.mode));
+});
+
+// ─── Checking the file before committing to it ──────────────────────────────
+
+function uploadPayload() {
+    const file = el('uploadFile').files[0];
+    if (!file) { showToast('Choose a CSV file first', 'error'); return null; }
+    const form = new FormData();
+    form.append('file', file);
+    const category = el('uploadCategory').value;
+    if (category) { form.append('category_id', category); }
+    return form;
+}
+
+el('uploadPreviewBtn').addEventListener('click', async function () {
+    const form = uploadPayload();
+    if (!form) return;
+
+    this.disabled = true;
+    try {
+        const res = await fetch('/api/campaigns/upload-preview', { method: 'POST', body: form });
+        const data = await res.json();
+        if (!res.ok) { showToast(data.detail || 'Could not read that file', 'error'); return; }
+        paintUploadCounts(data);
+    } finally {
+        this.disabled = false;
+    }
+});
+
+// The importer's own figures, drawn and not recomputed. `rows` is what he sees
+// in Excel; the rest partition it. Opted-out is called out on its own line
+// because it is the one number that is a decision somebody else made.
+function paintUploadCounts(d) {
+    const box = el('uploadCounts');
+    const willReach = (d.valid_phones || 0) - (d.opted_out || 0);
+    box.innerHTML =
+        `<p class="text-[13px] font-medium text-ink">` +
+        `${willReach.toLocaleString()} of ${(d.rows || 0).toLocaleString()} rows can be texted.</p>` +
+        `<p class="mt-1">` +
+        `${(d.new_contacts || 0).toLocaleString()} new · ` +
+        `${((d.existing_contacts || 0) + (d.already_in_category || 0)).toLocaleString()} already on your list · ` +
+        `${(d.duplicates || 0).toLocaleString()} repeated in the file · ` +
+        `${(d.unusable || 0).toLocaleString()} without a usable number` +
+        `</p>` +
+        (d.opted_out
+            ? `<p class="mt-1 text-warn-ink">${d.opted_out.toLocaleString()} ` +
+              `${d.opted_out === 1 ? 'number has' : 'numbers have'} opted out and will be skipped.</p>`
+            : '') +
+        (d.category_label
+            ? `<p class="mt-1 text-ink-3">Tagging as ${esc(d.category_label)}.</p>`
+            : `<p class="mt-1 text-ink-3">No category tag. The list itself is this campaign's audience.</p>`);
+    box.classList.remove('hidden');
+}
+
+el('uploadFile').addEventListener('change', () => {
+    el('uploadCounts').classList.add('hidden');
+});
+
+// ─── Create ─────────────────────────────────────────────────────────────────
+
+async function createFromUpload(name, message) {
+    const form = uploadPayload();
+    if (!form) return;
+    if (!name || !message) { showToast('Fill in every field', 'error'); return; }
+
+    form.append('name', name);
+    form.append('message_template', message);
+    const batch = parseInt(el('batchSize').value, 10);
+    if (Number.isFinite(batch)) { form.append('batch_size', batch); }
+    const when = el('scheduledAt').value;
+    if (when) { form.append('scheduled_at', `${when}:00`); }
+
+    const button = el('composer').querySelector('button[type=submit]');
+    button.disabled = true;
+    try {
+        const res = await fetch('/api/campaigns/from-upload', { method: 'POST', body: form });
+        const data = await res.json();
+        if (!res.ok || !data.success) {
+            showToast(data.detail || 'Could not create campaign', 'error');
+            return;
+        }
+
+        const c = data.campaign;
+        showToast(c.scheduled_at
+            ? `Scheduled — ${c.total_recipients.toLocaleString()} recipients from “${data.import.list_name}”`
+            : `Draft created — ${c.total_recipients.toLocaleString()} recipients from “${data.import.list_name}”`);
+        loadCampaigns();
+
+        // Pre-flight now runs against the real, resolved audience rather than a
+        // projection off the file: the list exists, so every check that needs
+        // recipients — the measured segment total, the hold-back count, the
+        // capacity verdict — is answering about the same people the send will.
+        // Switching the form to that list is what makes "Run checks" and a
+        // second send do the right thing without him re-uploading.
+        //
+        // The audience is set *after* the dropdown is repopulated: assigning a
+        // value for an <option> that does not exist yet silently leaves the
+        // select on its previous choice, and the checks would then describe the
+        // wrong list.
+        setMode('existing');
+        await loadAudiences();
+        el('audience').value = `list:${data.import.list_id}`;
+        await refreshPreview();
+        await runPreflight();
+    } finally {
+        button.disabled = false;
+    }
+}
+
+// ─── Top up ─────────────────────────────────────────────────────────────────
+
+async function topUpCampaign(id) {
+    if (!confirm('Send this campaign\'s message to everyone added to its list since '
+               + 'it went out? Nobody it already reached is texted again.')) return;
+
+    const res = await fetch(`/api/campaigns/${id}/top-up`, { method: 'POST' });
+    const data = await res.json();
+    // A refusal here is the whole point of the endpoint answering synchronously:
+    // "nobody new", "the box cannot send", "not enough capacity" all arrive as
+    // this response rather than as a status he has to notice on the next poll.
+    showToast(res.ok && data.success ? data.message : (data.detail || 'Could not top up'),
+              res.ok && data.success ? 'success' : 'error');
+    loadCampaigns();
+}
+
+setMode('upload');
+</script>

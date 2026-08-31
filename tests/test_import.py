@@ -143,13 +143,30 @@ def test_preview_writes_nothing(db, prior_state):
     assert (db.query(Contact).count(), db.query(ContactCategory).count()) == before
 
 
-def test_a_category_is_required(db):
+def test_a_category_is_required_of_the_callers_that_need_one(db):
+    """`require_category()` is the rule; who has to obey it moved in 5e A2.
+
+    This used to assert that `preview()` and `commit()` themselves refused a None
+    category. They no longer do — a file uploaded as step one of a campaign is
+    targeted by the list it creates, so untagged became a legitimate answer at
+    the service layer and the requirement moved up to the callers for whom it is
+    still wrong.
+
+    What is asserted here is therefore the guard itself, plus the thing that did
+    **not** change: an id naming a category that does not exist is still an
+    error, never a quietly untagged import. That distinction is the whole risk in
+    making the parameter optional — a typo'd id must not read as "no category".
+
+    `/api/imports/*` refusing without one is pinned in `test_contacts_api.py`,
+    at the layer where that rule now lives.
+    """
     with pytest.raises(ValueError, match="Choose a category"):
-        import_service.preview(db, _content(), None)
-    with pytest.raises(ValueError, match="Choose a category"):
-        import_service.commit(db, _content(), None)
+        import_service.require_category(db, None)
+
     with pytest.raises(LookupError):
         import_service.preview(db, _content(), 99999)
+    with pytest.raises(LookupError):
+        import_service.commit(db, _content(), 99999)
 
 
 # ─── Commit ─────────────────────────────────────────────────────────────────

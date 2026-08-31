@@ -65,6 +65,41 @@
         </form>
     </div>
 
+    {# The hold-back window. On a screen rather than in .env because it can
+       silently withhold an entire audience and did: at 3 days it held back
+       6,856 of 6,857 recipients across two consecutive campaigns, and finding
+       out why took a SQL query against the live database.
+
+       The explanation is in the client's language and states the consequence in
+       both directions — a rule he can change needs to say what changing it
+       costs, or it becomes a number somebody nudges. No price, no allowance and
+       no brand string here; the figure is a count of days. #}
+    <div class="rounded-xl border border-line bg-surface px-6 py-6">
+        <h2 class="font-semibold text-ink">Hold-back window</h2>
+        <p class="mt-1 text-sm leading-relaxed text-ink-2">
+            Nobody is texted twice inside this many days, however many of your campaigns
+            they qualify for. A buyer tagged for three niches is still one person with one
+            phone.
+        </p>
+        <p class="mt-2 text-sm leading-relaxed text-ink-2">
+            Set it to <strong class="font-semibold text-ink">0</strong> to hold nobody back.
+            Set it high and a campaign can find that everyone in tonight's list was texted
+            on Tuesday and hold back all of them — the composer shows you the number and
+            when it clears before you send, so you are never finding this out afterwards.
+        </p>
+
+        <form class="mt-4 flex flex-wrap items-end gap-3" id="suppressionForm">
+            <div>
+                <label for="suppressionDays" class="block text-sm font-medium text-ink-2">Days</label>
+                <input type="number" id="suppressionDays" min="0" step="1" inputmode="numeric"
+                       class="mt-1 w-28 rounded-lg border border-line-strong bg-page px-3 py-2 text-sm tabular-nums text-ink
+                              focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand">
+            </div>
+            <button type="submit" class="rounded-lg bg-brand px-5 py-2.5 text-sm font-medium text-on-brand hover:opacity-90">Save</button>
+            <p class="text-xs text-ink-3" id="suppressionNote"></p>
+        </form>
+    </div>
+
     <div class="rounded-xl border border-line bg-surface px-6 py-6">
         <h2 class="font-semibold text-ink">System</h2>
         <dl class="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2" id="systemInfo"></dl>
@@ -144,7 +179,50 @@ document.getElementById('resetBtn').addEventListener('click', async () => {
     showToast('Reset to default');
 });
 
+async function loadSuppression() {
+    const d = await api('/api/settings/suppression');
+    const field = document.getElementById('suppressionDays');
+    field.value = d.days;
+    field.max = d.max_days;
+    paintSuppressionNote(d);
+}
+
+// The note says which of the two sources the number came from. "Currently 0"
+// alone leaves him unable to tell a value he set from a value the box was
+// deployed with, and those need different actions when it is wrong.
+function paintSuppressionNote(d) {
+    document.getElementById('suppressionNote').textContent = d.is_default
+        ? `Currently ${d.days} — the value this installation was set up with.`
+        : `Currently ${d.days}, set here. Takes effect on the next campaign.`;
+}
+
+document.getElementById('suppressionForm').addEventListener('submit', async function (e) {
+    e.preventDefault();
+    const days = parseInt(document.getElementById('suppressionDays').value, 10);
+    if (!Number.isFinite(days)) { showToast('Enter a whole number of days', 'error'); return; }
+
+    const res = await fetch('/api/settings/suppression', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ days }),
+    });
+    const d = await res.json();
+    if (!res.ok || !d.success) {
+        // A 422 from the request-body validator carries a list of field errors,
+        // not a sentence, and rendering it directly reads as "[object Object]".
+        // The service's own 400 is the sentence anyone should see; this only has
+        // to avoid making a hand-crafted request look like a bug in the page.
+        const detail = typeof d.detail === 'string' ? d.detail : null;
+        showToast(detail || 'Could not save — enter a whole number of days', 'error');
+        return;
+    }
+    showToast(days === 0 ? 'Saved — nobody will be held back'
+                         : `Saved — ${days} day${days === 1 ? '' : 's'}`);
+    paintSuppressionNote(d);
+});
+
 loadAutoReply();
 loadSystem();
+loadSuppression();
 </script>
 {% endblock %}

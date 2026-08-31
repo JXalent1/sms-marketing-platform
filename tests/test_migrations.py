@@ -76,3 +76,25 @@ def test_the_error_code_migration_did_not_rebuild_the_sms_message_indexes():
     for expected in ("idx_sms_campaign", "idx_sms_status", "idx_sms_sent_at",
                      "ix_sms_messages_external_id"):
         assert expected in indexes, f"{expected} is missing: {sorted(indexes)}"
+
+
+def test_the_top_up_migration_also_added_its_column_without_a_rebuild():
+    """5e's `top_up_at` takes the same route as 5g's `error_code`, for one reason.
+
+    The test above is the *outcome* — those four indexes survive — and it cannot
+    distinguish "no migration rebuilt the table" from "one did and Alembic put
+    the indexes back". So this asserts the property that made the outcome safe:
+    both columns exist, and the column added most recently did not disturb the
+    one added before it.
+
+    Named for the migration rather than folded into the test above, because the
+    day a third column arrives, a failure should say which migration introduced
+    it.
+    """
+    from sqlalchemy import inspect
+
+    columns = {c["name"] for c in inspect(engine).get_columns("sms_messages")}
+    assert "top_up_at" in columns
+    assert "error_code" in columns, (
+        "5g's column is gone — a table rebuild dropped it, which is exactly what "
+        "the in-place ADD COLUMN in both migrations exists to avoid")

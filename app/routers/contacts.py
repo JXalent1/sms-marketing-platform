@@ -14,8 +14,12 @@ from pydantic import BaseModel
 from typing import List, Optional
 from app.core.database import get_db
 from app.core.auth import require_auth
+from app.models.category import Category
 from app.models.contact_list import ContactList, ContactListMember
-from app.services import contact_service, contact_query_service
+from app.services import (
+    blocklist_service, category_service, contact_service, contact_query_service,
+)
+from app.sms.phone import is_valid, normalize
 import logging
 
 logger = logging.getLogger("contacts")
@@ -35,7 +39,21 @@ class CreateContactRequest(BaseModel):
     phone: str
     full_name: Optional[str] = None
     email: Optional[str] = None
+    company: Optional[str] = None
     list_name: Optional[str] = None
+    category_id: Optional[int] = None
+
+
+# What someone adding a blocklisted number by hand is told. Adding a contact and
+# unblocking a number are different acts, and only one of them is on this form:
+# an opt-out is a legal record, and a form that silently overrode it would make
+# every STOP on the box provisional.
+BLOCKED_CONTACT_ERROR = (
+    "That number is on your opt-out list, so it was not added. Somebody using it "
+    "asked not to be texted, or a carrier reported it as undeliverable. If they "
+    "have asked to be added back, remove them from Opt-outs first — that keeps "
+    "the record of what changed and when."
+)
 
 
 class BulkCategoryRequest(BaseModel):
@@ -91,9 +109,54 @@ async def export_contacts(q: str = None, category_id: int = None,
 @router.post("")
 async def create_contact(payload: CreateContactRequest, db: Session = Depends(get_db),
                          user: str = Depends(require_auth)):
+    """Add one contact by hand — somebody phoned the auction house and asked.
+
+    This endpoint existed with no form in front of it, so the answer to that
+    phone call was "build a one-row CSV". 5e A3 gives it a form and, with it, the
+    two guards an import has always had:
+
+    **Normalisation.** `upsert_contact()` normalises to E.164 and refuses a
+    number that is not one, which is what makes `contacts.phone` unique mean
+    anything — "(954) 600-0777" typed here and `+19546000777` in tomorrow's CSV
+    are one person, not two.
+
+    **The blocklist.** An import skips an opted-out number outright: not created,
+    not tagged, not added to the list. Typing it by hand must not be the way
+    round that. It is refused rather than silently skipped, because unlike a
+    6,000-row file this is one number somebody deliberately entered and the
+    honest answer is why it did not go in.
+
+    Both are checked *before* anything is written. A contact created and then
+    found to be blocked would leave a row the client can see on the Contacts
+    screen and that no campaign will ever text — which looks like a bug in the
+    send path rather than an opt-out being honoured.
+    """
+    phone = normalize(payload.phone)
+    if not phone or not is_valid(phone):
+        raise HTTPException(status_code=400, detail="Invalid phone number")
+    if blocklist_service.is_blocked(db, phone):
+        raise HTTPException(status_code=409, detail=BLOCKED_CONTACT_ERROR)
+
+    # The category is resolved here, before the contact is written, for the same
+    # reason `import_service._resolve_category()` does it: `tag_contact()`
+    # validates the tag's *source* and never the category, and SQLite does not
+    # enforce the foreign key, so an id naming nothing writes a dangling
+    # `contact_categories` row and reports success. That row then keeps the
+    # contact alive forever through `_still_referenced()` on an undo. A typo must
+    # not turn into a quietly mis-tagged contact.
+    if payload.category_id is not None and db.get(Category, payload.category_id) is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No category with id {payload.category_id}.")
+
+    # Company rides in `attributes` rather than in a column of its own: that is
+    # where the CSV import puts it and where the Contacts search already looks
+    # for it, so a hand-added contact is findable the same way an imported one is.
+    attributes = {"company": payload.company.strip()} if (payload.company or "").strip() else None
+
     contact = contact_service.upsert_contact(
-        db, phone=payload.phone, full_name=payload.full_name,
-        email=payload.email, source="manual",
+        db, phone=phone, full_name=payload.full_name,
+        email=payload.email, source="manual", attributes=attributes,
     )
     if not contact:
         raise HTTPException(status_code=400, detail="Invalid phone number")
@@ -102,7 +165,16 @@ async def create_contact(payload: CreateContactRequest, db: Session = Depends(ge
         target = contact_service.get_or_create_list(db, payload.list_name, source="manual")
         contact_service.add_to_list(db, target.id, contact.id)
 
-    return {"success": True, "contact_id": contact.id, "phone": contact.phone}
+    tagged = False
+    if payload.category_id is not None:
+        try:
+            tagged = category_service.tag_contact(
+                db, contact.id, payload.category_id, source="manual")
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+    return {"success": True, "contact_id": contact.id, "phone": contact.phone,
+            "tagged": tagged}
 
 
 @router.post("/bulk/add-category")

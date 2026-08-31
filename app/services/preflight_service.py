@@ -1,9 +1,15 @@
-"""Pre-flight checks and recent-contact suppression.
+"""Pre-flight checks: is this the right message, to the right people?
 
 Everything in here answers one question: *is this the right message, to the
 right people, at a price he agreed to?* The client runs a different-niche
 auction almost every day, and the failure this module exists to prevent is a
 memorabilia collector getting a text about a walk-in cooler.
+
+The suppression window moved to `suppression_service.py` in 5e. It is a rule
+about who gets a text rather than a check on the message, it is on the escalation
+list in its own right, and its number now comes from the database. This module
+reads it — `check_recent_overlap()` is handed the window rather than looking it
+up a second way, so the row and the send path cannot describe different windows.
 
 Two design rules worth stating.
 
@@ -26,8 +32,9 @@ nothing in this file can weaken either, and nothing here is on the path between
 a send and those checks.
 """
 
+import logging
 import re
-from datetime import datetime, timedelta
+from datetime import datetime
 from decimal import Decimal
 from typing import Any, Callable, List, Optional, Sequence, Tuple
 
@@ -36,9 +43,12 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.models.category import Category
 from app.services import billing_service
+from app.services.suppression_service import suppression_days
 from app.sms.compliance import STOP_KEYWORDS
 from app.sms.phone import find_risky_links
 from app.sms.segments import count_segments, describe
+
+logger = logging.getLogger("preflight")
 
 PASS, WARN, FAIL = "pass", "warn", "fail"
 
@@ -51,44 +61,6 @@ OPENING_CHARS = 64
 
 def _check(key: str, label: str, status: str, reason: str, **extra) -> dict:
     return {"key": key, "label": label, "status": status, "reason": reason, **extra}
-
-
-# ─── Recent-contact suppression ─────────────────────────────────────────────
-
-def suppression_cutoff(now: Optional[datetime] = None) -> str:
-    """ISO timestamp before which a contact is considered "not texted recently".
-
-    Returned as a string because `contacts.last_messaged_at` is an ISO string
-    and both are produced by `datetime.isoformat()` — same format, so a
-    lexicographic comparison is a chronological one. Parsing every contact's
-    timestamp to compare it would be the same answer, slower, and would throw on
-    the one malformed row.
-    """
-    now = now or datetime.now()
-    return (now - timedelta(days=settings.RECENT_CONTACT_SUPPRESSION_DAYS)).isoformat()
-
-
-def partition_recent(recipients: Sequence, cutoff: Optional[str] = None) -> Tuple[List, List]:
-    """Split recipients into (sendable, recently texted).
-
-    Deliberately blind to category. A buyer tagged Food Service, Equipment and
-    Estates is one person with one phone, and three correct campaigns in a week
-    is still three texts in a week to him. The reference system suppressed
-    within a list and re-texted the overlap; the overlap is where the opt-outs
-    came from.
-    """
-    cutoff = cutoff or suppression_cutoff()
-    sendable, suppressed = [], []
-    for contact in recipients:
-        last = getattr(contact, "last_messaged_at", None)
-        (suppressed if last and last > cutoff else sendable).append(contact)
-    return sendable, suppressed
-
-
-def suppression_reason() -> str:
-    days = settings.RECENT_CONTACT_SUPPRESSION_DAYS
-    return (f"Texted within the last {days} day{'s' if days != 1 else ''} — held back "
-            f"so nobody gets two messages in a row")
 
 
 # ─── Segments, measured on what actually reaches a handset ──────────────────
@@ -289,18 +261,58 @@ def check_merge_expansion(totals: dict) -> dict:
     )
 
 
-def check_recent_overlap(suppressed_count: int, sendable_count: int) -> dict:
-    days = settings.RECENT_CONTACT_SUPPRESSION_DAYS
+def check_recent_overlap(days: int, suppressed_count: int, sendable_count: int,
+                         clears_at: Optional[str] = None) -> dict:
+    """What the suppression window is doing to this audience, before it is queued.
+
+    `days` is passed in rather than read from config here: this row and the send
+    path have to be describing the same window, and the send path's window now
+    comes from the database. A second reader would eventually report the number
+    the campaign was not actually filtered with.
+
+    A window of 0 holds nobody back, so the row says that plainly rather than
+    reporting "nobody was texted in the last 0 days", which reads like a fact
+    about the audience instead of a fact about the rule.
+    """
+    if days <= 0:
+        return _check("recent_overlap", "Recently texted", PASS,
+                      "The hold-back window is off, so nobody is held back for having "
+                      "been texted recently.")
     if not suppressed_count:
         return _check("recent_overlap", "Recently texted", PASS,
                       f"Nobody in this audience was texted in the last {days} days.")
+
+    # The clearing time is the actionable half. "1,204 held back" invites "held
+    # back until when?", and the answer decides whether he waits or re-cuts the
+    # audience. Omitted rather than guessed when it cannot be computed.
+    when = f" The hold clears at {_clock(clears_at)}." if clears_at else ""
     return _check(
         "recent_overlap", "Recently texted", WARN,
         f"{suppressed_count:,} of {suppressed_count + sendable_count:,} contacts were "
         f"texted in the last {days} days and will be held back. "
-        f"{sendable_count:,} will receive this message.",
+        f"{sendable_count:,} will receive this message.{when}",
         suppressed_count=suppressed_count,
+        suppression_days=days,
+        clears_at=clears_at,
     )
+
+
+def _clock(stamp: Optional[str]) -> str:
+    """An ISO timestamp as "10:11am on 29 Aug", or the raw value if unparseable.
+
+    Server-local, like every other time this product prints. Never raises: this
+    is decoration on a checklist row and a malformed timestamp must not take the
+    pre-flight report down with it.
+    """
+    try:
+        when = datetime.fromisoformat(stamp)
+    except (TypeError, ValueError):
+        return str(stamp)
+    hour = when.hour % 12 or 12
+    stamped = f"{hour}:{when.minute:02d}{'am' if when.hour < 12 else 'pm'}"
+    if when.date() == datetime.now().date():
+        return stamped
+    return f"{stamped} on {when.day} {when.strftime('%b')}"
 
 
 def check_link_shortener(body: str) -> dict:
@@ -379,7 +391,8 @@ def check_category_match(db: Session, category_slug: Optional[str], body: str) -
 
 def build_report(db: Session, *, category_slug: Optional[str], message_template: str,
                  totals: dict, sendable_count: int, suppressed_count: int,
-                 capacity_assessment: dict, send_path_assessment: dict) -> dict:
+                 capacity_assessment: dict, send_path_assessment: dict,
+                 suppression_clears_at: Optional[str] = None) -> dict:
     """Every check, plus the numbers the composer's summary panel renders.
 
     Checks come back in a fixed order — the send path first and capacity second,
@@ -402,6 +415,7 @@ def build_report(db: Session, *, category_slug: Optional[str], message_template:
     # 3-segment guideline is about what lands on a handset.
     per_message = totals["max_segments_per_message"]
     total_segments = totals["total_segments"]
+    days = suppression_days(db)
 
     checks = [
         check_send_path(send_path_assessment),
@@ -410,7 +424,8 @@ def build_report(db: Session, *, category_slug: Optional[str], message_template:
         check_brand_identified(message_template),
         check_segment_count(per_message),
         check_merge_expansion(totals),
-        check_recent_overlap(suppressed_count, sendable_count),
+        check_recent_overlap(days, suppressed_count, sendable_count,
+                             suppression_clears_at),
         check_link_shortener(message_template),
         check_category_match(db, category_slug, message_template),
     ]
@@ -421,6 +436,8 @@ def build_report(db: Session, *, category_slug: Optional[str], message_template:
         "counts": {
             "recipients": sendable_count,
             "suppressed": suppressed_count,
+            "suppression_days": days,
+            "suppression_clears_at": suppression_clears_at,
             # What the live counter shows, kept so the two panels can be
             # compared rather than silently disagreeing.
             "segments_per_message": template_per_message,

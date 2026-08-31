@@ -345,3 +345,101 @@ def test_preflight_refusal_names_no_carrier_and_quotes_no_money():
     assert "$" not in detail, detail
     assert not CARRIER_RE.search(detail), detail
     assert "segments" in detail
+
+
+# ─── 5e's new client-facing surfaces ────────────────────────────────────────
+#
+# The lesson this file exists for: every white-label leak found so far was
+# assembled at runtime — an f-string, a URL built from the provider name, a
+# `str(e)` off an SDK exception. The gate greps for literals and structurally
+# cannot see any of them, so a new surface gets a case here, which runs the code
+# rather than reading it.
+#
+# 5e adds three: a campaign created from an upload, a top-up refusal, and the
+# reason a campaign that reached nobody now carries. The last two are the risky
+# ones — both are sentences built at runtime and stored on a row the client reads
+# back off the campaign rail.
+
+def test_a_top_up_refusal_on_a_degraded_box_names_no_carrier():
+    """The refusal is `send_path_assessment()`'s wording, and has to stay so.
+
+    `provider_fallback()` carries raw SDK text — `module 'telnyx' has no
+    attribute 'Telnyx'` — and this refusal travels straight into an HTTP response
+    body. A future edit that "helps support" by appending the cause is the exact
+    leak session 5c removed from the pill.
+    """
+    from app.services import campaign_topup
+    from app.models.campaign import Campaign as _Campaign
+    from app.sms.factory import send_path_assessment
+    from tests._provider_setup import degraded_provider
+
+    from app.models.contact import Contact
+    from app.models.contact_list import ContactList, ContactListMember
+    from app.services import contact_service
+
+    db = SessionLocal()
+    try:
+        # Real state, because the degraded refusal is the *last* thing `assess()`
+        # checks: the state check and the list-audience check come first, both
+        # deliberately, and a campaign that trips either never reaches the branch
+        # under test. An earlier version of this test used `audience="all"` and
+        # was silently exercising the wrong refusal — its own identity assertion
+        # is what caught that, which is the argument for pinning identity rather
+        # than pattern-matching for a carrier name.
+        contact = contact_service.upsert_contact(
+            db, phone="+15555559901", full_name="WL", source="whitelabel-test")
+        listing = contact_service.get_or_create_list(db, "whitelabel top-up list")
+        campaign = _Campaign(id=0, status="completed",
+                             audience=f"list:{listing.id}",
+                             name="wl", message_template="hi",
+                             created_at="2000-01-01T00:00:00")
+        contact_service.add_to_list(db, listing.id, contact.id)
+        db.commit()
+
+        with degraded_provider():
+            verdict = asyncio.run(campaign_topup.assess(db, campaign))
+            expected = send_path_assessment()["abort_detail"]
+    finally:
+        # The campaign is never persisted; the list and contact are, so they go.
+        db.query(ContactListMember).filter(
+            ContactListMember.list_id == listing.id).delete(synchronize_session=False)
+        db.query(ContactList).filter(ContactList.id == listing.id).delete(
+            synchronize_session=False)
+        db.query(Contact).filter(Contact.phone == "+15555559901").delete(
+            synchronize_session=False)
+        db.commit()
+        db.close()
+
+    # The *degraded* refusal specifically. `assess()` has three other ways to
+    # refuse — wrong state, nobody new, no capacity — and every one of them is
+    # carrier-free by construction, so a test that accepted any of them would go
+    # green while never exercising the one built from SDK-adjacent state.
+    assert verdict["refusal"] == expected, (
+        f"expected the degraded-send-path refusal, got {verdict['refusal']!r}")
+    assert not CARRIER_RE.search(verdict["refusal"]), verdict["refusal"]
+    assert "$" not in verdict["refusal"], verdict["refusal"]
+
+
+def test_the_zero_send_reasons_name_no_carrier_and_quote_no_money():
+    """Stored as `abort_reason` and rendered verbatim on the campaign rail.
+
+    Every branch, not the one a campaign in this suite happens to reach: these
+    are the entire user-visible output of A7 and there is no detail screen behind
+    them. A reason that quoted our wholesale rate would put our margin on the one
+    screen he reads after every campaign.
+    """
+    from app.services import campaign_outcome
+
+    rate = str(settings.WHOLESALE_COST_PER_SEGMENT)
+    reasons = [
+        campaign_outcome.zero_send_reason(queued=0, suppressed=6857),
+        campaign_outcome.zero_send_reason(queued=0),
+        campaign_outcome.zero_send_reason(queued=4, blocked=4),
+        campaign_outcome.zero_send_reason(queued=4, region_skipped=4),
+        campaign_outcome.zero_send_reason(queued=4, failed=4),
+        campaign_outcome.zero_send_reason(queued=9, blocked=2, failed=1),
+    ]
+    for reason in reasons:
+        assert not CARRIER_RE.search(reason), reason
+        assert "$" not in reason, reason
+        assert rate not in reason, reason

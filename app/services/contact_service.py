@@ -95,13 +95,28 @@ def get_or_create_list(db: Session, name: str, description: str = None,
 
 
 def add_to_list(db: Session, list_id: int, contact_id: int, commit: bool = True) -> bool:
+    """Put a contact on a list. Returns False if it was already there.
+
+    `added_at` is written explicitly rather than left to the column's server
+    default, and that is load-bearing since 5e. The default is SQLite's
+    `CURRENT_TIMESTAMP`, which is **UTC**; every other timestamp this application
+    writes — `campaigns.created_at`, `import_service`'s own membership rows —
+    is `datetime.now()`, which is local. A top-up asks "who was added to this
+    list after the campaign was created", and comparing a UTC row against a local
+    cutoff makes every hand-added contact look up to five hours newer than it is,
+    so somebody added shortly *before* the campaign reads as added since.
+
+    Two clocks in one column is the same defect as two formats in one column, and
+    the fix is the same: one writer, one clock.
+    """
     exists = db.query(ContactListMember).filter(
         ContactListMember.list_id == list_id,
         ContactListMember.contact_id == contact_id,
     ).first()
     if exists:
         return False
-    db.add(ContactListMember(list_id=list_id, contact_id=contact_id))
+    db.add(ContactListMember(list_id=list_id, contact_id=contact_id,
+                             added_at=datetime.now().isoformat()))
     if commit:
         db.commit()
     return True

@@ -22,8 +22,9 @@ from app.core.database import engine
 from app.sms.factory import get_provider
 import app.models                                    # noqa: F401 — registers tables
 
-from app.routers import (pages, dashboard, campaigns, contacts, categories, imports,
-                         blocklist, usage, settings as settings_router)
+from app.routers import (pages, dashboard, campaigns, campaign_uploads, contacts,
+                         categories, imports, blocklist, usage,
+                         settings as settings_router)
 from app.routers.webhooks import telnyx as telnyx_webhooks, twilio as twilio_webhooks
 
 logger = logging.getLogger("app")
@@ -193,6 +194,9 @@ app.include_router(pages.router)
 app.include_router(dashboard.router)
 app.include_router(dashboard.api_router)
 app.include_router(campaigns.router)
+# The campaign-first flow shares /api/campaigns and is registered after it, so
+# `POST /{campaign_id}/top-up` cannot shadow anything campaigns.py already owns.
+app.include_router(campaign_uploads.router)
 app.include_router(contacts.router)
 app.include_router(contacts.lists_router)
 app.include_router(categories.router)

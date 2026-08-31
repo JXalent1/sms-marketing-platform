@@ -51,8 +51,14 @@ audience. Two screens, and the campaign has no memory of which upload fed it.
 Wanted: the campaign creation flow starts with an upload. The list it creates is named
 for the campaign, so a report on 8/25 reads "Italian restaurants" and not a list id.
 
-- Reuse `POST /api/contacts/import/preview` and `/import` — do not write a second
+- ~~Reuse `POST /api/contacts/import/preview` and `/import`~~ — do not write a second
   importer. The preview counts are the whole reason the existing flow is trustworthy.
+  <br>**Corrected during the session:** those two endpoints were retired by session 3b
+  and answer 400 naming `/api/imports/*` (`status.md` → module 3b). The instruction's
+  *intent* — reuse the importer, do not write a second one — is honoured through
+  `import_service.preview()` / `commit()` directly, which is what `/api/imports/*` calls.
+  Struck rather than silently swapped, per RULES.md → "Session specs vs resolved
+  decisions".
 - The created list's `name` derives from the campaign name; collisions get a suffix
   rather than an error (`ContactList.name` is unique).
 - The campaign is created with `audience = "list:<id>"`.
@@ -85,6 +91,18 @@ in its totals.
   suppression. No shortcuts because the campaign already ran once.
 - Guard the obvious hazard: a top-up must never re-send to someone the campaign already
   reached. Test that explicitly.
+  <br>**Found during the session, by review:** that guard is necessary and was not
+  sufficient. It filters a *candidate set*, and building that set as "everyone the
+  audience selector resolves to now, minus everyone with a message row" put two groups
+  in it who were never added to anything — the recipients a `batch_size` cap
+  deliberately withheld, and (on an `all` or `category:` audience) every contact
+  imported afterwards for a different auction. The candidate set is now
+  "members of this campaign's list added after the campaign was created", read from
+  `contact_list_members.added_at`, and a top-up requires a `list:` audience. See
+  `status.md` → module 5e → "What the fresh-context review changed".
+- **Not covered by this spec and escalated:** whether a top-up should reach somebody the
+  hold-back window held back, once the hold has cleared. A4 says what a top-up must not
+  do and is silent on this. `decisions/005-topping-up-a-contact-the-window-held-back.open.md`.
 - The campaign's totals move; a distinguishable record of the top-up is kept so a report
   can show "1,200 + 5 added 26 Aug" rather than a silently different number.
 - Only for a campaign that actually sent. A draft is edited, not topped up. An aborted

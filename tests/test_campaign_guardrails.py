@@ -34,7 +34,7 @@ from app.core.database import SessionLocal
 from app.main import app
 from app.models.campaign import Campaign
 from app.models.sms_message import SMSMessage, BILLABLE_STATUSES
-from app.services import preflight_service
+from app.services import preflight_service, suppression_service
 from app.services.campaign_service import CampaignError, CampaignService
 # Scheduling moved to campaign_dispatch in session 5d, when campaign_service
 # crossed the 500-line rule. Same functions, same behaviour — the split is along
@@ -200,9 +200,16 @@ def test_suppression_ignores_category():
         def __init__(self, last):
             self.last_messaged_at = last
 
-    sendable, suppressed = preflight_service.partition_recent(
-        [_Contact(None), _Contact(iso_days_ago(2)), _Contact(iso_days_ago(5))]
-    )
+    db = SessionLocal()
+    try:
+        # A Session is required, not optional: since 5e A5 the window comes from
+        # app_settings with `.env` as the default, and a caller that could omit
+        # the session would silently get the `.env` value on that one path.
+        sendable, suppressed = suppression_service.partition_recent(
+            db, [_Contact(None), _Contact(iso_days_ago(2)), _Contact(iso_days_ago(5))]
+        )
+    finally:
+        db.close()
     assert len(sendable) == 2 and len(suppressed) == 1
 
 

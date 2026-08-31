@@ -21,7 +21,9 @@ from app.services.campaign_service import (
     CampaignService, CampaignError, wholesale_estimate,
 )
 from app.services.campaign_dispatch import send_campaign_background
-from app.services import contact_service, preflight_service
+from app.services import (
+    campaign_topup, contact_service, preflight_service, suppression_service,
+)
 from app.services.blocklist_service import load_blocked_set
 from app.sms.factory import get_provider, send_path_assessment
 from app.sms.segments import describe
@@ -84,7 +86,10 @@ def _audience_split(db: Session, audience: Optional[str],
     A bad selector reports zeros rather than raising: this runs on every
     keystroke and a half-typed selector is not an error worth a 500.
     """
-    empty = {"recipients": 0, "suppressed": 0, "opted_out": 0, "sample": None}
+    days = suppression_service.suppression_days(db)
+    empty = {"recipients": 0, "suppressed": 0, "opted_out": 0, "sample": None,
+             "suppression_days": days, "suppression_clears_at": None,
+             "sendable": []}
     if not audience:
         return empty
     try:
@@ -92,7 +97,7 @@ def _audience_split(db: Session, audience: Optional[str],
     except ValueError:
         return empty
 
-    sendable, suppressed = preflight_service.partition_recent(resolved)
+    sendable, suppressed = suppression_service.partition_recent(db, resolved)
     if batch_size and batch_size > 0:
         sendable = sendable[:batch_size]
 
@@ -105,6 +110,14 @@ def _audience_split(db: Session, audience: Optional[str],
         "suppressed": len(suppressed),
         "opted_out": sum(1 for c in resolved if c.phone in blocked),
         "sample": sendable[0] if sendable else None,
+        # A6: the held-back count already existed and was only ever shown as a
+        # bare number. When it clears is the half that decides whether he waits
+        # or re-cuts the audience, and it is computable from the set we are
+        # already holding — so it is computed here, once, rather than left to a
+        # screen to work out from a window it would have to look up separately.
+        "suppression_days": days,
+        "suppression_clears_at": suppression_service.suppression_clears_at(
+            suppressed, days),
         # The resolved audience itself, for pre-flight's per-recipient render.
         # /preview ignores it: that runs on every keystroke and must stay cheap.
         "sendable": sendable,
@@ -140,6 +153,11 @@ async def preview(payload: PreviewRequest, db: Session = Depends(get_db),
         **breakdown,
         "recipients": recipients,
         "suppressed": split["suppressed"],
+        # A6. The composer draws these; it does not decide when the hold clears
+        # and it does not know the window — a screen that computed either would
+        # eventually quote a window the send path was not filtering with.
+        "suppression_days": split["suppression_days"],
+        "suppression_clears_at": split["suppression_clears_at"],
         "opted_out": split["opted_out"],
         "preview_text": preview_text,
         "sample_name": sample.display_name() if sample else None,
@@ -199,6 +217,7 @@ async def preflight(payload: PreflightRequest, db: Session = Depends(get_db),
         # every row below it moot: a box that cannot reach a carrier has enough
         # capacity for anything and will deliver none of it.
         send_path_assessment=send_path_assessment(),
+        suppression_clears_at=split["suppression_clears_at"],
     )
     report["counts"]["opted_out"] = split["opted_out"]
     return report
@@ -267,8 +286,10 @@ async def list_campaigns(skip: int = 0, limit: int = 50,
                          db: Session = Depends(get_db), user: str = Depends(require_auth)):
     campaigns = (db.query(Campaign).order_by(Campaign.id.desc())
                  .offset(skip).limit(limit).all())
+    # One grouped query for the page's top-ups, not one per row.
+    history = campaign_topup.top_up_history(db, [c.id for c in campaigns])
     return {
-        "campaigns": [_campaign_dict(db, c) for c in campaigns],
+        "campaigns": [_campaign_dict(db, c, history.get(c.id)) for c in campaigns],
         "total": db.query(Campaign).count(),
     }
 
@@ -295,7 +316,9 @@ async def get_campaign(campaign_id: int, db: Session = Depends(get_db),
     ).limit(200).all()
 
     return {
-        "campaign": {**_campaign_dict(db, campaign),
+        "campaign": {**_campaign_dict(db, campaign,
+                                     campaign_topup.top_up_history(
+                                         db, [campaign_id]).get(campaign_id)),
                      "delivered_count": delivered,
                      "undelivered_count": undelivered},
         "messages": [{
@@ -367,7 +390,7 @@ async def send_test_sms(request: Request, payload: TestSMSRequest,
     return {"success": False, "error": scrub_provider_text(result.error)}
 
 
-def _campaign_dict(db: Session, c: Campaign) -> dict:
+def _campaign_dict(db: Session, c: Campaign, top_ups: Optional[list] = None) -> dict:
     """The client's view of a campaign.
 
     The campaign's cost estimate is deliberately absent. It is priced at our
@@ -405,6 +428,11 @@ def _campaign_dict(db: Session, c: Campaign) -> dict:
         "skipped_count": c.skipped_count,
         "suppressed_count": c.suppressed_count,
         "estimated_segments": c.estimated_segments,
+        # "1,200 + 5 added 26 Aug". Passed in by the caller, which fetched the
+        # whole page in one grouped query — see `campaign_topup.top_up_history`.
+        # A lookup here would make the fifty-row rail fifty queries and leave
+        # every assertion in the suite still passing.
+        "top_ups": top_ups or [],
         "abort_reason": c.abort_reason,
         "scheduled_at": c.scheduled_at,
         "created_at": c.created_at,

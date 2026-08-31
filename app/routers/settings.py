@@ -1,12 +1,13 @@
 """Runtime settings API (auto-reply text, system info)."""
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from app.core.database import get_db
 from app.core.auth import require_auth
 from app.core.config import settings as app_settings
 from app.models.app_setting import get_setting, set_setting, AUTO_REPLY_KEY
+from app.services import suppression_service
 from app.sms import compliance
 from app.sms.factory import send_mode, active_sender_number
 from app.sms.segments import describe
@@ -16,6 +17,10 @@ router = APIRouter(prefix="/api/settings", tags=["settings"])
 
 class AutoReplyRequest(BaseModel):
     message: str
+
+
+class SuppressionRequest(BaseModel):
+    days: int
 
 
 @router.get("/auto-reply")
@@ -38,6 +43,43 @@ async def reset_auto_reply(db: Session = Depends(get_db), user: str = Depends(re
     default = compliance.default_auto_reply()
     set_setting(db, AUTO_REPLY_KEY, default)
     return {"success": True, "value": default}
+
+
+@router.get("/suppression")
+async def get_suppression(db: Session = Depends(get_db), user: str = Depends(require_auth)):
+    """The recent-contact hold-back window, and what it is currently doing.
+
+    Surfaced because it can silently withhold an entire audience and did: at 3
+    days it held back 6,856 of 6,857 recipients across two consecutive campaigns,
+    and finding out why took a SQL query against the live database. A rule with
+    that much reach belongs on a screen the person sending can read.
+
+    `max_days` comes from the service so the field's own limit and the value the
+    service will accept cannot drift apart.
+    """
+    return {
+        "days": suppression_service.suppression_days(db),
+        "max_days": suppression_service.SUPPRESSION_DAYS_MAX,
+        "is_default": get_setting(db, suppression_service.SUPPRESSION_DAYS_KEY) is None,
+    }
+
+
+@router.put("/suppression")
+async def update_suppression(payload: SuppressionRequest, db: Session = Depends(get_db),
+                             user: str = Depends(require_auth)):
+    """Set the window. Takes effect on the next send — no restart.
+
+    The value is read fresh out of `app_settings` by every caller on the send
+    path, which is what "without a restart" means here: there is no cached copy
+    to invalidate and no worker holding an old number.
+    """
+    try:
+        days = suppression_service.set_suppression_days(db, payload.days)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"success": True, "days": days,
+            "max_days": suppression_service.SUPPRESSION_DAYS_MAX,
+            "is_default": False}
 
 
 @router.get("/system")
