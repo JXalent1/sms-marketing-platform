@@ -1,0 +1,105 @@
+{% extends "base.html" %}
+{# One person's message history — what makes a phone call possible.
+
+   "You looked at the flooring sale on Tuesday" is the sentence this screen
+   exists to enable, and it is the payoff for keeping the contacts table
+   underneath the per-campaign uploads: the uploads come and go, the person does
+   not.
+
+   Paginated like every other list here. A buyer on the list since February has
+   hundreds of rows. #}
+{% block title %}Contact history{% endblock %}
+
+{% block page_actions %}
+<a href="/contacts"
+   class="inline-flex h-9 items-center rounded-lg border border-line-strong bg-surface px-3 text-[13px] font-medium text-ink
+          hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand">
+  Back to contacts
+</a>
+{% endblock %}
+
+{% block content %}
+<div class="space-y-4">
+
+  <section class="rounded-xl border border-line bg-surface px-5 py-4">
+    <h2 class="text-[17px] font-semibold text-ink" id="whoName">Loading…</h2>
+    <p class="mt-0.5 font-mono text-[13px] text-ink-3" id="whoPhone"></p>
+    <p class="mt-2 text-[12px] text-ink-3" id="whoSummary"></p>
+  </section>
+
+  <section class="overflow-hidden rounded-xl border border-line bg-surface">
+    <div class="overflow-x-auto">
+      <table class="w-full min-w-[680px] text-[13px]">
+        <thead>
+          <tr class="border-b border-line text-left text-[11px] uppercase tracking-[0.06em] text-ink-3">
+            <th class="px-5 py-2.5 font-semibold">Campaign</th>
+            <th class="px-5 py-2.5 font-semibold">Message</th>
+            <th class="px-5 py-2.5 font-semibold">Status</th>
+            <th class="px-5 py-2.5 font-semibold">Sent</th>
+            <th class="px-5 py-2.5 font-semibold">Opened</th>
+          </tr>
+        </thead>
+        <tbody id="msgRows" class="divide-y divide-line">
+          <tr><td colspan="5" class="px-5 py-6 text-ink-3">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <div class="flex items-center justify-between gap-3">
+    <p class="text-[12px] text-ink-3" id="msgCount"></p>
+    <div class="flex gap-2">
+      <button type="button" id="msgPrev"
+              class="rounded-lg border border-line-strong bg-surface px-3 py-1.5 text-[12px] font-medium text-ink hover:bg-surface-2 disabled:opacity-40">Previous</button>
+      <button type="button" id="msgNext"
+              class="rounded-lg border border-line-strong bg-surface px-3 py-1.5 text-[12px] font-medium text-ink hover:bg-surface-2 disabled:opacity-40">Next</button>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const CONTACT_ID = {{ contact_id }};
+const el = (id) => document.getElementById(id);
+let page = 1, pages = 1;
+
+async function loadHistory() {
+    const data = await api(`/api/reports/contacts/${CONTACT_ID}/messages?page=${page}`);
+    if (data.detail) { el('whoName').textContent = data.detail; return; }
+    pages = data.pages;
+
+    el('whoName').textContent = data.contact.name;
+    el('whoPhone').textContent = data.contact.phone;
+    el('whoSummary').textContent =
+        `${data.total.toLocaleString()} message${data.total === 1 ? '' : 's'}`
+        + (data.contact.last_messaged_at
+            ? ` · last texted ${fmtDate(data.contact.last_messaged_at)}` : '');
+
+    el('msgRows').innerHTML = data.messages.length ? data.messages.map(m => `
+        <tr class="hover:bg-surface-2">
+            <td class="px-5 py-2.5">
+                ${m.campaign_id
+                    ? `<a class="text-ink hover:text-brand" href="/history/${m.campaign_id}">${esc(m.campaign_name || ('Campaign ' + m.campaign_id))}</a>`
+                    : '<span class="text-ink-3">—</span>'}
+            </td>
+            <td class="max-w-[36ch] truncate px-5 py-2.5 text-ink-2" title="${esc(m.message)}">${esc(m.message)}</td>
+            <td class="px-5 py-2.5 text-ink-2">${esc(m.status)}</td>
+            <td class="px-5 py-2.5 text-ink-3">${m.sent_at ? esc(fmtDate(m.sent_at)) : '—'}</td>
+            <td class="px-5 py-2.5 text-ink-2">${
+                m.clicks ? `${m.clicks.toLocaleString()}× ${esc(fmtDate(m.last_clicked_at))}` : '<span class="text-ink-3">—</span>'
+            }</td>
+        </tr>`).join('')
+        : '<tr><td colspan="5" class="px-5 py-6 text-ink-3">This contact has never been texted.</td></tr>';
+
+    el('msgCount').textContent = `Page ${data.page} of ${data.pages}`;
+    el('msgPrev').disabled = data.page <= 1;
+    el('msgNext').disabled = data.page >= data.pages;
+}
+
+el('msgPrev').addEventListener('click', () => { if (page > 1) { page -= 1; loadHistory(); } });
+el('msgNext').addEventListener('click', () => { if (page < pages) { page += 1; loadHistory(); } });
+
+loadHistory();
+</script>
+{% endblock %}

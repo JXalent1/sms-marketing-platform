@@ -115,6 +115,11 @@ async function createFromUpload(name, message) {
     if (Number.isFinite(batch)) { form.append('batch_size', batch); }
     const when = el('scheduledAt').value;
     if (when) { form.append('scheduled_at', `${when}:00`); }
+    // The upload path takes the link destination too. Leaving it off here would
+    // make the {link} tag work on one of the two ways a campaign is created,
+    // which is the "guard on one path" defect CLAUDE.md opens on.
+    const target = linkTarget();
+    if (target) { form.append('link_target_url', target); }
 
     const button = el('composer').querySelector('button[type=submit]');
     button.disabled = true;

@@ -1,0 +1,188 @@
+{% extends "base.html" %}
+{# One campaign's report — the screen he forwards to the auction house.
+
+   Every number is drawn, none computed. `report_service` counts them in the
+   database; a figure worked out here would say one thing on screen and another
+   over the API, and the API is what a post-mortem reads.
+
+   Two things this screen is careful about:
+
+   - Clicks are two numbers, always. The people count leads and the filtered
+     count sits beside it in words, because SMS links are opened by carrier
+     scanners before any human sees them and the classification is a heuristic.
+   - The money is his money, net of the month's included segments, and it is
+     labelled as what this campaign *added to the bill* rather than as a price.
+     Our carrier cost does not appear here and is not in the payload. #}
+{% block title %}Campaign report{% endblock %}
+
+{% block page_actions %}
+<a id="exportLink" href="/api/reports/campaigns/{{ campaign_id }}/export"
+   class="inline-flex h-9 items-center rounded-lg border border-line-strong bg-surface px-3 text-[13px] font-medium text-ink
+          hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand">
+  Export CSV
+</a>
+{% endblock %}
+
+{% block content %}
+<div class="space-y-5" data-campaign-id="{{ campaign_id }}">
+
+  <section class="rounded-xl border border-line bg-surface px-5 py-4">
+    <div class="flex flex-wrap items-start gap-3">
+      <div class="min-w-0">
+        <h2 class="truncate text-[17px] font-semibold text-ink" id="repName">Loading…</h2>
+        <p class="mt-0.5 text-[12px] text-ink-3" id="repMeta"></p>
+      </div>
+      <span id="repStatus" class="ml-auto shrink-0 rounded px-2 py-1 text-[12px] font-medium bg-surface-2 text-ink-2"></span>
+    </div>
+    {# Verbatim, in the wording 5h and decision 006 settled. A campaign that
+       reached nobody says why here and nowhere else. #}
+    <p id="repAbort" class="mt-3 hidden rounded-lg border-l-4 border-warn-ink bg-warn-soft px-3 py-3 text-[13px] leading-relaxed text-ink"></p>
+    <p id="repMessage" class="mt-3 whitespace-pre-wrap rounded-lg bg-surface-2 px-3 py-3 text-[13px] leading-relaxed text-ink-2"></p>
+  </section>
+
+  <dl class="grid grid-cols-2 gap-px overflow-hidden rounded-xl border border-line bg-line sm:grid-cols-3 lg:grid-cols-6">
+    <div class="bg-surface px-4 py-3"><dt class="text-[11px] text-ink-3">Recipients</dt>
+      <dd class="mt-0.5 text-[18px] font-semibold tabular-nums text-ink" id="repRecipients">—</dd></div>
+    <div class="bg-surface px-4 py-3"><dt class="text-[11px] text-ink-3">Delivered</dt>
+      <dd class="mt-0.5 text-[18px] font-semibold tabular-nums text-ink" id="repDelivered">—</dd></div>
+    <div class="bg-surface px-4 py-3"><dt class="text-[11px] text-ink-3">Failed</dt>
+      <dd class="mt-0.5 text-[18px] font-semibold tabular-nums text-ink" id="repFailed">—</dd></div>
+    <div class="bg-surface px-4 py-3"><dt class="text-[11px] text-ink-3">Held back</dt>
+      <dd class="mt-0.5 text-[18px] font-semibold tabular-nums text-ink" id="repHeld">—</dd></div>
+    <div class="bg-surface px-4 py-3"><dt class="text-[11px] text-ink-3">Opted out since</dt>
+      <dd class="mt-0.5 text-[18px] font-semibold tabular-nums text-ink" id="repOptOut">—</dd></div>
+    <div class="bg-surface px-4 py-3"><dt class="text-[11px] text-ink-3" id="repCostLabel">Added to the bill</dt>
+      <dd class="mt-0.5 text-[18px] font-semibold tabular-nums text-ink" id="repCost">—</dd></div>
+  </dl>
+
+  <section class="rounded-xl border border-line bg-surface px-5 py-4">
+    <h2 class="text-[13px] font-semibold text-ink">Link clicks</h2>
+    <p class="mt-2 text-[15px] text-ink" id="repClicks">—</p>
+    <p class="mt-1 text-[12px] leading-relaxed text-ink-3" id="repClickNote"></p>
+  </section>
+
+  <section class="overflow-hidden rounded-xl border border-line bg-surface">
+    <div class="flex flex-wrap items-center gap-3 border-b border-line px-5 py-3">
+      <h2 class="text-[13px] font-semibold text-ink">Recipients</h2>
+      <p class="text-[12px] text-ink-3" id="msgCount"></p>
+      <div class="ml-auto flex gap-2">
+        <button type="button" id="msgPrev"
+                class="rounded-lg border border-line-strong bg-page px-3 py-1.5 text-[12px] font-medium text-ink hover:bg-surface-2 disabled:opacity-40">Previous</button>
+        <button type="button" id="msgNext"
+                class="rounded-lg border border-line-strong bg-page px-3 py-1.5 text-[12px] font-medium text-ink hover:bg-surface-2 disabled:opacity-40">Next</button>
+      </div>
+    </div>
+    <div class="overflow-x-auto">
+      <table class="w-full min-w-[640px] text-[13px]">
+        <thead>
+          <tr class="border-b border-line text-left text-[11px] uppercase tracking-[0.06em] text-ink-3">
+            <th class="px-5 py-2.5 font-semibold">Number</th>
+            <th class="px-5 py-2.5 font-semibold">Status</th>
+            <th class="px-5 py-2.5 font-semibold">Sent</th>
+            <th class="px-5 py-2.5 text-right font-semibold">Clicks</th>
+            <th class="px-5 py-2.5 font-semibold">Note</th>
+          </tr>
+        </thead>
+        <tbody id="msgRows" class="divide-y divide-line">
+          <tr><td colspan="5" class="px-5 py-6 text-ink-3">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const CAMPAIGN_ID = {{ campaign_id }};
+const STATUS_STYLES = {
+    draft: 'bg-surface-2 text-ink-2', running: 'bg-brand-soft text-brand',
+    completed: 'bg-good-soft text-good-ink', aborted: 'bg-warn-soft text-warn-ink',
+    failed: 'bg-crit-soft text-crit',
+};
+const el = (id) => document.getElementById(id);
+const money = (v) => (v === null || v === undefined) ? '—'
+    : v.toLocaleString('en-US', { style: 'currency', currency: 'USD' });
+
+let msgPage = 1, msgPages = 1;
+
+async function loadReport() {
+    const data = await api(`/api/reports/campaigns/${CAMPAIGN_ID}`);
+    if (data.detail) { el('repName').textContent = data.detail; return; }
+
+    const c = data.campaign, o = data.outcome, k = data.clicks, cost = data.cost;
+    el('repName').textContent = c.name;
+    el('repMeta').textContent = [
+        c.category_label || c.audience_label || '—',
+        fmtDate(c.started_at || c.scheduled_at || c.created_at),
+    ].join(' · ');
+    el('repStatus').textContent = c.status;
+    el('repStatus').className =
+        'ml-auto shrink-0 rounded px-2 py-1 text-[12px] font-medium ' +
+        (STATUS_STYLES[c.status] || STATUS_STYLES.draft);
+    el('repMessage').textContent = c.message_template;
+
+    if (c.abort_reason) {
+        el('repAbort').textContent = c.abort_reason;
+        el('repAbort').classList.remove('hidden');
+    }
+
+    el('repRecipients').textContent = o.recipients.toLocaleString();
+    el('repDelivered').textContent = o.delivered.toLocaleString();
+    el('repFailed').textContent = o.failed.toLocaleString();
+    el('repHeld').textContent = o.held_back.toLocaleString();
+    el('repOptOut').textContent = o.opted_out.toLocaleString();
+    el('repCostLabel').textContent = `Added to ${cost.billing_month}`;
+    el('repCost').textContent = money(cost.cost);
+
+    // Two numbers and a sentence saying what the second one is. "340 clicks
+    // (12 filtered as automated)" is honest about being a heuristic; a bare
+    // number that quietly excludes things is not.
+    if (!k.links) {
+        el('repClicks').textContent = 'This campaign carried no link.';
+        el('repClickNote').textContent =
+            'Add the link tag to a message and every recipient gets their own, '
+            + 'so the report can name the buyers who opened it.';
+    } else {
+        el('repClicks').textContent =
+            `${k.clickers.toLocaleString()} of ${o.sent.toLocaleString()} people opened the link`
+            + (k.click_through_rate !== null ? ` — ${k.click_through_rate}%` : '');
+        el('repClickNote').textContent =
+            `${k.clicks.toLocaleString()} click${k.clicks === 1 ? '' : 's'} in total`
+            + (k.filtered_clicks
+                ? `, and ${k.filtered_clicks.toLocaleString()} more filtered as automated. `
+                  + 'Carrier scanners and handset link previews open a link before the '
+                  + 'recipient does; that judgement is a best guess, not a certainty.'
+                : '. Nothing was filtered as automated.');
+    }
+}
+
+async function loadMessages() {
+    const data = await api(`/api/reports/campaigns/${CAMPAIGN_ID}/messages?page=${msgPage}`);
+    msgPages = data.pages;
+    const body = el('msgRows');
+    body.innerHTML = data.messages.length ? data.messages.map(m => `
+        <tr class="hover:bg-surface-2">
+            <td class="px-5 py-2.5 font-mono text-[12px] text-ink-2">
+                ${m.contact_id ? `<a class="hover:text-brand" href="/contacts/${m.contact_id}/history">${esc(m.phone)}</a>` : esc(m.phone)}
+            </td>
+            <td class="px-5 py-2.5 text-ink-2">${esc(m.status)}${m.top_up_at ? ' <span class="text-ink-3">(top-up)</span>' : ''}</td>
+            <td class="px-5 py-2.5 text-ink-3">${m.sent_at ? esc(fmtDate(m.sent_at)) : '—'}</td>
+            <td class="px-5 py-2.5 text-right tabular-nums text-ink-2">${(m.clicks || 0).toLocaleString()}</td>
+            <td class="px-5 py-2.5 text-ink-3">${esc(m.error_message || '')}</td>
+        </tr>`).join('')
+        : '<tr><td colspan="5" class="px-5 py-6 text-ink-3">No recipients on this campaign.</td></tr>';
+
+    el('msgCount').textContent =
+        `${data.total.toLocaleString()} row${data.total === 1 ? '' : 's'} · page ${data.page} of ${data.pages}`;
+    el('msgPrev').disabled = data.page <= 1;
+    el('msgNext').disabled = data.page >= data.pages;
+}
+
+el('msgPrev').addEventListener('click', () => { if (msgPage > 1) { msgPage -= 1; loadMessages(); } });
+el('msgNext').addEventListener('click', () => { if (msgPage < msgPages) { msgPage += 1; loadMessages(); } });
+
+loadReport();
+loadMessages();
+</script>
+{% endblock %}

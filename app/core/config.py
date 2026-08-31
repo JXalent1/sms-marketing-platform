@@ -123,6 +123,30 @@ class Settings(BaseSettings):
                         "trading card", "rookie", "collectible", "vintage poster"],
     }
 
+    # ─── Short links ────────────────────────────────────────────────────────
+    # The dedicated short domain, e.g. "a4a.bz". Decided 2026-08-24: a short
+    # domain of its own rather than a subdomain of the main site, because
+    # "a4a.bz/a7k9x2pq" is 16 characters against "go.auctions4america.com/..."
+    # at 32, and on a tight message that difference is a whole second segment.
+    #
+    # Blank is a supported state, not a broken one: the domain may not be
+    # registered when this ships. Blank means the composer *refuses* the merge
+    # tag with a message naming what is missing — it never mints a link nobody
+    # can follow. See app/services/link_service.py.
+    SHORT_LINK_DOMAIN: str = ""
+
+    # Whether the rendered link carries "https://". Off by default because the
+    # 2026-08-24 costing compared bare domains, and handsets linkify a bare
+    # domain with a known TLD. One setting rather than an edit if a carrier or a
+    # handset in this client's audience turns out not to.
+    SHORT_LINK_INCLUDE_SCHEME: bool = False
+
+    # A click arriving sooner than this after the carrier accepted the message
+    # is treated as a scanner rather than a person. Nobody reads a text, unlocks
+    # a handset and taps a link in three seconds; the carrier's own URL scanner
+    # does it in under one. Set to 0 to switch the timing rule off entirely.
+    CLICK_MIN_HUMAN_SECONDS: int = 8
+
     # ─── Alerting ───────────────────────────────────────────────────────────
     ALERT_PHONE: str = ""                        # your number, for balance/scrape alerts
     BALANCE_ALERT_THRESHOLD: float = 50.0

@@ -42,7 +42,9 @@ from app.core.config import settings
 from app.models.campaign import Campaign
 from app.models.category import Category
 from app.models.sms_message import SMSMessage, HELD_BACK_STATUS
-from app.services import contact_service, import_service, suppression_service
+from app.services import (
+    contact_service, import_service, link_service, suppression_service,
+)
 from app.sms.phone import find_risky_links
 from app.sms.segments import count_segments
 from datetime import datetime
@@ -154,12 +156,64 @@ def resolve_category(db: Session, category_id: Optional[int],
 
 # ─── Creation ───────────────────────────────────────────────────────────────
 
-def create_campaign(db: Session, render: Callable[[str, Any], str], *,
+def resolve_link_target(message_template: str,
+                        link_target_url: Optional[str]) -> Optional[str]:
+    """The validated target for this campaign's `{link}` tag, or None.
+
+    Called *before* anything is written, which is the point of it being its own
+    function: 5f A3 requires the tag to refuse at compose time and never at send
+    time, and a campaign that fails this check must leave nothing behind.
+
+    A target given without the tag is kept rather than refused. It is a record
+    of what the client typed, the pre-flight row tells him the message does not
+    use it, and discarding a field somebody filled in is how a form loses work.
+
+    Every refusal comes out as `CampaignError`, including the ones
+    `link_service` raises as `LinkError`. The routers map `CampaignError` to a
+    400 carrying its own sentence, and a second exception type reaching them
+    would be a 500 with "Could not create campaign" over a message that says
+    exactly what to fix.
+    """
+    try:
+        if not link_service.has_link_tag(message_template):
+            return (link_service.validate_target(link_target_url)
+                    if link_target_url else None)
+        if not link_service.configured():
+            raise CampaignError(link_service.NO_DOMAIN_ERROR)
+        return link_service.validate_target(link_target_url)
+    except link_service.LinkError as e:
+        raise CampaignError(str(e)) from e
+
+
+def _mint_links(db: Session, campaign: Campaign, target: Optional[str],
+                contacts: list) -> dict:
+    """{contact_id: rendered URL} — one freshly minted link each, or {}.
+
+    Split out so the two loops below read the same way whether or not this
+    campaign carries a link: they ask the map for a URL and get None when there
+    is none, and `render()` then leaves `{link}` alone. There is no second
+    branch through the queueing code.
+
+    Held-back recipients get a link too. Their message already exists, carries
+    the body it will be sent with, and a top-up can release it months later —
+    minting then would mean re-rendering, which is how one message gets measured
+    and a different one queued.
+    """
+    if not target or not link_service.has_link_tag(campaign.message_template):
+        return {}
+    minted = link_service.mint(db, campaign_id=campaign.id, target_url=target,
+                               contacts=contacts)
+    return {contact.id: (link, link_service.url_for(link.slug))
+            for contact, link in minted}
+
+
+def create_campaign(db: Session, render: Callable[..., str], *,
                     name: str, message_template: str, audience: str,
                     batch_size: Optional[int] = None,
                     category_id: Optional[int] = None,
                     cross_category_override: bool = False,
                     scheduled_at: Optional[str] = None,
+                    link_target_url: Optional[str] = None,
                     list_audience: bool = False) -> Campaign:
     """Build a campaign and queue one pending SMSMessage per recipient.
 
@@ -174,6 +228,10 @@ def create_campaign(db: Session, render: Callable[[str, Any], str], *,
     See decisions/005.
     """
     category = resolve_category(db, category_id, cross_category_override, list_audience)
+    # Before the audience is resolved and long before anything is written. A
+    # missing short-link domain is a refusal at compose time, never at send time
+    # (5f A3), and a campaign refused for it must leave no rows behind.
+    link_target = resolve_link_target(message_template, link_target_url)
 
     recipients = contact_service.resolve_audience(db, audience)
     if not recipients:
@@ -219,6 +277,7 @@ def create_campaign(db: Session, render: Callable[[str, Any], str], *,
         # skipped on the day it goes out.
         skipped_count=len(suppressed),
         scheduled_at=scheduled_at or None,
+        link_target_url=link_target,
         status="draft",
         created_at=datetime.now().isoformat(),
     )
@@ -226,32 +285,52 @@ def create_campaign(db: Session, render: Callable[[str, Any], str], *,
     db.commit()
     db.refresh(campaign)
 
+    # One link per recipient, held back or not — see `_mint_links()`.
+    links = _mint_links(db, campaign, link_target, list(sendable) + list(suppressed))
+
     estimated_segments = 0
+    queued = []
     for contact in sendable:
-        body = render(message_template, contact)
+        link, url = links.get(contact.id, (None, None))
+        body = render(message_template, contact, url)
         estimated_segments += count_segments(body)
-        db.add(SMSMessage(
+        message = SMSMessage(
             campaign_id=campaign.id,
             contact_id=contact.id,
             phone=contact.phone,
             message=body,
             status="pending",
-        ))
+        )
+        db.add(message)
+        queued.append((link, message))
 
     held_back = suppression_service.suppression_reason(db)
     for contact in suppressed:
-        db.add(SMSMessage(
+        link, url = links.get(contact.id, (None, None))
+        message = SMSMessage(
             campaign_id=campaign.id,
             contact_id=contact.id,
             phone=contact.phone,
-            message=render(message_template, contact),
+            message=render(message_template, contact, url),
             # Not "skipped". A region skip is permanent and a hold is not, and
             # until 5h both were written under the one word — so the top-up that
             # could have reached these people after the hold cleared had no way
             # to find them. decisions/005.
             status=HELD_BACK_STATUS,
             error_message=held_back,
-        ))
+        )
+        db.add(message)
+        queued.append((link, message))
+
+    # The link has to know which message it was rendered into: a click is dated
+    # against that message's `sent_at` to tell a scanner from a buyer, and the
+    # per-contact history joins the two. Ids exist only after a flush, so this
+    # is a second pass rather than an argument to the constructor.
+    if links:
+        db.flush()
+        for link, message in queued:
+            if link is not None:
+                link.message_id = message.id
 
     campaign.estimated_segments = estimated_segments
     # Wholesale, i.e. what this campaign costs US. It funds the pre-flight
@@ -273,11 +352,12 @@ def create_campaign(db: Session, render: Callable[[str, Any], str], *,
 
 # ─── A1: upload first, campaign second ──────────────────────────────────────
 
-def create_campaign_from_upload(db: Session, render: Callable[[str, Any], str], *,
+def create_campaign_from_upload(db: Session, render: Callable[..., str], *,
                                 name: str, message_template: str, content: bytes,
                                 category_id: Optional[int] = None,
                                 batch_size: Optional[int] = None,
-                                scheduled_at: Optional[str] = None
+                                scheduled_at: Optional[str] = None,
+                                link_target_url: Optional[str] = None
                                 ) -> Tuple[Campaign, dict]:
     """Import a CSV as this campaign's audience, then create the campaign on it.
 
@@ -299,6 +379,9 @@ def create_campaign_from_upload(db: Session, render: Callable[[str, Any], str], 
     # Validated before the file is touched: an unknown category id must not cost
     # an import that then has to be unwound.
     resolve_category(db, category_id, cross_category_override=False, list_audience=True)
+    # Same reason, one field along: an unconfigured short-link domain must not
+    # cost an import that then has to be unwound.
+    resolve_link_target(message_template, link_target_url)
 
     result = import_service.commit(db, content, category_id, list_name=name)
     list_id = result["list_id"]
@@ -313,6 +396,7 @@ def create_campaign_from_upload(db: Session, render: Callable[[str, Any], str], 
             category_id=category_id,
             cross_category_override=False,
             scheduled_at=scheduled_at,
+            link_target_url=link_target_url,
             list_audience=True,
         )
     except CampaignError as e:

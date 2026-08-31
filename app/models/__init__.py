@@ -11,8 +11,11 @@ from app.models.campaign import Campaign
 from app.models.sms_message import SMSMessage
 from app.models.blocked_number import BlockedNumber
 from app.models.app_setting import AppSetting
+from app.models.short_link import ShortLink, LinkClick
 
 __all__ = [
+    "ShortLink",
+    "LinkClick",
     "Contact",
     "Category",
     "ContactCategory",

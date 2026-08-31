@@ -1730,6 +1730,20 @@ rows.
   split is the pre-flight checklist renderer, which is self-contained; Contacts'
   is the bulk-action bar. Flagged now because the 500-line rule has twice produced a
   better design when it forced a split and twice been discovered mid-session.
+- **`record_click()` increments its counters in Python, not in SQL.** Safe today:
+  `deployment/app.service.template` starts uvicorn with a single worker and the
+  handler calls the recorder inline, so no two clicks interleave. Raise
+  `--workers` and it becomes a read-modify-write across processes, and the loser
+  of the race under-reports a click on the client's report while the
+  `link_clicks` row it came from is still there. The rows are the record; the
+  counters are the fast path. Fix by making it `UPDATE … SET click_count =
+  click_count + 1` if that day comes.
+- **A phone with two message rows on one campaign gets two links, and the report
+  would count it as two clickers.** Nothing in the product creates that state —
+  5h's `R7` mutation had to construct it directly — but `clickers` is a count of
+  links with a click rather than of distinct contacts, and those stop being the
+  same number the moment it can. Worth knowing before anything is built that
+  writes a second row for one recipient.
 - **The live box has still not been deployed to.** Criterion 11 cannot pass until
   someone does. The box still runs the pre-5c nginx config, the hot-patched SDK,
   and pre-5d application code.
@@ -2114,5 +2128,318 @@ it recurs, capture the full gate log before doing anything else.
   and 5e. Unchanged here — blocklist behaviour is escalation item 5 and no 5h
   criterion touches it.
 - **The live box has still not been deployed to.** Criterion 9 cannot pass until
+  someone does. The box runs the pre-5c nginx config, the hot-patched SDK, and
+  pre-5d application code.
+
+---
+
+## Module 5f Part A — short links, click stats and reporting (appended by session 5f, 2026-08-31)
+
+**Status: Part A complete except the deploy.** Nothing in this session can send a
+message: `SMS_PROVIDER` is `console` in `.env`, in `tests/conftest.py` and in
+every subprocess the acceptance script starts. The one carrier stub that reports
+a cost (`tests/_link_setup.CostingProvider`) returns a `SendResult` and touches
+no network. No live credential was read, no contact data was imported, modified
+or deleted outside the suite's scratch database, and `.env` was not written —
+`SHORT_LINK_DOMAIN` is set on the settings object by a context manager that
+always restores it.
+
+Gate green at both ends, twice in a row. **371 tests at start, 424 at end**
+(+53: 26 short links, 17 click filtering, 10 reports and cost).
+
+### A1 — short links, one per recipient
+
+`short_links` and `link_clicks`, plus `link_service.py`. One link per contact per
+campaign, minted at creation, because the whole value of the feature is *which*
+buyers clicked — "340 clicks" is a statistic and "these 340 people" is a phone
+list. About 4,200 rows on a full send, against a table that already carries a
+message row each.
+
+- **One hop, never a chain.** `validate_target()` refuses a non-http(s) target, a
+  public shortener (that is hop two, and it is also how *our* domain ends up
+  filtered for pointing at one), and a link on our own short domain. The route
+  answers a single 302 to the stored target.
+- **302 with `Cache-Control: no-store`, not 301.** A permanent redirect is cached
+  by the handset and by every proxy in between, so the second click never arrives
+  and the report under-counts everyone who looked twice.
+- **Closed minting.** There is no endpoint that creates a link; campaign creation
+  does, and it is behind `require_auth`. The public route resolves and never
+  creates. An open redirector is found and abused within weeks, and the price is
+  the branded sending domain on a carrier blocklist.
+- **Slugs are 8 characters from a 32-letter alphabet with no `0/O/1/l/I`** — a
+  slug gets read out loud — and are checked against the table in one `IN` query
+  per batch rather than one per row.
+- **The redirect does not use `Depends(get_db)`**, for `/health`'s reason: a
+  dependency that raises means the handler never runs. And `record_click()` cannot
+  raise; the route wraps it in a *second* try anyway, so a future edit that puts a
+  raise back costs the click data and not the click-through.
+- `target_url` is stored on every link as well as on the campaign. The campaign's
+  is the current destination a top-up mints against; the link's is where that
+  message's link actually pointed, which is what a report needs after the auction
+  page is gone.
+
+### A2 — scanners are marked, not discarded
+
+`click_classifier.py`. Named crawlers and appliances match unanchored
+(`Googlebot/2.1` has no boundary before its `bot`); generic words are
+`\b`-anchored, because `CUBOT_X20` is an Android handset that appears in real
+user agents and an unanchored `bot` files that buyer as a robot forever. A timing
+rule (`CLICK_MIN_HUMAN_SECONDS`, default 8) is the backstop for a scanner wearing
+a browser's user agent.
+
+**Which way this matcher should fail is the opposite of the auto-block list, and
+the file says so.** `AUTO_BLOCK_ERROR_FRAGMENTS` triggers an irreversible action
+so it is narrow; this one triggers a *presentation* choice with both numbers on
+screen and nothing discarded, so it is allowed to be wider. Every click row keeps
+its user agent and the rule that fired.
+
+Reports lead with the human count and print the filtered one beside it in words —
+"340 clicks (12 filtered as automated)". A bare number that quietly excludes
+things is the defect, not the filtering.
+
+### A3 — the merge tag, and the count that matters
+
+`{link}` renders to each recipient's own URL. `message_render.render()` fills it
+only when a link is supplied and leaves the literal `{link}` otherwise — the same
+rule as any unknown placeholder, so a caller that forgets ships a visibly broken
+message rather than a link that quietly points somewhere wrong.
+
+**Pre-flight measures the rendered link.** It cannot mint 4,200 rows on every
+press of "Run checks", so it renders with `link_service.placeholder_url()`, which
+is the same length *by construction* — same domain, same `SLUG_LENGTH` — and a
+test pins that. Without it the quote is short by nine characters a message; a
+template that measures as one segment lands as two.
+
+The refusal is at **compose** time and never at send time: no
+`SHORT_LINK_DOMAIN`, or no destination, and `resolve_link_target()` raises before
+the audience is resolved, so nothing is created and no link is minted. The
+composer draws the same sentence, because `preflight_service.check_short_link()`
+renders `link_service`'s wording verbatim — the `send_mode()` pattern.
+
+**The composer's live keystroke counter measures the link too**, which A3 asks
+for and the first cut of this session did not do. `link_service.for_counting()`
+substitutes the placeholder before `describe()` sees the template, in
+`/api/campaigns/preview` and in `build_report()`. Without it the "Segments / msg"
+figure read 1 while the phone preview an inch to its right showed a message that
+is 2, and the pre-flight total said 4 — a screen contradicting itself, which is
+5d's Opt-outs headline one screen over. The *checks* still read the raw
+template: they are about the copy he wrote, and a slug in the body would be a
+slug in the category-keyword scan.
+
+`{` and `}` are GSM-7 *extended* characters and cost two septets each, so
+`{link}` is eight septets and not six. The test grows its template to the segment
+boundary rather than hardcoding 160 characters, because a length-based literal
+there is wrong in the direction that makes the test pass anyway.
+
+### A4 — what the carrier actually charged
+
+`SendResult` gained `cost`, `cost_rate`, `cost_carrier_fee`, `cost_currency`; the
+Telnyx provider reads them off `data.cost` / `data.cost_breakdown`;
+`sms_messages` stores them as **strings, exactly as reported**, and
+`cost_reconciliation.py` sums them in `Decimal`. A Float column would put a
+binary expansion between the carrier's figure and ours before four thousand of
+them are added up — the 1b lesson, one layer along.
+
+**None is not zero.** A message the carrier priced at nothing and a message it
+did not price are different facts, and `coverage` is the first field the
+reconciliation returns: a total from twelve priced rows out of 4,200 is not a
+campaign's cost. Most carriers price at delivery rather than at submission.
+
+**The console provider still reports no cost.** A dry run spends nothing, and a
+plausible invented figure would look exactly like a measurement inside the
+reconciliation — the same argument as `get_balance()`'s 999,999 being the wrong
+answer on a degraded box.
+
+**It is operator-only, and that is a reading of criterion 7 rather than a
+shortcut.** The criterion says "the campaign report reconciles estimate against
+actual"; the estimate is `WHOLESALE_COST_PER_SEGMENT`, which must never reach a
+response body, a template or an export, and the admin login *is* the client. So
+"operator-only" cannot mean "behind auth" — it means not served.
+`scripts/cost_report.py` and one INFO line per finished campaign are the readers.
+
+### A5 — the per-campaign report
+
+`/history/{id}`, from `report_service.campaign_report()`: recipients, sent,
+delivered, failed, held back, blocked, opt-outs since the send, clicks (people
+and taps), click-through, cost, top-up contributions, and the abort reason
+**verbatim** — 5h and decision 006 settled what a refusal says and a paraphrase
+here would be a third sentence about one fact.
+
+- **Cost is marginal, not `segments × rate`.** The plan includes 10,000 segments
+  a month, so a campaign the allowance swallowed cost nothing and quoting the
+  flat rate would show him a bill he never received. It prices the campaign as
+  the last thing in its own cycle, from `billing_service`'s exact Decimals, and
+  the screen says "Added to August" rather than "cost". The consequence is
+  written down at the function: two campaigns in one cycle are each priced as the
+  marginal one, so they do not sum to the cycle total when the allowance is
+  crossed between them. That is a property of an allowance; the Usage screen
+  still holds the number that is billed.
+- Opt-out attribution is by phone and by time — blocked after this campaign
+  started, among the numbers it texted. A STOP arrives on a webhook that knows
+  nothing about campaigns, so anything cleverer would be invented. The label says
+  "Opted out since".
+- Exportable as CSV, streamed, recipients read in pages. It is the artefact that
+  leaves the building, so the white-label scan covers it.
+
+### A6 — campaign history and message history
+
+`/history` (campaigns, newest first) and `/contacts/{id}/history` (one person:
+what they were sent, when, whether it arrived, whether they clicked). The Contacts
+screen's name column links to the second, which is the entry point that made it
+reachable. **History is back in the nav**, per `base.html`'s own instructions for
+restoring one.
+
+Both paginate, and the test asserts the *comparison* rather than an absolute
+bound: two rows against eight must cost the same number of queries. An absolute
+bound alone passes happily on a per-row lookup as long as the fixture is small,
+which is how an N+1 ships under a green suite. Measured: 5 queries for a page of
+campaigns at either size, 3 for a page of messages at either size.
+
+### The 500-line rule, three times
+
+`campaign_service.py` reached 529 with the link-aware renderer, so `render()`
+moved verbatim to **`app/services/message_render.py`** — the seam is *what a
+message says* against *whether and how it is sent*, matching `campaign_builder`
+and `campaign_dispatch` on the other two. `preflight_service.py` reached 510 with
+the link check, so `exact_segment_totals()`, `marginal_cost()` and
+`cost_estimates()` moved to **`preflight_totals.py`**: measuring against judging,
+and nothing there returns a verdict. `campaign_topup.py` reached 542, so
+`top_up_history()` moved to **`report_service.py`**, where it belongs anyway — it
+is a reporting query, not part of running a top-up. All three keep re-exports at
+the old addresses, because that is where every caller reaches for them.
+
+### Acceptance
+
+`agent/accept-5f.sh` is the Part A stop condition — the eleven criteria from
+`sessions/session-5f.md`, each a check that runs rather than a claim, with the
+60-turn cap recorded in its header. Criteria 1-10 pass locally. Criterion 11 needs
+the deployed site and is opt-in:
+
+    A4A_URL=https://... A4A_PASSWORD=... bash agent/accept-5f.sh --with-remote
+
+Check 8b is by AST rather than by grep, and its first draft is why: a plain grep
+failed on `routers/reports.py`, whose *docstring* says these fields must never be
+returned. A check that counts prose about a rule as a violation of it is the
+same defect `accept-5h` check 7 already had to fix once. The one real reader —
+`routers/usage.py`'s balance-to-capacity divisor, deliberate since session 1b —
+is now declared by name and printed as allowed, so a *new* one fails.
+
+Check 2b walks the redirect and prints every hop rather than asserting a status
+code, and check 10 is `agent/mutate-5f.py`: 31 behavioural mutations, each a
+plausible edit inside the current API, each required to break a test that names
+it. The harness earned its cost on the first run — `R3` (pre-flight measuring
+the tag rather than the rendered link) was **not caught**, because the test for
+5f's headline requirement measured the *helper* and not the endpoint that quotes
+him a number. `test_the_preflight_endpoint_quotes_the_rendered_link_not_the_tag`
+is what closed it. A property proved of a function and not of its only caller is
+proved of nothing.
+
+**And it caught two defects in itself**, which is the 5e "write mutations you can
+reach" lesson arriving from both directions at once. `R9` stopped applying when
+the redirect route was restructured, and an unapplied patch proves nothing — the
+harness prints it as a separate category for exactly that reason. `R9b` applied
+and was *not* caught, correctly: it only reinstated the early `return`, and with
+one `finally` covering the whole handler an early return still closes the
+session, so there was no defect behind the mutation. It was rewritten to
+reproduce the leak properly (close per branch, return before any of them) rather
+than deleted, because the leak is real and there is a test for it. A mutation
+with nothing reachable behind it has to be said out loud, not dressed up as a
+green tick — 5h dropped its `R15` on the same reasoning. Check 8b is the structural half of the white-label criterion — no router or
+template may so much as name `carrier_cost` or `WHOLESALE_COST_PER_SEGMENT`, so a
+route added later inherits the property instead of needing a new test.
+
+### What the review found
+
+**The spawned fresh-context reviewer produced nothing** — no report at all,
+across the whole session, two direct requests for one, and two idle
+notifications. It read the tree and ran tests (the suite was observably busy for
+a stretch) and then returned nothing. That is the 5g experience repeating
+almost exactly: four reviewers, three silent across a dozen idle cycles and five
+requests. Two sessions is now a pattern rather than an incident, and the second
+data point is the useful part of recording it.
+
+What CLAUDE.md already prescribes for this is what was done: work the uncovered
+lenses directly. Every finding below came out of running the ten review angles
+by hand — each new test file and each new test *function* in isolation, the
+migration down-and-up on a clean database, the query counts at 120 rows rather
+than 8, the route table for shadowing, the connection pool, and `git diff` over
+every file on the escalation list.
+
+Three defects, each in a class this project has hit before.
+
+1. **The unknown-slug path returned without closing its session.** `follow()`
+   opened its own `SessionLocal()` — deliberately, for `/health`'s reason — and
+   closed it on the resolved path and the exception path but not on the early
+   `return` inside the `try`. Measured: forty requests to a slug that does not
+   resolve left **seven connections checked out**, reclaimed only when the
+   garbage collector got round to them. That is the path a *scanner* takes at
+   the root of a domain that will be swept, not the path a buyer takes, so it
+   would have shown up as a box that got slower the longer it ran. Closed by
+   one `finally` with every return below it — the same shape as the browser
+   contexts the reference system leaked one per daily scrape.
+   `test_the_redirect_route_never_leaks_a_database_connection` asserts against
+   the pool rather than against the presence of a `finally`.
+2. **The composer's live counter measured the tag, not the rendered link.** A3
+   says the segment counter must count the rendered link; the first cut applied
+   that to pre-flight and not to the keystroke counter beside the message box.
+   So "Segments / msg" read 1 while the phone preview an inch to its right
+   showed a two-segment message and pre-flight's total said 4 — one screen
+   contradicting itself, which is 5d's Opt-outs headline one screen over.
+   `link_service.for_counting()` substitutes the placeholder before `describe()`
+   sees the template, in `/preview` and in `build_report()`. The *checks* still
+   read the raw template: they are about the copy he wrote, and a slug in the
+   body would be a slug in the category-keyword scan.
+3. **A slug could spell a page name.** `GET /{slug}` is registered last so a
+   root page always wins the match, which means a slug reading `settings` — the
+   one page name that is eight characters of the slug alphabet — is a link
+   whose recipient lands on a login screen instead of the auction. One in 10^12,
+   and closing the class costs a set-membership test, so `RESERVED_SLUGS` is
+   checked at mint time. The test reads the app's own route table rather than
+   pinning the list, so a page added later fails here instead of on a handset.
+
+### Found while working (session 5f)
+
+- **`GET /{slug}` is a root-level catch-all and must stay registered last.**
+  `app/main.py` says so at the line. Starlette matches in registration order, so
+  a router added after it would be unreachable — and the reason it is at the root
+  at all is the 2026-08-24 costing, which compared bare domains: `a4a.bz/a7k9x2pq`
+  against a subdomain is most of a segment on a tight message.
+- **The rendered link carries no `https://` by default.** Same costing: the
+  decision compared `a4a.bz/a7k` at 10 characters, not 18.
+  `SHORT_LINK_INCLUDE_SCHEME` is the one-line escape if a handset in this
+  client's audience turns out not to linkify a bare domain. Worth checking on the
+  first real send.
+- **`docs/API.md` does not document any of 5f.** `/api/reports/*`, the redirect
+  route, `link_target_url` on both campaign-creating endpoints, and the four
+  `carrier_cost*` columns are all absent. Docs are module 8's and `docs/` is not
+  in 5f's file list.
+- **`docs/RUNBOOK.md:147` and `docs/CLIENT_GUIDE.md:145-150` still describe the
+  send-mode pill as two-state.** Carried from 5c and 5d, unchanged, same owner.
+- **The Opt-outs, Usage and Categories screens are still the skeleton's.** 5f
+  closed the History third of that deferred module and did not touch the rest.
+- **`campaigns.link_target_url` is editable in the composer and frozen on the
+  campaign.** A top-up mints against the campaign's current value, so changing it
+  after a send would point new recipients somewhere the original ones did not go.
+  Nothing in the UI can change it after creation today; if an edit screen is ever
+  added, that is the question to answer first.
+- **Click data has no retention rule.** `link_clicks` grows by one row per
+  arrival, scanners included, and nothing prunes it. At this client's volume that
+  is thousands a campaign and fine for a long time; it is not fine forever, and
+  the backup script copies all of it nightly.
+- **`record_click()` increments its counters in Python, not in SQL.** Safe today:
+  `deployment/app.service.template` starts uvicorn with a single worker and the
+  handler calls the recorder inline, so no two clicks interleave. Raise
+  `--workers` and it becomes a read-modify-write across processes, and the loser
+  of the race under-reports a click on the client's report while the
+  `link_clicks` row it came from is still there. The rows are the record; the
+  counters are the fast path. Fix by making it `UPDATE … SET click_count =
+  click_count + 1` if that day comes.
+- **A phone with two message rows on one campaign gets two links, and the report
+  would count it as two clickers.** Nothing in the product creates that state —
+  5h's `R7` mutation had to construct it directly — but `clickers` is a count of
+  links with a click rather than of distinct contacts, and those stop being the
+  same number the moment it can. Worth knowing before anything is built that
+  writes a second row for one recipient.
+- **The live box has still not been deployed to.** Criterion 11 cannot pass until
   someone does. The box runs the pre-5c nginx config, the hot-patched SDK, and
   pre-5d application code.

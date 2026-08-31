@@ -71,6 +71,17 @@ class Campaign(Base):
     # path anyway, because no campaign built before 5h has a `held_back` row.
     batch_size = Column(Integer, nullable=True)
 
+    # Where this campaign's {link} merge tag points. NULL means the campaign
+    # carries no link, which is the ordinary case for a message that just says
+    # "the sale is Thursday".
+    #
+    # Stored on the campaign as well as on every minted link, and the two are
+    # not redundant. This is the *current* destination, which is what a top-up
+    # mints against; `short_links.target_url` is where each already-sent
+    # message's link actually pointed, which is what a report has to show after
+    # the auction page is gone.
+    link_target_url = Column(Text, nullable=True)
+
     # ISO timestamp a scheduled campaign becomes due. NULL = send on demand.
     # The scheduler hands a due campaign to the same send path a button press
     # does, pre-flight included; this column only decides *when* that happens.

@@ -180,12 +180,45 @@
                       class="tag-btn rounded-md border border-line-strong bg-page px-2 py-1 font-mono text-[11px] text-ink-2 hover:bg-surface-2 hover:text-ink">{name}</button>
               <button type="button" data-tag="{phone}"
                       class="tag-btn rounded-md border border-line-strong bg-page px-2 py-1 font-mono text-[11px] text-ink-2 hover:bg-surface-2 hover:text-ink">{phone}</button>
+              {# Each recipient gets their own short link, so the report can name
+                 the buyers who opened it rather than counting anonymous taps.
+                 Disabled with a reason when no short-link domain is configured —
+                 the refusal belongs at compose time, never at send time. #}
+              <button type="button" data-tag="{link}" id="linkTagBtn"
+                      {% if not link_config.available %}disabled{% endif %}
+                      class="tag-btn rounded-md border border-line-strong bg-page px-2 py-1 font-mono text-[11px] text-ink-2 hover:bg-surface-2 hover:text-ink disabled:cursor-not-allowed disabled:opacity-40">{link}</button>
             </span>
           </div>
           <textarea id="message" rows="6" required
                     placeholder="Hi {first_name}, …"
                     class="block w-full rounded-lg border border-line-strong bg-page px-3 py-2.5 text-[14px] leading-relaxed text-ink
                            placeholder:text-ink-3 focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"></textarea>
+        </div>
+
+        {# The link destination. Only meaningful with {link} in the body, and the
+           row below says so rather than hiding: a field that appears and
+           disappears as you type is a field you cannot find again. #}
+        <div>
+          <label for="linkTarget" class="block text-[13px] font-medium text-ink-2">
+            Link destination <span class="font-normal text-ink-3">(for the {link} tag)</span>
+          </label>
+          <input type="url" id="linkTarget" autocomplete="off"
+                 placeholder="https://auctions4america.com/thursday"
+                 class="mt-1.5 block w-full rounded-lg border border-line-strong bg-page px-3 py-2.5 text-[14px] text-ink
+                        placeholder:text-ink-3 focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand">
+          {# Rendered here, not filled in by a fetch. The one state that matters
+             most — no short-link domain on this box — has to be on screen
+             before anything loads, or the tag reads as available. #}
+          <p class="mt-1 text-[11px] text-ink-3" id="linkTargetNote">
+            {%- if link_config.available -%}
+              Optional. Put {{ link_config.tag }} in the message and each recipient gets
+              their own link, which is what makes “who clicked” answerable.
+            {%- else -%}
+              Short links are not switched on for this account yet, so the
+              {{ link_config.tag }} tag cannot be used. Paste the full web address into
+              the message instead.
+            {%- endif -%}
+          </p>
         </div>
 
         {# The live counter row. Every figure is filled by the script from
@@ -226,7 +259,9 @@
         <p class="text-[11px] leading-relaxed text-ink-3">
           An estimate, measured on the template. Merge tags like
           <code class="rounded bg-surface-2 px-1 py-0.5">{first_name}</code> change the
-          length once a real name is in them, so the true total can differ. Pre-flight
+          length once a real name is in them, so the true total can differ.
+          <code class="rounded bg-surface-2 px-1 py-0.5">{link}</code> does not: every
+          link is the same length, and the figures above already count it. Pre-flight
           below renders the message for every recipient and reports the exact figure.
         </p>
 
@@ -371,4 +406,5 @@
 {% block scripts %}
 {% include "_composer-script.html" %}
 {% include "_composer-upload.html" %}
+{% include "_composer-link.html" %}
 {% endblock %}

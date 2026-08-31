@@ -17,7 +17,9 @@ from app.core.auth import (
 from app.core.config import settings
 from app.core.database import get_db
 from app.core import branding
-from app.services import billing_service, contact_query_service, monitoring_service
+from app.services import (
+    billing_service, contact_query_service, link_service, monitoring_service,
+)
 from app.sms.factory import send_mode, active_sender_number
 import os
 import logging
@@ -200,6 +202,17 @@ def shell_context(db: Session) -> dict:
 # thing he clicks before it is ready.
 PAGE_CONTEXT = {
     "contacts": lambda db: {"category_tabs": contact_query_service.category_tabs(db)},
+    # The composer's {link} tag, server-rendered on the first paint for the same
+    # reason the category tabs are: the alternative is a control that looks
+    # usable until a fetch resolves, and this one is disabled on a box with no
+    # short-link domain. A tag offered and then refused at send time is exactly
+    # the failure 5f A3 exists to prevent.
+    "campaigns": lambda db: {"link_config": {
+        "tag": link_service.LINK_TAG,
+        "available": link_service.configured(),
+        "example_url": (link_service.placeholder_url()
+                        if link_service.configured() else None),
+    }},
 }
 
 
@@ -218,3 +231,41 @@ def _make_page(template: str, active: str):
 for path, template_name, active_page in PAGES:
     router.add_api_route(path, _make_page(template_name, active_page),
                          methods=["GET"], response_class=HTMLResponse)
+
+
+# ─── The two screens that take an id ────────────────────────────────────────
+#
+# Written out rather than folded into PAGES: that table exists to say "these
+# paths are the same handler with a different template", and a path parameter is
+# a different handler. Both render an empty frame and fetch their data, because
+# both are paginated and the page controls live in the script anyway.
+#
+# Neither reads the campaign or the contact here. A 404 for a missing id comes
+# from the API the page calls, which is the one place that knows — a second
+# existence check in the page handler is a second answer to maintain.
+
+@router.get("/history", response_class=HTMLResponse)
+async def history_page(request: Request, db: Session = Depends(get_db),
+                       user: str = Depends(require_auth)):
+    return templates.TemplateResponse(
+        request, "history.html", {"active_page": "history", **shell_context(db)})
+
+
+@router.get("/history/{campaign_id}", response_class=HTMLResponse)
+async def campaign_report_page(campaign_id: int, request: Request,
+                               db: Session = Depends(get_db),
+                               user: str = Depends(require_auth)):
+    return templates.TemplateResponse(
+        request, "campaign-report.html",
+        {"active_page": "history", "campaign_id": campaign_id,
+         **shell_context(db)})
+
+
+@router.get("/contacts/{contact_id}/history", response_class=HTMLResponse)
+async def contact_history_page(contact_id: int, request: Request,
+                               db: Session = Depends(get_db),
+                               user: str = Depends(require_auth)):
+    return templates.TemplateResponse(
+        request, "contact-history.html",
+        {"active_page": "contacts", "contact_id": contact_id,
+         **shell_context(db)})

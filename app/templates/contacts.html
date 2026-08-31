@@ -243,7 +243,12 @@ function rowHtml(c) {
     return `<tr class="hover:bg-surface-2">
         <td class="px-4 py-2.5 align-top"><input type="checkbox" class="rowCheck" data-id="${c.id}" ${checked} aria-label="Select ${esc(c.full_name || c.phone)}"></td>
         <td class="px-4 py-2.5 align-top">
-            <div class="text-[13px] font-medium text-ink">${esc(c.full_name || '—')}</div>
+            {# 5f: the name is the way into this person's message history — what
+               they were sent, when, and whether they opened it. That view is the
+               reason the contacts table sits underneath the per-campaign
+               uploads, and it was unreachable until this screen linked to it. #}
+            <a href="/contacts/${c.id}/history"
+               class="text-[13px] font-medium text-ink hover:text-brand">${esc(c.full_name || c.phone)}</a>
             ${c.company ? `<div class="text-[12px] text-ink-3">${esc(c.company)}</div>` : ''}
         </td>
         <td class="px-4 py-2.5 align-top font-mono text-[12px] tracking-tight text-ink-2">${esc(c.phone)}</td>

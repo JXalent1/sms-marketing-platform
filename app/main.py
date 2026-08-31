@@ -23,7 +23,7 @@ from app.sms.factory import get_provider
 import app.models                                    # noqa: F401 — registers tables
 
 from app.routers import (pages, dashboard, campaigns, campaign_uploads, contacts,
-                         categories, imports, blocklist, usage,
+                         categories, imports, blocklist, usage, reports, links,
                          settings as settings_router)
 from app.routers.webhooks import telnyx as telnyx_webhooks, twilio as twilio_webhooks
 
@@ -203,9 +203,18 @@ app.include_router(categories.router)
 app.include_router(imports.router)
 app.include_router(blocklist.router)
 app.include_router(usage.router)
+app.include_router(reports.router)
 app.include_router(settings_router.router)
 app.include_router(telnyx_webhooks.router)
 app.include_router(twilio_webhooks.router)
+
+# LAST, and it has to stay last. `links.router` owns `GET /{slug}` at the root
+# of the short domain, which is what makes "a4a.bz/a7k9x2pq" ten characters
+# shorter than a subdomain would be — worth a whole segment on a tight message.
+# Starlette matches routes in registration order, so anything registered after
+# this would be unreachable, and anything registered before it wins as it
+# should: /login, /health, /campaigns and the rest are pages, not slugs.
+app.include_router(links.router)
 
 
 if __name__ == "__main__":

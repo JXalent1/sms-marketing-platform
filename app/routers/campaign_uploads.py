@@ -72,6 +72,7 @@ async def create_campaign_from_upload(request: Request,
                                       category_id: Optional[int] = Form(None),
                                       batch_size: Optional[int] = Form(None),
                                       scheduled_at: Optional[str] = Form(None),
+                                      link_target_url: Optional[str] = Form(None),
                                       db: Session = Depends(get_db),
                                       user: str = Depends(require_auth)):
     """Import a CSV and create a draft campaign whose audience is that import.
@@ -92,6 +93,7 @@ async def create_campaign_from_upload(request: Request,
             category_id=category_id,
             batch_size=batch_size,
             scheduled_at=scheduled_at or None,
+            link_target_url=link_target_url or None,
         )
     except CampaignError as e:
         raise HTTPException(status_code=400, detail=str(e))

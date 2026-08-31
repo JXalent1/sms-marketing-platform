@@ -33,7 +33,7 @@ PASSWORD = os.environ["ADMIN_PASSWORD"]
 # client stops seeing, and this is the one that refuses.
 EXPECTED_CHECKS = {"send_path", "capacity", "opt_out_language", "brand_identified",
                    "segment_count", "merge_expansion", "recent_overlap",
-                   "link_shortener", "category_match"}
+                   "short_link", "link_shortener", "category_match"}
 
 
 @pytest.fixture(scope="module")

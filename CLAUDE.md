@@ -315,6 +315,32 @@ change to a live table.
   `preflight_service._clock()` delegates rather than implements. Tense still differs by
   surface — a pre-send refusal must not be worded as a post-hoc one — but the *facts*
   come from one place.
+- **A handler that opens its own session owns every way out of it.** `/{slug}`
+  takes a `SessionLocal()` rather than `Depends(get_db)`, for `/health`'s reason —
+  a dependency that raises means the handler never runs. The first version then
+  closed it on the resolved path and the exception path and not on the early
+  `return` for an unknown slug: forty requests left seven connections checked out,
+  reclaimed only by the garbage collector. Two things generalize. The cleanup goes
+  in a `finally` with every `return` below it, never on each way out — the same
+  defect as the browser contexts the reference system leaked one per daily scrape.
+  And **the leak was on the path a scanner takes, not the path a buyer takes**: no
+  amount of clicking through the product would have found it, because the product
+  never asks for a slug that does not resolve. When a route is public, ask what
+  the traffic that is *not* your user does to it.
+- **A property proved of a helper is not proved of its only caller.** 5f's headline
+  requirement is that the composer's quote is measured on the rendered link rather
+  than on the six characters of the tag. The test measured
+  `exact_segment_totals()` directly and passed; reverting the *endpoint* to hand
+  that helper a bare renderer broke nothing, because nothing tested the endpoint.
+  The mutation harness found it, which is the argument for the harness. If a
+  requirement is about what the client is told, the test has to go through the
+  thing that tells him.
+- **A public route at the root of a domain shares one namespace with every page.**
+  `GET /{slug}` is registered last so `/settings` wins the match — which means a
+  minted slug reading `settings` is a link whose recipient lands on a login screen
+  instead of the auction. One in 10^12 today, and it grows every time a page is
+  added. `RESERVED_SLUGS` closes the class, and the test that keeps it honest
+  reads the app's own route table instead of pinning the list.
 
 ## Where things live
 

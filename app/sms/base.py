@@ -12,6 +12,13 @@ Two fields matter more than they look:
 
   `error`   The raw provider error string. Store it. Delivery post-mortems are
             impossible without it, and the auto-block rules key off it.
+
+  `cost`    What the carrier says this message cost, and the rate/carrier-fee
+            split behind it. Strings, exactly as reported. Providers returned
+            these from the first day and this contract discarded them, so
+            `campaigns.estimated_cost` — which exists to be reconciled against
+            an invoice — had nothing to reconcile against for the whole of the
+            build. OUR cost, never the client's: see app/models/sms_message.py.
 """
 
 from abc import ABC, abstractmethod
@@ -26,6 +33,17 @@ class SendResult:
     parts: Optional[int] = None           # carrier-reported segment count
     error: Optional[str] = None
     raw: Dict[str, Any] = field(default_factory=dict)
+
+    # Money, as strings. Not floats: these are summed across thousands of rows
+    # to reconcile against an invoice, and a float puts a binary expansion
+    # between the carrier's figure and ours before the addition even starts.
+    # None where the provider did not say — which for most carriers is the
+    # ordinary case on the send call, because the final cost is known at
+    # delivery. None is the honest value; 0 would read as "free".
+    cost: Optional[str] = None            # total for this message
+    cost_rate: Optional[str] = None       # the carrier's own rate component
+    cost_carrier_fee: Optional[str] = None   # per-carrier pass-through
+    cost_currency: Optional[str] = None   # "USD"
 
 
 class SMSProvider(ABC):

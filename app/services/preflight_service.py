@@ -34,19 +34,24 @@ a send and those checks.
 
 import logging
 import re
-from datetime import datetime
-from decimal import Decimal
-from typing import Any, Callable, List, Optional, Sequence, Tuple
+from typing import List, Optional, Tuple
 
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.models.category import Category
-from app.services import billing_service
+from app.services import link_service
+# Re-exported: the measurement half moved to its own module in 5f when this
+# file crossed the 500-line rule, and every caller reaches for these three
+# names at this address. Moving the definitions without keeping the names
+# would be a rename dressed up as a refactor.
+from app.services.preflight_totals import (   # noqa: F401  (re-export)
+    cost_estimates, exact_segment_totals, marginal_cost,
+)
 from app.services.suppression_service import clears_at_clock, suppression_days
 from app.sms.compliance import STOP_KEYWORDS
 from app.sms.phone import find_risky_links
-from app.sms.segments import count_segments, describe
+from app.sms.segments import describe
 
 logger = logging.getLogger("preflight")
 
@@ -61,85 +66,6 @@ OPENING_CHARS = 64
 
 def _check(key: str, label: str, status: str, reason: str, **extra) -> dict:
     return {"key": key, "label": label, "status": status, "reason": reason, **extra}
-
-
-# ─── Segments, measured on what actually reaches a handset ──────────────────
-
-def exact_segment_totals(message_template: str, recipients: Sequence,
-                         render: Callable[[str, Any], str]) -> dict:
-    """Segments this send really costs: the template rendered per recipient.
-
-    The composer's live counter measures the raw template, where `{first_name}`
-    is twelve literal characters. Nobody is called `{first_name}`. Usually that
-    over-counts and the quote is merely pessimistic, but the reverse happens
-    too: `{name}` is six characters, so a 158-character template counts as one
-    segment and renders to 163 for a Christopher — two segments, at double the
-    quoted rate, discovered on the invoice.
-
-    So the keystroke counter stays an estimate and this is the exact figure.
-    Pre-flight is a deliberate action against a resolved audience: rendering the
-    template `len(recipients)` times is affordable exactly here and nowhere on
-    the typing path.
-
-    `render` is passed in rather than imported. `campaign_service` already
-    imports this module, and the send path's own `render()` is the one whose
-    output is billed — measuring with a second copy of that logic would
-    eventually measure something the send path does not produce.
-
-    With no recipients there is nothing to render, so the template's own count
-    is returned and `exact` is False. Callers must not present that as measured.
-    """
-    template_per_message = count_segments(message_template or "")
-
-    if not recipients:
-        return {
-            "exact": False,
-            "recipients": 0,
-            "template_segments_per_message": template_per_message,
-            "template_total_segments": 0,
-            "total_segments": 0,
-            "max_segments_per_message": template_per_message,
-            "min_segments_per_message": template_per_message,
-            "over_template_count": 0,
-        }
-
-    per_recipient = [count_segments(render(message_template, c)) for c in recipients]
-    return {
-        "exact": True,
-        "recipients": len(per_recipient),
-        "template_segments_per_message": template_per_message,
-        "template_total_segments": template_per_message * len(per_recipient),
-        "total_segments": sum(per_recipient),
-        "max_segments_per_message": max(per_recipient),
-        "min_segments_per_message": min(per_recipient),
-        # The number that matters: how many people the template's own count
-        # under-quotes. One is enough to make the quote wrong.
-        "over_template_count": sum(1 for n in per_recipient if n > template_per_message),
-    }
-
-
-# ─── Cost, at the client's rate ─────────────────────────────────────────────
-
-def marginal_cost(db: Session, added_segments: int) -> float:
-    """What this send adds to the open cycle's bill, in dollars.
-
-    Not `segments * rate`. The plan includes 10,000 segments a month, so the
-    honest answer to "what does this campaign cost" depends on where the cycle
-    already stands: the first campaign of the month usually costs nothing and
-    the one that crosses the allowance costs only the part above it. Quoting the
-    flat rate would over-state the early sends and under-state the crossing one.
-
-    Both terms come from `billing_service.cost_for_segments()`, which is exact
-    Decimal — the subtraction happens before any rounding, so the half-cent
-    boundary is still intact when `to_money()` sees it. The monthly fee is in
-    both terms and cancels, which is correct: a campaign does not re-charge it.
-    """
-    cycle_start, cycle_end, _, _ = billing_service.get_billing_cycle()
-    _, used = billing_service.compute_usage(db, cycle_start, cycle_end)
-
-    before: Decimal = billing_service.cost_for_segments(used)
-    after: Decimal = billing_service.cost_for_segments(used + max(0, added_segments))
-    return billing_service.to_money(after - before)
 
 
 # ─── The checks ─────────────────────────────────────────────────────────────
@@ -309,6 +235,51 @@ def _clock(stamp: Optional[str]) -> str:
     return clears_at_clock(stamp)
 
 
+def check_short_link(message_template: str, link_target_url: Optional[str],
+                     example_url: Optional[str] = None) -> dict:
+    """Is the `{link}` merge tag usable, and does it point somewhere sane?
+
+    A FAIL here, not a WARN, and 5f A3 is explicit about why: the tag must
+    refuse at *compose* time and never at send time. A campaign created with an
+    unusable link would mint nothing, render the literal `{link}` into 4,200
+    messages and cost full price for a message with a broken URL in it — and
+    the client would find out from a buyer, not from the product.
+
+    The refusals are `link_service`'s own sentences, rendered verbatim. That is
+    the `send_mode()` pattern: the module that knows why a link cannot be minted
+    owns the wording, and every surface repeats it rather than inventing a
+    second explanation. `campaign_builder.resolve_link_target()` raises the same
+    strings on the create path, so the checklist and the refusal agree by
+    construction rather than by review.
+    """
+    tagged = link_service.has_link_tag(message_template)
+
+    if not tagged:
+        if link_target_url:
+            return _check("short_link", "Link", WARN,
+                          "A link destination was given but the message does not "
+                          f"use {link_service.LINK_TAG}, so nobody will see it. Add "
+                          "the tag, or clear the destination.")
+        return _check("short_link", "Link", PASS, "This message carries no link.")
+
+    if not link_service.configured():
+        return _check("short_link", "Link", FAIL, link_service.NO_DOMAIN_ERROR)
+
+    try:
+        link_service.validate_target(link_target_url)
+    except link_service.LinkError as e:
+        return _check("short_link", "Link", FAIL, str(e))
+
+    shown = example_url or link_service.placeholder_url()
+    return _check(
+        "short_link", "Link", PASS,
+        f"Every recipient gets their own link — {shown} — so the report can say "
+        f"which buyers opened it. It is {len(shown)} characters and the segment "
+        f"count below is measured on the real thing, not on the tag.",
+        example_url=shown,
+    )
+
+
 def check_link_shortener(body: str) -> dict:
     """Carriers filter shortened domains far harder than full ones."""
     risky = find_risky_links(body or "")
@@ -386,7 +357,8 @@ def check_category_match(db: Session, category_slug: Optional[str], body: str) -
 def build_report(db: Session, *, category_slug: Optional[str], message_template: str,
                  totals: dict, sendable_count: int, suppressed_count: int,
                  capacity_assessment: dict, send_path_assessment: dict,
-                 suppression_clears_at: Optional[str] = None) -> dict:
+                 suppression_clears_at: Optional[str] = None,
+                 link_target_url: Optional[str] = None) -> dict:
     """Every check, plus the numbers the composer's summary panel renders.
 
     Checks come back in a fixed order — the send path first and capacity second,
@@ -403,7 +375,11 @@ def build_report(db: Session, *, category_slug: Optional[str], message_template:
     length check and the quote — is denominated in what will actually be sent,
     not in what the raw template happens to measure.
     """
-    breakdown = describe(message_template or "")
+    # Measured with the link at its rendered width — see
+    # `link_service.for_counting()`. The *checks* below still read the raw
+    # template: they are about the copy he wrote, and a slug in the body would
+    # be a slug in the category-keyword scan.
+    breakdown = describe(link_service.for_counting(message_template))
     template_per_message = breakdown["segments"]
     # Length is judged on the longest rendered message, not the template: a
     # 3-segment guideline is about what lands on a handset.
@@ -420,6 +396,7 @@ def build_report(db: Session, *, category_slug: Optional[str], message_template:
         check_merge_expansion(totals),
         check_recent_overlap(days, suppressed_count, sendable_count,
                              suppression_clears_at),
+        check_short_link(message_template, link_target_url),
         check_link_shortener(message_template),
         check_category_match(db, category_slug, message_template),
     ]
@@ -441,25 +418,19 @@ def build_report(db: Session, *, category_slug: Optional[str], message_template:
             "segments_measured": totals["exact"],
         },
         "encoding": breakdown["encoding"],
+        # What the composer needs to know about the link without re-deriving
+        # either fact: whether the message uses the tag, and whether the box can
+        # mint one. A screen that worked this out for itself would eventually
+        # offer the tag on a box with no domain configured.
+        "link": {
+            "tag": link_service.LINK_TAG,
+            "in_message": link_service.has_link_tag(message_template),
+            "available": link_service.configured(),
+            "example_url": (link_service.placeholder_url()
+                            if link_service.configured() else None),
+        },
         # His rate, from billing_service. Never the wholesale figure the
         # capacity check above is denominated in.
         "estimated_cost": marginal_cost(db, total_segments),
-        "price_per_segment": settings.BILLING_PRICE_PER_SEGMENT,
-    }
-
-
-def cost_estimates(db: Session, message_template: str, recipients: int) -> dict:
-    """Cost now, and cost if the message were plain GSM-7, both at his rate.
-
-    The pair is the point. One emoji cuts a segment from 160 characters to 70,
-    and the only wording of that fact anyone acts on is the difference between
-    two dollar figures at tonight's recipient count.
-    """
-    breakdown = describe(message_template or "")
-    total = breakdown["segments"] * recipients
-    gsm7_total = breakdown["gsm7_segments_if_stripped"] * recipients
-    return {
-        "estimated_cost": marginal_cost(db, total),
-        "estimated_cost_if_gsm7": marginal_cost(db, gsm7_total),
         "price_per_segment": settings.BILLING_PRICE_PER_SEGMENT,
     }

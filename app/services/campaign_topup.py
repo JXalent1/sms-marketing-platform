@@ -81,8 +81,10 @@ from app.models.campaign import Campaign
 from app.models.contact import Contact
 from app.models.contact_list import ContactListMember
 from app.models.sms_message import SMSMessage, HELD_BACK_STATUS
-from app.services import suppression_service
-from app.services.campaign_builder import CampaignError, wholesale_estimate
+from app.services import link_service, suppression_service
+from app.services.campaign_builder import (
+    CampaignError, resolve_link_target, wholesale_estimate,
+)
 # `releasable()` and `held_back_rows()` moved to their own module when 5h pushed
 # this file past the 500-line rule. The seam is *who may be released* against
 # *running a top-up* — the same one campaign_builder sits on. Re-exported
@@ -92,6 +94,11 @@ from app.services.campaign_release import (   # noqa: F401  (re-export)
     capped_campaign_hold, held_back_rows, hold_clears_at, releasable,
 )
 from app.services.campaign_service import CampaignService
+# Re-exported: `top_up_history()` is a *reporting* query — the "1,200 + 5 added
+# 26 Aug" line — rather than part of running a top-up, and 5f gave reporting its
+# own module. It moved there when this file crossed the 500-line rule again;
+# `routers/campaigns.py` reaches for it at this address and keeps doing so.
+from app.services.report_service import top_up_history   # noqa: F401  (re-export)
 from app.sms.segments import count_segments
 
 logger = logging.getLogger("campaign")
@@ -274,7 +281,7 @@ async def assess(db: Session, campaign: Campaign) -> dict:
     the campaign before it sent.
     """
     empty = {"code": 409, "sendable": [], "released": [], "suppressed": [],
-             "still_held": [], "bodies": [], "segments": 0}
+             "still_held": [], "bodies": [], "segments": 0, "link_target": None}
 
     if campaign.status != "completed":
         return {**empty, "refusal": TOP_UP_STATE_ERRORS.get(
@@ -314,16 +321,37 @@ async def assess(db: Session, campaign: Campaign) -> dict:
         return {**empty, "refusal": refusal, "suppressed": suppressed,
                 "still_held": still_held}
 
+    # A campaign carrying `{link}` needs a mintable destination for the new rows
+    # too, and the refusal is the same sentence the composer showed — a short
+    # domain that was removed, or a target that was cleared, must stop the
+    # top-up rather than queue messages with a literal `{link}` in them.
+    # Checked here, after the "is there anybody" question, so a campaign with
+    # nothing to send still gets the refusal that tells him something useful.
+    try:
+        link_target = resolve_link_target(campaign.message_template,
+                                          campaign.link_target_url)
+    except CampaignError as e:
+        return {**empty, "refusal": str(e), "code": 400}
+
     service = CampaignService(db)
     # Rendered once, up front: the bodies are needed for the capacity estimate
     # and again for the rows, and rendering twice risks measuring one message and
     # queueing another.
     #
+    # The exception is `{link}`, which cannot be minted here — `assess()` writes
+    # nothing, and it runs twice per top-up. It is rendered with
+    # `placeholder_url()`, which is the same length as a real link *by
+    # construction* rather than by coincidence (both are the domain plus
+    # SLUG_LENGTH characters, and a test pins it), so the segment total this
+    # capacity check is given is the one the queued messages will cost.
+    #
     # A released row is *not* re-rendered. It already carries the body this
     # campaign composed for that contact, and that body is what will be sent —
     # measuring anything else here would quote one message and queue another,
     # which is the defect `exact_segment_totals()` exists to prevent one layer up.
-    bodies = [(c, service.render(campaign.message_template, c)) for c in sendable]
+    placeholder = link_service.placeholder_url() if link_target else None
+    bodies = [(c, service.render(campaign.message_template, c, placeholder))
+              for c in sendable]
     segments = (sum(count_segments(body) for _, body in bodies)
                 + sum(count_segments(row.message or "") for row in released))
 
@@ -336,7 +364,7 @@ async def assess(db: Session, campaign: Campaign) -> dict:
     return {"refusal": None if ok else detail, "code": 409,
             "sendable": sendable, "released": released,
             "suppressed": suppressed, "still_held": still_held,
-            "bodies": bodies, "segments": segments}
+            "bodies": bodies, "segments": segments, "link_target": link_target}
 
 
 async def top_up(db: Session, campaign_id: int) -> Campaign:
@@ -362,17 +390,54 @@ async def top_up(db: Session, campaign_id: int) -> Campaign:
 
     stamp = datetime.now().isoformat()
     held_back = suppression_service.suppression_reason(db)
+
+    # One link each for the rows this run creates, held back or not — a
+    # held-back row carries the body it will be sent with, and a later release
+    # sends that body rather than re-rendering it. Released rows are NOT minted
+    # for: they already carry their own link from the original send, and minting
+    # a second would mean the message quoted on screen and the message queued
+    # were different. This is the first write of the run, so a mint failure
+    # raises before any message row exists.
+    link_target = verdict["link_target"]
+    links = {}
+    if link_target and (sendable or suppressed):
+        links = {contact.id: (link, link_service.url_for(link.slug))
+                 for contact, link in link_service.mint(
+                     db, campaign_id=campaign.id, target_url=link_target,
+                     contacts=list(sendable) + list(suppressed))}
+
+    queued = []
     for contact, body in bodies:
-        db.add(SMSMessage(
+        link, url = links.get(contact.id, (None, None))
+        # Re-rendered with the real link. The placeholder `assess()` measured is
+        # the same length, so the capacity verdict above still describes this
+        # message; what is queued is what is stored, which is the property
+        # `exact_segment_totals()` exists to protect one layer up.
+        message = SMSMessage(
             campaign_id=campaign.id, contact_id=contact.id, phone=contact.phone,
-            message=body, status="pending", top_up_at=stamp,
-        ))
+            message=service.render(campaign.message_template, contact, url) if url
+            else body,
+            status="pending", top_up_at=stamp,
+        )
+        db.add(message)
+        queued.append((link, message))
     for contact in suppressed:
-        db.add(SMSMessage(
+        link, url = links.get(contact.id, (None, None))
+        message = SMSMessage(
             campaign_id=campaign.id, contact_id=contact.id, phone=contact.phone,
-            message=service.render(campaign.message_template, contact),
+            message=service.render(campaign.message_template, contact, url),
             status=HELD_BACK_STATUS, error_message=held_back, top_up_at=stamp,
-        ))
+        )
+        db.add(message)
+        queued.append((link, message))
+
+    if links:
+        # Ids exist only after a flush; a link has to know its message so a
+        # click can be dated against that message's send.
+        db.flush()
+        for link, message in queued:
+            if link is not None:
+                link.message_id = message.id
 
     # Decision 005 rider 3: flip the row, do not write a second one. A person
     # held back once and reached later is one row with a history, not two rows a
@@ -430,53 +495,3 @@ async def top_up_background(campaign_id: int) -> None:
         logger.error(f"Campaign {campaign_id} background top-up failed: {e}")
     finally:
         db.close()
-
-
-def top_up_history(db: Session, campaign_ids: List[int]) -> dict:
-    """{campaign_id: [{added_at, recipients}, …]} — "1,200 + 5 added 26 Aug".
-
-    Counted in the database rather than in the page. A screen that tallied this
-    from a capped list of message rows would under-report the day a campaign
-    outgrew the cap, and it would under-report the *original* send, which is the
-    direction nobody sanity-checks.
-
-    One grouped query for the whole page, not one per campaign: the campaign rail
-    renders up to fifty rows and a per-row lookup here would leave every other
-    assertion in the suite passing while the list quietly became fifty queries.
-    The original send (`top_up_at IS NULL`) is excluded — it is the campaign's own
-    `total_recipients` minus these, and returning it as a "top-up" would have
-    every caller filter it back out.
-
-    Rows a top-up *held back* are excluded too, and that is a 5h correction
-    rather than a refinement. The rail renders this as
-    `total_recipients - added` + `added`, and `total_recipients` has never
-    counted a held-back contact — so counting one here reported the original
-    send as smaller than it was, in the direction nobody sanity-checks. Before
-    `held_back` existed there was no way to write this filter; the query could
-    not tell a top-up's held-back row from a top-up's sent one.
-
-    **Going forward only.** A pre-5h top-up wrote its suppressed newcomers as
-    `skipped` with a `top_up_at` stamp, and those rows still pass this filter —
-    correctly, under the no-backfill rule, since a `skipped` row cannot be
-    classified after the fact. A box carrying pre-5h top-ups keeps the old
-    under-report on those campaigns; nothing built after this change does.
-    """
-    from sqlalchemy import func
-
-    if not campaign_ids:
-        return {}
-
-    rows = (db.query(SMSMessage.campaign_id, SMSMessage.top_up_at,
-                     func.count(SMSMessage.id))
-            .filter(SMSMessage.campaign_id.in_(campaign_ids),
-                    SMSMessage.top_up_at.isnot(None),
-                    SMSMessage.status != HELD_BACK_STATUS)
-            .group_by(SMSMessage.campaign_id, SMSMessage.top_up_at)
-            .order_by(SMSMessage.campaign_id, SMSMessage.top_up_at)
-            .all())
-
-    history = {campaign_id: [] for campaign_id in campaign_ids}
-    for campaign_id, stamp, count in rows:
-        history.setdefault(campaign_id, []).append(
-            {"added_at": stamp, "recipients": count})
-    return history

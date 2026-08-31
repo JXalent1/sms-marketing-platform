@@ -33,7 +33,7 @@ client sending real campaigns.
 | 5c | **Live-send blockers** | Part A done · deploy + B pending | 5b Part A | `requirements.txt`, `app/sms/factory.py`, `app/routers/settings.py`, `app/routers/pages.py`, `app/templates/settings.html`, `app/templates/base.html`, `deployment/nginx.conf.template`, `tests/`, `agent/accept-5c.sh` |
 | 5d | **Refuse to send from a degraded box** | Part A done · deploy pending · B is Jordan's | 5c | `app/services/campaign_service.py`, `app/services/campaign_dispatch.py`, `app/services/preflight_service.py`, `app/services/blocklist_service.py`, `app/models/sms_message.py`, `app/sms/factory.py`, `app/sms/compliance.py`, `app/main.py`, `app/routers/campaigns.py`, `app/routers/pages.py`, `app/routers/blocklist.py`, `app/routers/webhooks/{common,telnyx,twilio}.py`, `app/templates/blocklist.html`, `.claude/hooks/verify-gate.sh`, `docs/API.md`, `tests/`, `agent/accept-5d.sh` |
 | 5e | **Campaign-first flow & QoL** | Part A done 2026-08-27 · deploy pending | 5d | `app/routers/campaigns.py`, `app/routers/campaign_uploads.py`, `app/routers/contacts.py`, `app/routers/imports.py`, `app/routers/settings.py`, `app/templates/campaigns.html`, `app/templates/_composer-script.html`, `app/templates/_composer-upload.html`, `app/templates/contacts.html`, `app/templates/settings.html`, `app/services/campaign_service.py`, `app/services/campaign_builder.py`, `app/services/campaign_outcome.py`, `app/services/campaign_topup.py`, `app/services/suppression_service.py`, `app/services/preflight_service.py`, `app/services/import_service.py`, `app/services/contact_service.py`, `app/models/sms_message.py`, `alembic/versions/`, `tests/` |
-| 5f | **Short links & reporting** | Specced · last planned session | 5e | `app/models/short_link.py`, `app/routers/links.py`, `app/routers/reports.py`, `app/services/link_service.py`, `app/templates/history.html`, `alembic/versions/`, `tests/` |
+| 5f | **Short links & reporting** | Part A done 2026-08-31 · deploy pending | 5e | `app/models/short_link.py`, `app/models/campaign.py`, `app/models/sms_message.py`, `app/routers/links.py`, `app/routers/reports.py`, `app/routers/campaigns.py`, `app/routers/campaign_uploads.py`, `app/routers/pages.py`, `app/services/link_service.py`, `app/services/click_classifier.py`, `app/services/report_service.py`, `app/services/history_service.py`, `app/services/cost_reconciliation.py`, `app/services/message_render.py`, `app/services/preflight_totals.py`, `app/services/campaign_builder.py`, `app/services/campaign_service.py`, `app/services/campaign_topup.py`, `app/services/preflight_service.py`, `app/sms/base.py`, `app/sms/providers/{telnyx,console}.py`, `app/core/config.py`, `app/templates/{history,campaign-report,contact-history,campaigns,contacts,base}.html`, `app/templates/_composer-{link,script,upload}.html`, `scripts/cost_report.py`, `alembic/versions/`, `tests/` |
 | 5g | **Blocklist correctness** | Part A done 2026-08-26 · deploy pending | 5d | `app/sms/compliance.py`, `app/sms/phone.py`, `app/sms/providers/telnyx.py`, `app/routers/webhooks/telnyx.py`, `app/routers/webhooks/twilio.py`, `app/routers/webhooks/common.py`, `app/routers/pages.py`, `app/models/sms_message.py`, `app/models/blocked_number.py`, `app/services/blocklist_service.py`, `app/services/dashboard_service.py`, `app/services/monitoring_service.py`, `alembic/versions/`, `tests/` |
 | 5h | **Held-back rows & the capacity floor** | Part A done 2026-08-30 · deploy pending | 5e | `app/models/sms_message.py`, `app/services/campaign_builder.py`, `app/services/campaign_service.py`, `app/services/campaign_release.py`, `app/services/campaign_topup.py`, `app/routers/campaign_uploads.py`, `app/templates/_composer-upload.html`, `alembic/versions/`, `tests/` |
 
@@ -76,9 +76,11 @@ Not cancelled — descoped so the client can start sending. The plan for each is
 - **Prospect engine & review queue** (was 5)
 - **Discovery sources** — Google Places, DBPR, licences, Sunbiz (was 6)
 - **Opt-in landing page & cold-send guardrails** (was 7)
-- **Redesigned History / Categories-admin / Opt-outs / Usage screens** (was 8) — the
-  skeleton's versions of all four already work; they just aren't on the new dark design.
-  Functional beats pretty for launch.
+- **Redesigned Categories-admin / Opt-outs / Usage screens** (was 8) — the skeleton's
+  versions of all three already work; they just aren't on the new dark design.
+  Functional beats pretty for launch. **History is no longer among them:** 5f built
+  campaign history, the per-campaign report and per-contact message history, because
+  without them the client can send and cannot answer "did it work?".
 
 #### Found in live use, not yet scheduled
 
@@ -466,11 +468,50 @@ here and one escalated as `decisions/005`. The deploy is still pending, as it is
 
 ### 5f — Short links & reporting
 
+Part A landed 2026-08-31. 424 tests (371 + 53), gate green twice,
+`agent/accept-5f.sh` as the stop condition and `agent/mutate-5f.py` (31 behavioural
+mutations) as the check with teeth. The deploy — acceptance criterion 11 — is still
+pending, as it is for 5c, 5d, 5e, 5g and 5h.
+
 1. `short_links` table, redirect route, one hop only, closed to outside minting.
-2. Composer merge tag for a campaign's link.
-3. Per-link click stats; per-campaign click-through.
-4. **Per-campaign report** — recipients, delivered, failed, opt-outs, clicks, cost.
-5. **Campaign history and message history screens** (was module 8, deferred at launch).
+   **One link per recipient per campaign**, which is what makes "which buyers
+   clicked" answerable — the only version of the number an auction house can act on.
+2. Composer merge tag for a campaign's link, refused at *compose* time when
+   `SHORT_LINK_DOMAIN` is unset, and counted on the rendered link rather than on the
+   six characters of the tag.
+3. Per-link click stats, with suspected scanners marked rather than discarded and
+   both numbers on screen.
+4. **Per-campaign report** — recipients, delivered, failed, held back, opt-outs,
+   clicks, click-through and cost at *his* price, exportable as CSV.
+5. **Campaign history and message history screens** (was module 8, deferred at
+   launch), both paginated.
+6. **What the carrier actually charged**, captured per message with its
+   rate/carrier-fee split. Operator-only: `app/services/cost_reconciliation.py` and
+   `scripts/cost_report.py`, never a route.
+
+**5f's file list above is wider than the one this table carried before the session,
+on the same basis as 5d's, 5e's, 5g's and 5h's.** The spec's own requirements reach
+files it did not name. A3's "the segment counter must count the rendered link"
+is a change to the renderer (`message_render.py`, split out of `campaign_service.py`
+when the tag pushed it past 500 lines for the fourth time), to the pre-flight
+endpoint that passes the renderer a link, and to the top-up, which mints for the
+rows it creates. A4's cost capture reaches `app/sms/base.py` (the provider
+contract discarded the fields), both providers, and `sms_messages`. A5's "cost at
+his price" is `report_service`; A6's two screens are `history_service`,
+`routers/pages.py`, `base.html`'s nav and three templates. `preflight_totals.py`
+is new because `preflight_service.py` crossed the 500-line rule when the link
+check landed, and `report_service.py` took `top_up_history()` off
+`campaign_topup.py` for the same reason — it is a reporting query rather than part
+of running a top-up.
+
+**Where criterion 7 landed, and why it is not on the client's report.** The
+criterion asks for "the campaign report reconciles estimate against actual". The
+estimate is `WHOLESALE_COST_PER_SEGMENT`, which CLAUDE.md forbids reaching a
+response body, a template or an export, and the admin login *is* the client — so
+"operator-only" cannot mean "behind auth", it has to mean "not served". The
+reconciliation is a service plus `scripts/cost_report.py` plus one INFO line per
+finished campaign, and the client's report is denominated in
+`BILLING_PRICE_PER_SEGMENT` as every other money figure is.
 
 ### 5g — Blocklist correctness
 

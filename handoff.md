@@ -737,3 +737,71 @@ to know before touching it:
     written, which was pure arithmetic before 006. An exception there leaves the
     campaign `running` for ever, which is strictly worse than a sentence missing
     a clause. Same reasoning as `/health` reading its row without `Depends`.
+
+---
+
+## Session 5f — short links, click stats and reporting (2026-08-31)
+
+Part A complete except the deploy. **418 tests** (371 + 47), gate green twice at
+both ends, `agent/accept-5f.sh` the stop condition (60-turn cap in its header),
+`agent/mutate-5f.py` the check with teeth — 26 behavioural mutations, none
+surviving. Nothing in this session can send: `SMS_PROVIDER` stays `console`
+everywhere, `.env` was not written, and the one costing carrier stub returns a
+`SendResult` without touching a network.
+
+Read `status.md` → "Module 5f Part A" for the full account. What the next session
+has to know before touching any of it:
+
+14. **A short link is per recipient per campaign, and that is the feature.**
+    "340 clicks" is a statistic; "these 340 people" is a phone list, and for an
+    auction house that is the highest-intent audience it will ever have. Any
+    change that makes minting cheaper by sharing a slug throws the whole thing
+    away.
+
+15. **`SHORT_LINK_DOMAIN` unset is a supported state, not a broken one.** The
+    domain may not be registered. Unset means the composer *refuses* the tag,
+    at compose time, with a sentence naming the cause — it never mints a link
+    nobody can follow and never defers the refusal to the send. The setting is
+    read live on every call, so a change takes effect without a restart, and
+    every test that sets it restores it.
+
+16. **`link_service.placeholder_url()` is the same length as a real link by
+    construction, and something depends on that.** Pre-flight cannot mint 4,200
+    rows on every press of "Run checks", so it renders with the placeholder and
+    quotes that count. If the two lengths ever diverge, the quote and the invoice
+    diverge silently. `test_the_placeholder_is_the_same_length_as_a_minted_link`
+    is the pin, and `test_the_preflight_endpoint_quotes_the_rendered_link_not_the_tag`
+    is the one that proves the *endpoint* does it — the helper-only version of
+    that test let a mutation through.
+
+17. **`{` and `}` are GSM-7 extended characters.** `{link}` is eight septets, not
+    six. Any arithmetic about template length has to be done with
+    `count_segments()`, not `len()`.
+
+18. **`GET /{slug}` is a root catch-all and must stay registered last in
+    `main.py`.** Starlette matches in registration order. Anything included after
+    it is unreachable.
+
+19. **Clicks are two numbers, always.** The human count leads, the filtered count
+    sits beside it in words, and every suspected-scanner row is kept with its
+    user agent and the rule that fired. The classifier is deliberately wider than
+    the auto-block list and `click_classifier.py` says why: this one changes which
+    of two visible numbers is the headline, the other one deletes a buyer.
+
+20. **The `carrier_cost*` columns and `WHOLESALE_COST_PER_SEGMENT` are ours.**
+    The admin login *is* the client, so "operator-only" means not served, not
+    "behind auth". `cost_reconciliation.py` is the only reader and there is no
+    route to it; `scripts/cost_report.py` and one INFO line per finished campaign
+    are how a human sees it. `accept-5f.sh` check 8b fails if a router or
+    template so much as names one of them.
+
+21. **The report's cost is marginal within its own billing cycle**, not
+    `segments × rate`. Two campaigns in one cycle therefore do not sum to the
+    cycle total once the allowance is crossed between them — that is a property
+    of an allowance, the screen says "Added to August" rather than "cost", and
+    the Usage screen still holds the number that is billed.
+
+22. **A history page's query count must not move with its row count.** The tests
+    assert two rows against eight cost the *same* number of queries, not an
+    absolute bound: a bound alone passes happily on a per-row lookup while the
+    fixture is small, which is how an N+1 ships under a green suite.

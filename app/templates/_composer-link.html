@@ -1,0 +1,61 @@
+{# The {link} merge tag's own behaviour. Included by campaigns.html last.
+
+   Its own partial for the reason the other two are: the 500-line rule, and
+   Tailwind's content scan reaching class names built in JS. `_composer-script`
+   was at 493 lines before this session.
+
+   `linkTarget()` is a function declaration, so it is hoisted to the global
+   scope and callable from the earlier partial's fetch bodies. Those all run
+   from events or from an awaited load, long after both scripts have parsed —
+   the same arrangement `_composer-upload.html` already relies on in reverse.
+
+   One rule here, and it is the whole of 5f A3: **this file decides nothing.**
+   Whether a link can be minted, and what to say when it cannot, comes from the
+   server — /api/campaigns/preview reports `link_available`, and the pre-flight
+   `short_link` row carries the sentence. A screen that worked either out for
+   itself would offer the tag on a box with no domain configured, which is a
+   refusal arriving at send time instead of compose time. #}
+<script>
+function linkTarget() {
+    const value = (el('linkTarget').value || '').trim();
+    return value || null;
+}
+
+// Re-priced on every change, like the message body: a link is roughly sixteen
+// characters and that is a tenth of a segment on every recipient.
+el('linkTarget').addEventListener('input', schedulePreview);
+
+// Painted from /api/campaigns/preview, which is where `paintLink` is called.
+// Three states rather than two: no tag, tag with a destination, and a box that
+// cannot mint at all — the last is the one a two-state control would hide.
+function paintLink(data) {
+    const button = el('linkTagBtn');
+    const note = el('linkTargetNote');
+    const available = data.link_available;
+    const used = data.link_in_message;
+
+    button.disabled = !available;
+    button.title = available
+        ? 'Give every recipient their own link, so the report can name who opened it'
+        : 'No short-link domain is set up on this account yet';
+
+    if (!available) {
+        note.textContent =
+            'Short links are not switched on for this account yet, so the '
+            + data.link_tag + ' tag cannot be used. Paste the full web address into '
+            + 'the message instead.';
+    } else if (used && !linkTarget()) {
+        note.textContent =
+            'The message uses ' + data.link_tag + ' — add the web address it should '
+            + 'open, or the campaign will be refused when you create it.';
+    } else if (used) {
+        note.textContent =
+            'Every recipient gets their own link to this page, so the report can '
+            + 'show which buyers opened it.';
+    } else {
+        note.textContent =
+            'Optional. Put ' + data.link_tag + ' in the message and each recipient '
+            + 'gets their own link, which is what makes "who clicked" answerable.';
+    }
+}
+</script>

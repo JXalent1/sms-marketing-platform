@@ -32,6 +32,13 @@ class ConsoleProvider(SMSProvider):
 
         logger.info(f"[DRY RUN] -> {to} | {segments} seg ({encoding}) | {preview}")
 
+        # No cost fields, deliberately. A dry run spends nothing, and inventing
+        # a plausible figure here would put fabricated money into the
+        # estimate-versus-actual reconciliation — where it would look exactly
+        # like a measurement. The same argument as `get_balance()`'s 999,999
+        # being the wrong answer for a *degraded* box: a stub's convenient
+        # number becomes a fact the moment something reads it. None means "the
+        # carrier did not say", which is true here.
         return SendResult(
             success=True,
             message_id=f"console-{self._counter:08d}",

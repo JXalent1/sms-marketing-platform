@@ -22,7 +22,8 @@ from app.services.campaign_service import (
 )
 from app.services.campaign_dispatch import send_campaign_background
 from app.services import (
-    campaign_topup, contact_service, preflight_service, suppression_service,
+    campaign_topup, contact_service, link_service, preflight_service,
+    suppression_service,
 )
 from app.services.blocklist_service import load_blocked_set
 from app.sms.factory import get_provider, send_path_assessment
@@ -51,6 +52,10 @@ class CreateCampaignRequest(BaseModel):
     # goes through the identical send path, pre-flight included.
     scheduled_at: Optional[str] = None
 
+    # Where this campaign's {link} tag points. Refused at creation when the tag
+    # is in the message and this is missing or unusable — never at send time.
+    link_target_url: Optional[str] = None
+
 
 class TestSMSRequest(BaseModel):
     phone: str
@@ -67,6 +72,7 @@ class PreflightRequest(BaseModel):
     audience: str
     category_id: Optional[int] = None
     batch_size: Optional[int] = None
+    link_target_url: Optional[str] = None
 
 
 @router.get("/audiences")
@@ -138,7 +144,12 @@ async def preview(payload: PreviewRequest, db: Session = Depends(get_db),
     wholesale rate and deliberately never leaves the server — see
     `_campaign_dict()` below.
     """
-    breakdown = describe(payload.message_template)
+    # Counted with the link at its rendered width. The keystroke counter is
+    # allowed to be an estimate about *names*; it is not allowed to be wrong
+    # about a merge tag whose expansion is fixed and known — that would put a
+    # segment figure on screen next to a phone preview that contradicts it.
+    counted = link_service.for_counting(payload.message_template)
+    breakdown = describe(counted)
     split = _audience_split(db, payload.audience)
     recipients = split["recipients"]
 
@@ -146,7 +157,12 @@ async def preview(payload: PreviewRequest, db: Session = Depends(get_db),
     # that is empty for half the list — the contact with no name, the attribute
     # only some rows carry — shows up here and nowhere else before the send.
     sample = split["sample"]
-    preview_text = (CampaignService(db).render(payload.message_template, sample)
+    # Rendered with a placeholder link of exactly the length a real one will be
+    # (`link_service.placeholder_url()`), so the phone preview shows the message
+    # at its true width. The tag is never left as `{link}` on a screen whose job
+    # is to show what lands on a handset.
+    link = link_service.placeholder_url() if link_service.configured() else None
+    preview_text = (CampaignService(db).render(payload.message_template, sample, link)
                     if sample else payload.message_template)
 
     return {
@@ -163,7 +179,12 @@ async def preview(payload: PreviewRequest, db: Session = Depends(get_db),
         "sample_name": sample.display_name() if sample else None,
         "total_segments": breakdown["segments"] * recipients,
         "risky_links": find_risky_links(payload.message_template),
-        **preflight_service.cost_estimates(db, payload.message_template, recipients),
+        # The composer needs both facts and must not derive either: whether the
+        # message uses the tag, and whether this box can mint a link at all.
+        "link_tag": link_service.LINK_TAG,
+        "link_in_message": link_service.has_link_tag(payload.message_template),
+        "link_available": link_service.configured(),
+        **preflight_service.cost_estimates(db, counted, recipients),
     }
 
 
@@ -193,8 +214,17 @@ async def preflight(payload: PreflightRequest, db: Session = Depends(get_db),
     # measuring the same way here is what makes the composer's capacity row and
     # the send path's enforced verdict the same arithmetic instead of two
     # estimates that agree most of the time.
+    # `{link}` renders to a per-recipient URL that does not exist yet, and
+    # minting 4,200 rows on every press of "Run checks" is not an option. The
+    # placeholder is the same length by construction, so the count is the real
+    # one — which is the whole of 5f A3: the counter measures the *rendered*
+    # link, not the six characters of the tag. Passing the renderer a link is
+    # what makes that true; without it the tag stays literal and the quote is
+    # short by nine characters a message.
+    link = link_service.placeholder_url() if link_service.configured() else None
     totals = preflight_service.exact_segment_totals(
-        payload.message_template, split["sendable"], service.render
+        payload.message_template, split["sendable"],
+        lambda template, contact: service.render(template, contact, link),
     )
 
     # The capacity check is denominated in our wholesale cost, so it needs the
@@ -218,6 +248,7 @@ async def preflight(payload: PreflightRequest, db: Session = Depends(get_db),
         # capacity for anything and will deliver none of it.
         send_path_assessment=send_path_assessment(),
         suppression_clears_at=split["suppression_clears_at"],
+        link_target_url=payload.link_target_url,
     )
     report["counts"]["opted_out"] = split["opted_out"]
     return report
@@ -237,6 +268,7 @@ async def create_campaign(request: Request, payload: CreateCampaignRequest,
             category_id=payload.category_id,
             cross_category_override=payload.cross_category_override,
             scheduled_at=payload.scheduled_at,
+            link_target_url=payload.link_target_url,
         )
     except CampaignError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -434,6 +466,9 @@ def _campaign_dict(db: Session, c: Campaign, top_ups: Optional[list] = None) -> 
         # every assertion in the suite still passing.
         "top_ups": top_ups or [],
         "abort_reason": c.abort_reason,
+        # His own destination URL, not ours. Safe on the client's screen and
+        # needed by the report, which has to say where the link pointed.
+        "link_target_url": c.link_target_url,
         "scheduled_at": c.scheduled_at,
         "created_at": c.created_at,
         "started_at": c.started_at,

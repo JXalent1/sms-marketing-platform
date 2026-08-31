@@ -102,6 +102,16 @@ def client():
     lists = c.get("/api/lists").json()
     PATH_VALUES["list_id"] = (lists.get("lists") or [{"id": 999999}])[0].get("id", 999999)
 
+    contacts = c.get("/api/contacts?page=1").json().get("contacts") or []
+    PATH_VALUES["contact_id"] = contacts[0]["id"] if contacts else 999999
+
+    # `GET /{slug}` is the public short-link redirect. It is scanned like every
+    # other GET route: a slug that does not resolve answers 404 with a sentence,
+    # and that sentence is a client-facing surface too — 5f's first draft of it
+    # named the brand, which is how a stranger who mistypes a URL learns whose
+    # links these are. A real slug is not needed to scan the body.
+    PATH_VALUES["slug"] = "aaaaaaaa"
+
     return c
 
 

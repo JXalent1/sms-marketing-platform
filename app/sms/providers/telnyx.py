@@ -63,6 +63,30 @@ def describe_send_error(exc: Exception) -> str:
     return strip_payload(str(exc)) or exc.__class__.__name__
 
 
+def _money(node) -> tuple:
+    """(amount, currency) from a `{amount, currency}` cost node, as strings.
+
+    Duck-typed and defensive for `describe_send_error()`'s reason: the SDK has
+    changed its class hierarchy twice inside this project's lifetime, and this
+    runs inside the send loop where an AttributeError costs a message. A cost we
+    could not read is None, which reads as "the carrier did not say" rather than
+    as "free".
+
+    Both dict and attribute access are handled because the SDK returns model
+    objects on the send call and plain dicts on the webhook payload, and both
+    carry the same two keys.
+    """
+    if node is None:
+        return None, None
+    if isinstance(node, dict):
+        amount, currency = node.get("amount"), node.get("currency")
+    else:
+        amount, currency = getattr(node, "amount", None), getattr(node, "currency", None)
+    amount = str(amount).strip() if amount is not None else None
+    currency = str(currency).strip() if currency else None
+    return (amount or None), currency
+
+
 class TelnyxProvider(SMSProvider):
     name = "telnyx"
 
@@ -88,10 +112,16 @@ class TelnyxProvider(SMSProvider):
             response = self.client.messages.send(**kwargs)
             data = response.data if hasattr(response, "data") else response
 
+            cost = _money(getattr(data, "cost", None))
+            breakdown = getattr(data, "cost_breakdown", None)
             return SendResult(
                 success=True,
                 message_id=str(getattr(data, "id", "")) or None,
                 parts=getattr(data, "parts", None),
+                cost=cost[0],
+                cost_currency=cost[1],
+                cost_rate=_money(getattr(breakdown, "rate", None))[0],
+                cost_carrier_fee=_money(getattr(breakdown, "carrier_fee", None))[0],
                 raw={"to": to, "from": self.from_number},
             )
         except Exception as e:

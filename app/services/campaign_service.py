@@ -29,7 +29,8 @@ from app.models.campaign import Campaign
 from app.models.category import Category
 from app.models.sms_message import SMSMessage
 from app.models.contact import Contact
-from app.services import campaign_outcome, campaign_release
+from app.services import campaign_outcome, campaign_release, message_render
+from app.services import cost_reconciliation
 from app.services.blocklist_service import load_blocked_set, block_number
 # Re-exported deliberately: these three names were defined here before 5e split
 # creation out, and `routers/campaigns.py`, `campaign_dispatch.py` and the suite
@@ -68,27 +69,15 @@ class CampaignService:
 
     # ─── Template rendering ─────────────────────────────────────────────────
 
-    def render(self, template: str, contact: Contact) -> str:
-        """Substitute {placeholders} for one contact.
+    def render(self, template: str, contact: Contact,
+               link_url: Optional[str] = None) -> str:
+        """One recipient's message — see `message_render.render()`.
 
-        Available: {name}, {first_name}, {phone}, plus any key in
-        contact.attributes — so a client-specific {last_order_date} needs no
-        code change, just data on the contact.
-
-        Unknown placeholders are left as-is rather than blanked, so a typo shows
-        up in the preview instead of shipping an awkward gap to 6,000 people.
+        Kept as a method: it is the address the builder, the top-up and
+        pre-flight all reach for, so the renderer whose output is billed stays
+        the one that measured it.
         """
-        name = contact.full_name or ""
-        values = {
-            "name": name,
-            "first_name": name.split(" ")[0] if name else "",
-            "phone": contact.phone,
-            **{k: str(v) for k, v in (contact.attributes or {}).items()},
-        }
-        message = template
-        for key, value in values.items():
-            message = message.replace(f"{{{key}}}", value)
-        return message
+        return message_render.render(template, contact, link_url)
 
     # ─── Creation ───────────────────────────────────────────────────────────
 
@@ -110,18 +99,22 @@ class CampaignService:
                         category_id: Optional[int] = None,
                         cross_category_override: bool = False,
                         scheduled_at: Optional[str] = None,
+                        link_target_url: Optional[str] = None,
                         list_audience: bool = False) -> Campaign:
         """Build a draft — see `campaign_builder.create_campaign()`.
 
         `self.render` is handed over rather than re-implemented there: the
-        renderer whose output is billed has to be the one that measured it.
+        renderer whose output is billed has to be the one that measured it, and
+        since 5f it is also the one that fills in each recipient's own short
+        link.
         """
         return _build_campaign(
             self.db, self.render,
             name=name, message_template=message_template, audience=audience,
             batch_size=batch_size, category_id=category_id,
             cross_category_override=cross_category_override,
-            scheduled_at=scheduled_at, list_audience=list_audience,
+            scheduled_at=scheduled_at, link_target_url=link_target_url,
+            list_audience=list_audience,
         )
 
     # ─── Pre-flight ─────────────────────────────────────────────────────────
@@ -384,6 +377,10 @@ class CampaignService:
                     msg.external_id = result.message_id
                     # Trust the carrier's count; fall back to our estimate.
                     msg.segments = result.parts or count_segments(msg.message)
+                    # What it actually cost US (5f A4). Written by the module
+                    # that reads it back, so the wholesale figure has one owner
+                    # and never crosses the API boundary.
+                    cost_reconciliation.record(msg, result)
                     campaign.sent_count += 1
                     run["sent"] += 1
 
@@ -495,5 +492,9 @@ class CampaignService:
             + (f" (top-up added {run['sent']} of {total}; "
                f"{previously_sent} already sent)" if top_up else "")
         )
+        # Our cost against our estimate, in our log and nowhere the client can
+        # reach — the other half of what `campaigns.estimated_cost` has always
+        # said it was for.
+        cost_reconciliation.log_reconciliation(self.db, campaign_id)
         return campaign
 

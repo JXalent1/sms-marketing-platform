@@ -105,6 +105,32 @@ class SMSMessage(Base):
     # carries the body it was rendered with, and it was never sent before.
     top_up_at = Column(String(50), nullable=True)
 
+    # ─── What the carrier actually charged ──────────────────────────────────
+    #
+    # `campaigns.estimated_cost` has carried a comment since the skeleton saying
+    # it exists to "reconcile against the invoice afterwards", and until 5f
+    # there was nothing to reconcile it against: the provider returns a cost and
+    # a rate/carrier-fee breakdown on every message and both were dropped on the
+    # floor. Per-carrier pass-through differs, so the true blended figure is
+    # per-campaign rather than a constant, and `WHOLESALE_COST_PER_SEGMENT` at
+    # 0.009 is a deliberate over-reserve for the capacity guard rather than a
+    # measurement of anything.
+    #
+    # **These are OUR cost, and they are subject to the same rule as
+    # `WHOLESALE_COST_PER_SEGMENT`: they must never reach a response body, a
+    # template or an export.** The client's money comes from `billing_service`
+    # at `BILLING_PRICE_PER_SEGMENT`. Reconciliation is an operator job and
+    # lives in `app/services/cost_reconciliation.py` and `scripts/cost_report.py`.
+    #
+    # Stored as strings, exactly as the carrier reported them, and summed in
+    # Decimal. A Float column would put a binary expansion between the carrier's
+    # figure and ours, which is the defect session 1b fixed one layer up: money
+    # is Decimal end to end, not only at the rounding step.
+    carrier_cost = Column(String(24), nullable=True)          # total, e.g. "0.0045"
+    carrier_cost_rate = Column(String(24), nullable=True)     # the carrier's rate
+    carrier_cost_fee = Column(String(24), nullable=True)      # per-carrier pass-through
+    carrier_cost_currency = Column(String(8), nullable=True)  # "USD"
+
     __table_args__ = (
         Index("idx_sms_campaign", "campaign_id"),
         Index("idx_sms_status", "status"),

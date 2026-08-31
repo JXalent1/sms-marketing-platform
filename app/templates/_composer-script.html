@@ -203,6 +203,7 @@ async function refreshPreview() {
     paintSuppression(data);
     paintUnicodeWarning(data);
     paintLinkWarning(data);
+    paintLink(data);
 }
 
 // A6 — what the hold-back rule is doing to this audience, before it is queued.
@@ -311,6 +312,7 @@ async function runPreflight() {
             audience,
             category_id: selectedCategory ? selectedCategory.id : null,
             batch_size: Number.isFinite(batch) ? batch : null,
+            link_target_url: linkTarget(),
         }),
     });
 
@@ -378,6 +380,7 @@ el('composer').addEventListener('submit', async function (e) {
                 category_id: selectedCategory ? selectedCategory.id : null,
                 cross_category_override: override,
                 scheduled_at: when ? `${when}:00` : null,
+                link_target_url: linkTarget(),
             }),
         });
         if (data.success) {

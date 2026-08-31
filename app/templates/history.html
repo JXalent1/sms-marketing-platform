@@ -1,0 +1,102 @@
+{% extends "base.html" %}
+{# Campaign history — every blast, newest first, with a route into its report.
+
+   Deferred at launch as module 8 and built in 5f, because the client can send
+   and could not answer "did it work?".
+
+   Every figure comes from /api/reports/campaigns, counted in one grouped query
+   per page. Nothing is tallied here: a screen that adds up rows it was given
+   under-reports the moment the page is capped, and it under-reports quietly. #}
+{% block title %}History{% endblock %}
+
+{% block content %}
+<div class="space-y-4">
+
+  <div class="overflow-hidden rounded-xl border border-line bg-surface">
+    <div class="overflow-x-auto">
+      <table class="w-full min-w-[720px] text-[13px]">
+        <thead>
+          <tr class="border-b border-line text-left text-[11px] uppercase tracking-[0.06em] text-ink-3">
+            <th class="px-5 py-3 font-semibold">Campaign</th>
+            <th class="px-5 py-3 font-semibold">Sent</th>
+            <th class="px-5 py-3 text-right font-semibold">Recipients</th>
+            <th class="px-5 py-3 text-right font-semibold">Delivered to</th>
+            <th class="px-5 py-3 text-right font-semibold">Failed</th>
+            <th class="px-5 py-3 text-right font-semibold">Clicked</th>
+          </tr>
+        </thead>
+        <tbody id="historyRows" class="divide-y divide-line">
+          <tr><td colspan="6" class="px-5 py-6 text-ink-3">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="flex items-center justify-between gap-3">
+    <p class="text-[12px] text-ink-3" id="historyCount"></p>
+    <div class="flex gap-2">
+      <button type="button" id="prevPage"
+              class="rounded-lg border border-line-strong bg-surface px-3 py-1.5 text-[12px] font-medium text-ink
+                     hover:bg-surface-2 disabled:opacity-40">Previous</button>
+      <button type="button" id="nextPage"
+              class="rounded-lg border border-line-strong bg-surface px-3 py-1.5 text-[12px] font-medium text-ink
+                     hover:bg-surface-2 disabled:opacity-40">Next</button>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const STATUS_STYLES = {
+    draft:     'bg-surface-2 text-ink-2',
+    running:   'bg-brand-soft text-brand',
+    completed: 'bg-good-soft text-good-ink',
+    aborted:   'bg-warn-soft text-warn-ink',
+    failed:    'bg-crit-soft text-crit',
+};
+
+let page = 1;
+let pages = 1;
+
+async function loadHistory() {
+    const data = await api(`/api/reports/campaigns?page=${page}`);
+    pages = data.pages;
+    const body = document.getElementById('historyRows');
+
+    if (!data.campaigns.length) {
+        body.innerHTML = '<tr><td colspan="6" class="px-5 py-6 text-ink-3">'
+            + 'No campaigns yet. The Compose screen is where the first one starts.</td></tr>';
+    } else {
+        body.innerHTML = data.campaigns.map(c => `
+        <tr class="hover:bg-surface-2">
+            <td class="px-5 py-3">
+                <a href="/history/${c.id}" class="font-medium text-ink hover:text-brand">${esc(c.name)}</a>
+                <span class="ml-2 rounded px-1.5 py-0.5 text-[11px] font-medium ${STATUS_STYLES[c.status] || STATUS_STYLES.draft}">${esc(c.status)}</span>
+                <p class="mt-0.5 text-[11px] text-ink-3">${esc(c.category_label || c.audience_label || '—')}</p>
+                ${c.abort_reason ? `<p class="mt-1 max-w-[46ch] text-[11px] text-warn-ink">${esc(c.abort_reason)}</p>` : ''}
+            </td>
+            <td class="px-5 py-3 text-ink-2">${esc(fmtDate(c.started_at || c.scheduled_at || c.created_at))}</td>
+            <td class="px-5 py-3 text-right tabular-nums text-ink-2">${c.recipients.toLocaleString()}</td>
+            <td class="px-5 py-3 text-right tabular-nums text-ink-2">${c.sent.toLocaleString()}</td>
+            <td class="px-5 py-3 text-right tabular-nums ${c.failed ? 'text-crit' : 'text-ink-3'}">${c.failed.toLocaleString()}</td>
+            <td class="px-5 py-3 text-right tabular-nums text-ink-2">${(c.clickers || 0).toLocaleString()}</td>
+        </tr>`).join('');
+    }
+
+    document.getElementById('historyCount').textContent =
+        `${data.total.toLocaleString()} campaign${data.total === 1 ? '' : 's'} · page ${data.page} of ${data.pages}`;
+    document.getElementById('prevPage').disabled = data.page <= 1;
+    document.getElementById('nextPage').disabled = data.page >= data.pages;
+}
+
+document.getElementById('prevPage').addEventListener('click', () => {
+    if (page > 1) { page -= 1; loadHistory(); }
+});
+document.getElementById('nextPage').addEventListener('click', () => {
+    if (page < pages) { page += 1; loadHistory(); }
+});
+
+loadHistory();
+</script>
+{% endblock %}
