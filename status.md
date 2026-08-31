@@ -2443,3 +2443,125 @@ Three defects, each in a class this project has hit before.
 - **The live box has still not been deployed to.** Criterion 11 cannot pass until
   someone does. The box runs the pre-5c nginx config, the hot-patched SDK, and
   pre-5d application code.
+
+
+---
+
+## Host-based routing guard — the short domain serves only short links (2026-08-31)
+
+Requested after 5f landed, and it closes a hole 5f opened by shipping a second
+public hostname. `bida4a.com` and `app.onlineauctions.co` are one uvicorn behind
+one nginx, so every route answered on both names: **`bida4a.com/login` and
+`bida4a.com/dashboard` served the admin panel** — the client's entire contact
+list — on the one domain a stranger is handed with every campaign.
+
+449 tests (447 + 2 from the review below), gate green twice,
+`agent/accept-5f.sh` extended with criteria 12-14 as the stop condition and six
+new mutations in `agent/mutate-5f.py`.
+
+### The guard
+
+`short_link_host_guard` in `app/main.py`: when the request `Host` (port
+stripped, case-insensitive) is `SHORT_LINK_DOMAIN`, only the redirect route
+resolves and everything else is 404 **before routing**. Middleware rather than a
+dependency because it has to run before a route matches, and because a mount
+like `/static` has no dependency to hang one on.
+
+- **No nginx path denylist, and that was the decision.** A denylist has to name
+  every admin path, so it is wrong the first time somebody adds a page — and the
+  failure is silent, on the host nobody looks at. The guard asks the opposite
+  question: is this path *positively* a short link? Anything new is excluded by
+  default. `link_service` owns both halves of the answer because it already owns
+  the domain and the slug shape; `main.py` stays wiring, as its own docstring
+  requires.
+- **The 404 body is the one an expired slug gets.** A probe of
+  `bida4a.com/dashboard` and a probe of a dead slug are byte-identical, so
+  sweeping the short domain reveals nothing about what else is behind the
+  process.
+- **The redirect still resolves on the primary host**, deliberately: links
+  already in people's phones survive a domain change, and those are unrecallable.
+- **`Host` only, never `X-Forwarded-Host`.** nginx sets `Host` from `$host`,
+  i.e. from the server block that matched; a client-supplied forwarding header
+  is not evidence. There is no bypass in ignoring it either — a request that
+  lies about its Host is routed by nginx to the admin block it would have
+  reached anyway.
+- Guarded paths cost **zero queries**: the guard runs before routing and before
+  any session is opened, so a scanner sweeping the short domain is free.
+
+### nginx and bootstrap
+
+`deployment/nginx.conf.template` gained the short-link server block, with
+`YOUR_SHORT_DOMAIN` and `YOUR_AUCTION_SITE` as placeholders. It proxies
+everything and lets the middleware decide, keeping only the ACME location and
+the bare-`/` redirect to the auction house's own site — the one path there that
+is a person rather than a link. Security headers are the empty-policy set
+(`default-src 'none'`), and `Referrer-Policy` is deliberately *not* set because
+the app already sets `no-referrer` on the redirect and `add_header` appends
+rather than replaces.
+
+**The block existed only as a hand edit on the box**, so a `bootstrap.sh` run
+would have reverted it — and the symptom of that is the admin panel answering on
+the short domain again, on a host nobody looks at. `bootstrap.sh` now takes
+`--short-domain` and `--auction-site` and substitutes all three placeholders in
+one pass.
+
+`deploy.sh` gained a warning at `HEALTH_URL`: it must never point at the short
+domain, because `/health` is 404 there and a non-200 rolls the release back —
+which would revert every deploy including the one that fixes the box. The
+default is an IP and a port, so it matches no configured domain and the guard is
+a no-op for it.
+
+`.env.example` documents `SHORT_LINK_DOMAIN`, `SHORT_LINK_INCLUDE_SCHEME` and
+`CLICK_MIN_HUMAN_SECONDS` for the first time — 5f added all three settings and
+documented none of them, and `.env.example` is the file a new box is copied from.
+
+### What the review found (ten lenses, worked in session)
+
+No reviewer was spawned: two produced nothing across 5f, and CLAUDE.md now says
+to work the lenses directly. Two defects, both found by running something rather
+than by reading.
+
+1. **`/settings` served its page on the short host.** `settings` is eight
+   characters of the slug alphabet, so the shape test said "that is a slug", and
+   routing — where `/settings` is registered before `/{slug}` — then handed it
+   to the admin page. Measured: 302 to the login form while every *other* admin
+   path answered 404. One page leaking is the whole leak. `is_slug_path()` now
+   subtracts `RESERVED_SLUGS`, which costs nothing because no slug is ever
+   minted from that set. This is the same collision `RESERVED_SLUGS` already
+   closed on the *minting* side, arriving on the serving side — the two halves
+   of one namespace.
+2. **A misconfigured `SHORT_LINK_DOMAIN` would 404 the entire product.** Set it
+   to the admin host — a copy-paste away — and the guard matches every request,
+   so every page answers "This link has expired or was mistyped." with nothing
+   on screen connecting it to a setting. There is no configuration in which
+   blocking is right when the two names are the same, so
+   `short_domain_conflicts()` fails the guard **open** and the startup log says
+   so loudly. The cheap error is the pre-existing state (both surfaces on one
+   name); the expensive one is an undiagnosable outage.
+
+Also checked and clean: the send path is untouched (the whole change is +113
+lines across two files, purely additive); no migration; `app/sms/` still imports
+nothing from the DB layer; every one of the 25 new tests passes on its own; the
+nginx template parses under real nginx (`nginx -t` in a container); carriers'
+webhooks still work on the primary host and 404 on the short one; and the
+`/health` rollback trap is documented at the line that could spring it.
+
+Three of my own measurement scripts were wrong before the code was — a shell
+loop that split a parametrized test id on whitespace, a layering grep that
+counted a comment *stating* the rule, and a white-label grep that counted
+`main.py`'s internal webhook module imports. All three are the "prose about a
+rule is not a violation of it" shape that `accept-5h` check 7 and this session's
+own check 8b had to fix. A check written in a hurry is a check that reports on
+itself.
+
+### Found while working
+
+- **A trailing slash is not a slug.** `/{slug}/` answers 404 on the short host
+  where the primary host 307s to the canonical path. Deliberate — a slug with a
+  slash is not a link we minted — but if a handset or an SMS client is ever
+  found appending one, that is where to look.
+- **The guard is keyed on one domain.** A second short domain (a rebrand, a
+  parallel client) needs `SHORT_LINK_DOMAIN` to become a list, and every reader
+  of it — `domain()`, `url_for()`, `validate_target()` — assumes one.
+- **`campaign_service.py` is at exactly 500 lines.** Not over, so the gate
+  passes, but the next line anywhere in it forces a split.

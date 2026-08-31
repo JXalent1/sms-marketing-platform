@@ -5,6 +5,7 @@ adapting this to a new client means editing modules, not untangling this file.
 """
 
 from fastapi import FastAPI
+from fastapi.responses import PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
@@ -19,6 +20,7 @@ setup_logging()
 
 from app.core.config import settings
 from app.core.database import engine
+from app.services import link_service
 from app.sms.factory import get_provider
 import app.models                                    # noqa: F401 — registers tables
 
@@ -105,6 +107,26 @@ async def lifespan(app: FastAPI):
     if provider.name == "console":
         logger.warning("SMS provider is 'console' — messages are logged, NOT sent.")
 
+    # One line about the host guard on every boot, because its two failure modes
+    # are both silent on the screen. Either the short domain is unset and the
+    # {link} tag is refused at compose time, or it is set and that name serves
+    # nothing but redirects — and a reader of the log should not have to infer
+    # which from the absence of a message.
+    if link_service.short_domain_conflicts():
+        logger.error(
+            "SHORT_LINK_DOMAIN is the same host as PUBLIC_BASE_URL (%s). The "
+            "short-link host guard is DISABLED, because enabling it would 404 "
+            "every page of the admin panel. Set SHORT_LINK_DOMAIN to the "
+            "dedicated short domain, or leave it blank.",
+            link_service.primary_host(),
+        )
+    elif link_service.configured():
+        logger.info("Short-link host guard active | %s serves the redirect "
+                    "route only", link_service.domain())
+    else:
+        logger.info("SHORT_LINK_DOMAIN is unset | short links are off and the "
+                    "host guard is a no-op")
+
     # Register scheduled jobs here. Give every job an explicit id and
     # replace_existing=True, or a reload quietly stacks duplicates that all fire
     # at once.
@@ -189,6 +211,41 @@ app.mount("/static", StaticFiles(directory="app/static"), name="static")
 limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+
+@app.middleware("http")
+async def short_link_host_guard(request, call_next):
+    """On the short-link domain, only the redirect route exists.
+
+    The short domain and the admin panel are one process behind one nginx, so
+    without this every route answers on both and `bida4a.com/login` is the
+    client's whole contact list on the domain printed in every text message.
+
+    **Why here and not an nginx path denylist.** A denylist has to be updated
+    every time a route is added, in a file that knows nothing about the routes —
+    it is wrong the first time somebody adds a page and nobody notices, because
+    the failure is silent and on the wrong host. This asks the opposite
+    question: is the path positively a link? Anything new is excluded by
+    default. `link_service` owns both halves of the answer because it already
+    owns the domain and the slug shape; main.py stays wiring, as its own
+    docstring requires.
+
+    Middleware rather than a dependency: it has to run *before* routing, or the
+    404 would come from a route that had already matched, and a mount like
+    `/static` has no dependency to hang one on.
+
+    The body is `links.UNKNOWN_LINK` — the same 404 an expired slug gets. A
+    probe of `bida4a.com/dashboard` and a probe of `bida4a.com/aaaaaaaa` are
+    then indistinguishable, so scanning the short domain reveals nothing about
+    what else is behind the process.
+
+    A no-op when `SHORT_LINK_DOMAIN` is unset, which is every box without a
+    short domain, a fresh clone, and the suite.
+    """
+    if (link_service.is_short_link_host(request.headers.get("host"))
+            and not link_service.is_slug_path(request.url.path)):
+        return PlainTextResponse(links.UNKNOWN_LINK, status_code=404)
+    return await call_next(request)
 
 app.include_router(pages.router)
 app.include_router(dashboard.router)

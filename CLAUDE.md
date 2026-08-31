@@ -341,6 +341,33 @@ change to a live table.
   instead of the auction. One in 10^12 today, and it grows every time a page is
   added. `RESERVED_SLUGS` closes the class, and the test that keeps it honest
   reads the app's own route table instead of pinning the list.
+  <br>**The namespace has two halves and closing one does not close the other.**
+  The same collision came back on the *serving* side the moment a host guard
+  asked "is this path a slug?": `settings` is slug-shaped, so the guard waved
+  `/settings` through and routing handed it to the admin page — 302 to the login
+  form on the short domain while every other admin path answered 404. One page
+  leaking is the whole leak. `is_slug_path()` subtracts the same set. When you
+  add a rule that recognises a shape, ask where else that shape is decided.
+- **Two public hostnames on one process is two products, and only one of them
+  was designed.** 5f gave this app a short-link domain; both names then answered
+  every route, so the domain printed in every text message also served `/login`
+  and the client's entire contact list. The fix is a host guard in the app
+  (`short_link_host_guard` in `app/main.py`), not an nginx path denylist — a
+  denylist has to name every admin path, so it is wrong the first time somebody
+  adds a page, and the failure is silent on the host nobody looks at. Invert the
+  question: serve a path on the second name only if it is *positively* the thing
+  that name exists for. Then a new route is excluded by default instead of by
+  remembering. And give the refusal the same body the legitimate 404 has, or
+  scanning the second hostname maps the first one.
+- **A guard keyed on configuration takes the product down when the configuration
+  is wrong.** `SHORT_LINK_DOMAIN` set to the admin host — a copy-paste — makes
+  the host guard match every request, so every page answers "This link has
+  expired or was mistyped." with nothing on screen connecting it to a setting.
+  There is no configuration in which blocking is right there, because then the
+  two names are the same name. So it fails **open** and logs loudly at startup.
+  Before shipping a guard that reads a setting, ask what it does when the
+  setting is wrong, and which of the two errors you would rather explain to a
+  client: the pre-existing weakness, or an outage nobody can diagnose.
 
 ## Where things live
 
@@ -533,3 +560,27 @@ harness.
 
 Default to one synchronous fresh-context review plus `agent/mutate-*.py`. Fan-out costs
 tokens and interruptions and, on this project's evidence, buys nothing.
+
+### A measurement script is code, and it fails the same ways
+
+Three times now a verification script has been wrong before the code was, and every time
+in the same shape: **prose describing a rule counted as a violation of it.** Check 8b
+flagged a docstring. A layering grep counted a comment stating the layering rule. A
+white-label grep flagged `main.py`'s own webhook module imports.
+
+Two consequences, both learned the expensive way:
+
+- **Re-run each check by hand against a case you know the answer to.** A green check whose
+  script is broken is worse than no check, because it is quoted as evidence.
+- **A failing check is a hypothesis, not a verdict.** Confirm the violation exists before
+  changing code to satisfy the grep.
+
+### The same word collides in every layer that pattern-matches a path
+
+`/settings` is eight characters of the slug alphabet. It slipped past an nginx slug regex,
+had to be excluded from slug *minting* (`RESERVED_SLUGS`), and then leaked again on the
+*serving* side because `/settings` is registered before `/{slug}`. Three layers, one
+collision, three separate fixes before it was closed.
+
+When a shape test decides routing, every layer that applies it must subtract the same
+reserved set — from one shared definition, not three copies that drift.

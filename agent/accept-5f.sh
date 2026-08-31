@@ -4,10 +4,19 @@
 # The stop condition for this session. `agent/gate.sh` answers "is this repo
 # still sound?"; this answers "did session 5f do what it was sent to do?", which
 # is a different question and the one RULES.md requires an agent to demonstrate
-# rather than declare. Each check below is one numbered criterion from
+# rather than declare. Checks 1-11 are the numbered criteria from
 # `sessions/session-5f.md` -> "Part A acceptance", in order.
 #
-#   bash agent/accept-5f.sh                 checks 1-10 (all local)
+# **Checks 12-14 are not in that spec.** They are the host-based routing guard,
+# requested 2026-08-31 after 5f landed: the short-link domain and the admin
+# panel are one process, and until the guard existed every route answered on
+# both names. They live here rather than in a script of their own because they
+# are the same claim as the rest of this file — "the short-link domain serves
+# only short links" — and one stop condition for one feature is worth more than
+# two that can disagree. RULES forbids editing a session spec after the fact, so
+# they are marked as an addition rather than folded in silently.
+#
+#   bash agent/accept-5f.sh                 checks 1-10, 12-14 (all local)
 #   bash agent/accept-5f.sh --with-remote   adds check 11, against the deployed box
 #
 # Check 11 needs the deployed site and a login, so it is opt-in and never runs by
@@ -81,6 +90,8 @@ declare -a CRITERIA=(
   "7|actual cost and its rate/carrier-fee split are captured per message, and the reconciliation puts estimate against actual|tests/test_campaign_reports.py::test_the_carrier_cost_and_its_split_are_captured_per_message tests/test_campaign_reports.py::test_the_reconciliation_puts_estimate_against_actual tests/test_campaign_reports.py::test_an_unpriced_message_is_not_counted_as_free"
   "8|no wholesale cost, carrier name or raw provider payload on the report, the export or either history screen|tests/test_campaign_reports.py::test_no_new_surface_leaks_the_carrier_or_our_cost tests/test_campaign_reports.py::test_the_export_carries_the_report_and_the_recipients tests/test_whitelabel.py"
   "9|both history screens paginate, and the query count does not scale with the rows returned|tests/test_campaign_reports.py::test_both_history_screens_paginate_in_a_bounded_number_of_queries tests/test_campaign_reports.py::test_contact_history_names_the_campaign_and_says_whether_they_clicked"
+  "12|ADDED 2026-08-31 — every admin route 404s on the short-link host, indistinguishably from an expired link, before it reaches a router|tests/test_short_link_host.py::test_every_admin_route_404s_on_the_short_host tests/test_short_link_host.py::test_the_short_host_404_is_the_same_one_an_expired_link_gets tests/test_short_link_host.py::test_a_reserved_word_that_is_slug_shaped_does_not_reach_its_page tests/test_short_link_host.py::test_a_post_to_the_short_host_is_refused_before_it_reaches_a_router"
+  "13|ADDED 2026-08-31 — the primary host is untouched, a slug resolves on both, and the guard is a no-op when no short domain is set|tests/test_short_link_host.py::test_the_admin_panel_still_works_on_the_primary_host tests/test_short_link_host.py::test_the_redirect_still_resolves_on_both_hosts tests/test_short_link_host.py::test_the_guard_is_a_no_op_when_no_short_domain_is_configured tests/test_short_link_host.py::test_a_forwarding_header_cannot_move_a_request_onto_the_short_host tests/test_short_link_host.py::test_an_unknown_slug_on_the_short_host_leaks_no_database_connection tests/test_short_link_host.py::test_pointing_the_short_domain_at_the_admin_host_disables_the_guard tests/test_short_link_host.py::test_the_primary_host_is_read_from_public_base_url_however_it_is_written"
 )
 for entry in "${CRITERIA[@]}"; do
   number="${entry%%|*}"; rest="${entry#*|}"
@@ -234,6 +245,73 @@ else
   ok "no template names a wholesale figure"
 fi
 
+# ── 14. The nginx template renders, and renders no path denylist ───────────
+# ADDED 2026-08-31 with the host guard. The short-link server block existed only
+# as a hand edit on the box, so a bootstrap run reverted it — and the symptom of
+# that is the admin panel answering on the short domain again, on a host nobody
+# looks at. It is in the template now, with the domain as a placeholder, and
+# this is what stops it drifting back out.
+step "14. the nginx template carries both server blocks and no path denylist"
+RENDERED="$SCRATCH/nginx-site.conf"
+sed -e 's/YOUR_DOMAIN/app.onlineauctions.test/g' \
+    -e 's/YOUR_SHORT_DOMAIN/bida4a.test/g' \
+    -e 's|YOUR_AUCTION_SITE|https://onlineauctions.test|g' \
+    deployment/nginx.conf.template > "$RENDERED"
+
+if [[ $(grep -c '^server {' "$RENDERED") -ne 2 ]]; then
+  bad "the template no longer has exactly two server blocks"
+elif ! grep -q 'server_name bida4a.test;' "$RENDERED"; then
+  bad "YOUR_SHORT_DOMAIN did not render — the short-link block is not parameterised"
+elif ! grep -q 'return 302 https://onlineauctions.test;' "$RENDERED"; then
+  bad "YOUR_AUCTION_SITE did not render — the bare-/ redirect is not parameterised"
+elif grep -qE '^\s*location\s+[=~^]*\s*/(login|dashboard|campaigns|contacts|settings|usage|blocklist|history|api)' "$RENDERED"; then
+  grep -nE '^\s*location\s+[=~^]*\s*/(login|dashboard|campaigns|contacts|settings|usage|blocklist|history|api)' "$RENDERED"
+  bad "a path denylist has appeared in nginx — the app owns that decision, and a list here drifts"
+else
+  ok "two server blocks, both placeholders render, no admin path is named in nginx"
+fi
+
+# Unrendered placeholders are what a bootstrap run without the flags leaves
+# behind, and an unmatched server_name is harmless — but a placeholder that
+# survives a *rendered* file is a sed that stopped matching.
+if grep -q 'YOUR_SHORT_DOMAIN\|YOUR_AUCTION_SITE\|YOUR_DOMAIN' "$RENDERED"; then
+  grep -n 'YOUR_SHORT_DOMAIN\|YOUR_AUCTION_SITE\|YOUR_DOMAIN' "$RENDERED" | head -3
+  bad "a placeholder survived rendering"
+else
+  ok "no placeholder survives a full render"
+fi
+
+# bootstrap.sh has to substitute all three, or the template is right and the box
+# is not. Checked by running it, not by reading it.
+if ! bash deployment/bootstrap.sh --dry-run --domain app.onlineauctions.test \
+      --short-domain bida4a.test --auction-site https://onlineauctions.test \
+      >"$SCRATCH/bootstrap.log" 2>&1; then
+  tail -10 "$SCRATCH/bootstrap.log"
+  bad "bootstrap.sh --dry-run failed"
+elif ! grep -q 'YOUR_SHORT_DOMAIN -> bida4a.test' "$SCRATCH/bootstrap.log" \
+   || ! grep -q 'YOUR_AUCTION_SITE -> https://onlineauctions.test' "$SCRATCH/bootstrap.log"; then
+  bad "bootstrap.sh does not substitute the short-link placeholders"
+else
+  ok "bootstrap.sh renders all three placeholders"
+fi
+
+# nginx's own parser, when it is available. Opt-out rather than opt-in: a
+# template that does not parse is a failed bootstrap on the box, and that is
+# worth ninety seconds. Skipped with a printed line when docker is not usable,
+# never silently.
+step "14b. nginx parses the rendered template"
+if [[ "${ACCEPT_SKIP_NGINX:-0}" == "1" ]]; then
+  echo "   (skipped — ACCEPT_SKIP_NGINX=1)"
+elif ! command -v docker >/dev/null 2>&1; then
+  echo "   (skipped — docker not on PATH; nginx is not installed locally either)"
+elif ! timeout 120 docker run --rm -v "$RENDERED:/etc/nginx/conf.d/site.conf:ro" \
+      nginx:alpine nginx -t >"$SCRATCH/nginx-t.log" 2>&1; then
+  tail -10 "$SCRATCH/nginx-t.log"
+  bad "nginx rejects the rendered template"
+else
+  ok "$(grep -c 'successful' "$SCRATCH/nginx-t.log" >/dev/null && echo 'nginx -t reports the configuration is valid')"
+fi
+
 # ── 10. Each fix reverted on its own, and the suite has to notice ───────────
 step "10. every 5f fix reverted one at a time; each must break a test"
 MUTATION_TREE="$SCRATCH/mutation-tree"
@@ -296,11 +374,38 @@ else
       fi
     done
   fi
+
+  # The host guard, on the real box. Added 2026-08-31. This is the check that
+  # actually matters — the middleware can be right and nginx can still be
+  # sending the short domain into the wrong server block, or forwarding a Host
+  # the guard does not recognise, and only a request over the wire says which.
+  if [[ -z "${A4A_SHORT_URL:-}" ]]; then
+    echo "   (short-host checks not run — set A4A_SHORT_URL=https://<short-domain>)"
+  else
+    for path in /login /dashboard /settings /contacts /api/reports/campaigns; do
+      CODE=$(curl -s -o /dev/null -w "%{http_code}" "${A4A_SHORT_URL}${path}")
+      [[ "$CODE" == "404" ]] && ok "short host ${path} -> 404" \
+        || bad "short host ${path} returned $CODE — the admin panel answers on the short domain"
+    done
+    # The bare root is nginx's, not the app's, and it is the one path here that
+    # is a person rather than a link.
+    ROOT=$(curl -s -o /dev/null -w "%{http_code}" "${A4A_SHORT_URL}/")
+    [[ "$ROOT" == "301" || "$ROOT" == "302" ]] && ok "short host / -> $ROOT" \
+      || bad "short host / returned $ROOT (expected a redirect to the auction site)"
+    # And a real slug still resolves, or the guard has taken the feature with it.
+    if [[ -n "${A4A_SLUG:-}" ]]; then
+      SLUG_CODE=$(curl -s -o /dev/null -w "%{http_code}" "${A4A_SHORT_URL}/${A4A_SLUG}")
+      [[ "$SLUG_CODE" == "302" ]] && ok "short host /${A4A_SLUG} -> 302" \
+        || bad "short host /${A4A_SLUG} returned $SLUG_CODE"
+    else
+      echo "   (slug check not run — set A4A_SLUG to a real slug from the box)"
+    fi
+  fi
 fi
 
 printf '\n'
 if [[ $FAIL -eq 0 ]]; then
-  echo "ACCEPT PASS — session 5f Part A"
+  echo "ACCEPT PASS — session 5f Part A (+ the host guard, added 2026-08-31)"
   [[ $WITH_REMOTE -eq 0 ]] && echo "  (criterion 11 not run; it needs the deploy)"
 else
   echo "ACCEPT FAILED — see above"

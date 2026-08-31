@@ -23,6 +23,11 @@ APP_NAME="${APP_NAME:-a4a-sms}"
 APP_USER="${APP_USER:-appuser}"
 APP_DIR="${APP_DIR:-/home/$APP_USER/app}"
 DOMAIN="${DOMAIN:-}"
+# The short-link domain and where its bare root sends a human. Both optional:
+# an unrendered placeholder is a server block nginx never matches, which is the
+# same harmless outcome a missing --domain already has.
+SHORT_DOMAIN="${SHORT_DOMAIN:-}"
+AUCTION_SITE="${AUCTION_SITE:-}"
 PYTHON="${PYTHON:-python3.12}"
 
 DRY_RUN=0
@@ -30,6 +35,8 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --dry-run) DRY_RUN=1 ;;
         --domain)  DOMAIN="${2:?--domain needs a value}"; shift ;;
+        --short-domain) SHORT_DOMAIN="${2:?--short-domain needs a value}"; shift ;;
+        --auction-site) AUCTION_SITE="${2:?--auction-site needs a value}"; shift ;;
         --user)    APP_USER="${2:?--user needs a value}"; APP_DIR="/home/$APP_USER/app"; shift ;;
         --name)    APP_NAME="${2:?--name needs a value}"; shift ;;
         -h|--help) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
@@ -67,6 +74,8 @@ say "app name : $APP_NAME"
 say "user     : $APP_USER"
 say "directory: $APP_DIR"
 say "domain   : ${DOMAIN:-<unset — nginx site will keep the YOUR_DOMAIN placeholder>}"
+say "short    : ${SHORT_DOMAIN:-<unset — the short-link server block stays a placeholder>}"
+say "bare / → : ${AUCTION_SITE:-<unset>}"
 
 # ── 1. Packages ──────────────────────────────────────────────────────────────
 # Node is here for one reason: the stylesheet is compiled, not fetched from a
@@ -108,10 +117,20 @@ NGINX_SITE="/etc/nginx/sites-available/$APP_NAME"
 if [ "$DRY_RUN" -eq 1 ]; then
     say "  would render deployment/nginx.conf.template -> $NGINX_SITE"
     say "  would substitute YOUR_DOMAIN -> ${DOMAIN:-<unset>}"
+    say "  would substitute YOUR_SHORT_DOMAIN -> ${SHORT_DOMAIN:-<unset>}"
+    say "  would substitute YOUR_AUCTION_SITE -> ${AUCTION_SITE:-<unset>}"
     say "  would link into sites-enabled and reload nginx"
 else
     RENDERED="$(mktemp)"
-    sed "s/YOUR_DOMAIN/${DOMAIN:-YOUR_DOMAIN}/g" deployment/nginx.conf.template > "$RENDERED"
+    # All three placeholders in one pass. The short-link block was a hand edit
+    # on the box until this existed, which meant a bootstrap run silently
+    # reverted it — and the symptom of that is the admin panel answering on the
+    # short domain again, on a host nobody looks at. `|` as the delimiter for
+    # the auction site because it is a URL and contains slashes.
+    sed -e "s/YOUR_DOMAIN/${DOMAIN:-YOUR_DOMAIN}/g" \
+        -e "s/YOUR_SHORT_DOMAIN/${SHORT_DOMAIN:-YOUR_SHORT_DOMAIN}/g" \
+        -e "s|YOUR_AUCTION_SITE|${AUCTION_SITE:-YOUR_AUCTION_SITE}|g" \
+        deployment/nginx.conf.template > "$RENDERED"
     sudo cp "$RENDERED" "$NGINX_SITE"
     rm -f "$RENDERED"
     sudo ln -sf "$NGINX_SITE" "/etc/nginx/sites-enabled/$APP_NAME"
@@ -175,7 +194,7 @@ cat <<EOF
      That builds the stylesheet and fonts, syncs the code, backs up the database,
      runs 'alembic upgrade head', restarts, and health-checks /health.
 
-  3. Certificate:  sudo certbot --nginx -d ${DOMAIN:-<your-domain>}
+  3. Certificate:  sudo certbot --nginx -d ${DOMAIN:-<your-domain>}${SHORT_DOMAIN:+ -d $SHORT_DOMAIN}
 
   4. Click through every screen over HTTPS with SMS_PROVIDER=console.
 

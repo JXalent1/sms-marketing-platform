@@ -35,6 +35,7 @@ TARGETS = [
     "tests/test_click_filtering.py",
     "tests/test_campaign_reports.py",
     "tests/test_campaign_preflight.py",
+    "tests/test_short_link_host.py",
 ]
 
 MUTATIONS = {
@@ -268,6 +269,45 @@ MUTATIONS = {
     "            if candidate not in RESERVED_SLUGS:\n"
     "                chosen.add(candidate)",
     "            chosen.add(candidate)")],
+
+ # ── The host guard: the short domain serves short links and nothing else ───
+ "R22 the host guard is gone — every admin route answers on the short domain": [
+   ("app/main.py",
+    "    if (link_service.is_short_link_host(request.headers.get(\"host\"))\n"
+    "            and not link_service.is_slug_path(request.url.path)):\n"
+    "        return PlainTextResponse(links.UNKNOWN_LINK, status_code=404)",
+    "    if False:\n"
+    "        return PlainTextResponse(links.UNKNOWN_LINK, status_code=404)")],
+
+ "R22b the guard forgets the reserved words, so /settings serves its page": [
+   ("app/services/link_service.py",
+    "    return bool(SLUG_RE.match(candidate)) and candidate not in RESERVED_SLUGS",
+    "    return bool(SLUG_RE.match(candidate))")],
+
+ "R22c the guard blocks the slug route on the primary host too, breaking "
+ "every link already in somebody's phone": [
+   ("app/main.py",
+    "    if (link_service.is_short_link_host(request.headers.get(\"host\"))\n"
+    "            and not link_service.is_slug_path(request.url.path)):",
+    "    if not link_service.is_slug_path(request.url.path):")],
+
+ "R22d the host comparison is case- and port-sensitive": [
+   ("app/services/link_service.py",
+    "    return normalize_host(raw_host) == normalize_host(configured_domain)",
+    "    return (raw_host or \"\") == configured_domain")],
+
+ "R22f the guard stays on when the short domain IS the admin host, 404ing "
+ "every page of the product": [
+   ("app/services/link_service.py",
+    "    if not configured_domain or short_domain_conflicts():",
+    "    if not configured_domain:")],
+
+ "R22e the guard reads a client-supplied forwarding header instead of Host": [
+   ("app/main.py",
+    "    if (link_service.is_short_link_host(request.headers.get(\"host\"))",
+    "    if (link_service.is_short_link_host(\n"
+    "            request.headers.get(\"x-forwarded-host\")\n"
+    "            or request.headers.get(\"host\"))")],
 
  # ── Criterion 8: nothing on a client surface is ours ───────────────────────
  "R18 the message history stops scrubbing the carrier's own error text": [

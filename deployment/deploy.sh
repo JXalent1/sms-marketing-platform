@@ -52,6 +52,12 @@ REMOTE_DIR="${REMOTE_DIR:-/home/appuser/app}"
 # directly rather than the public URL: this is asking "did the process come
 # back", and a green answer through nginx and TLS could be a cached page or a
 # stale worker.
+#
+# **Never point this at SHORT_LINK_DOMAIN.** The host guard in app/main.py
+# serves only the redirect route on that name, so /health there is a 404 — and
+# a non-200 here rolls the release back, which would revert every deploy
+# including the one that fixes the box. The default is an IP and a port and
+# therefore matches no configured domain, so the guard is a no-op for it.
 HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:8000/health}"
 
 run() { if [ "$DRY_RUN" -eq 1 ]; then printf '  would run: %s\n' "$*"; else "$@"; fi; }

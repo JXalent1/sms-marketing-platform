@@ -141,6 +141,108 @@ def has_link_tag(template: Optional[str]) -> bool:
     return LINK_TAG in (template or "")
 
 
+# ─── Which host is this, and what may it serve? ─────────────────────────────
+#
+# The short domain and the admin panel are one process. Without a guard every
+# route resolves on both, so `bida4a.com/login` serves the client's entire
+# contact list behind a password on a domain whose only job is to redirect —
+# and the domain that appears in every text message is the one an attacker is
+# handed for free.
+#
+# The authority lives here rather than in an nginx path denylist, and that was
+# the choice: a denylist drifts the moment a route is added, and it puts "what
+# may be served" in a file that knows nothing about the routes. Here it is one
+# question — does the path match the slug shape this module already defines —
+# so a new route is excluded by default rather than by remembering to add it.
+
+def normalize_host(raw: Optional[str]) -> str:
+    """A Host header or a configured domain, reduced to a comparable name.
+
+    Lowercased and port-stripped, so `A4A.BZ:8000` and `a4a.bz` are the same
+    host. Both sides of the comparison go through this: `SHORT_LINK_DOMAIN` may
+    legitimately carry a port in development (`localhost:8000`), and stripping
+    it from only one side would silently switch the guard off there — which is
+    the environment where it is easiest not to notice.
+
+    IPv6 literals keep their brackets: `[::1]:8000` is `[::1]`, not `[`.
+    """
+    host = (raw or "").strip().lower()
+    if host.startswith("["):
+        closing = host.find("]")
+        return host[:closing + 1] if closing != -1 else host
+    head, separator, tail = host.rpartition(":")
+    return head if separator and tail.isdigit() else host
+
+
+def primary_host() -> str:
+    """The host the admin panel is served on, from `PUBLIC_BASE_URL`."""
+    base = (settings.PUBLIC_BASE_URL or "").strip()
+    return normalize_host(re.sub(r"^https?://", "", base, flags=re.IGNORECASE)
+                          .split("/")[0])
+
+
+def short_domain_conflicts() -> bool:
+    """Is `SHORT_LINK_DOMAIN` the same host the admin panel is served on?
+
+    A copy-paste away, and the symptom is the worst kind: the guard would match
+    every request, so *every* page of the product answers 404 with "This link
+    has expired or was mistyped." — no login, no dashboard, nothing, and nothing
+    on screen connecting it to a setting. A client would report the product as
+    down and nobody would think to look here.
+
+    There is no configuration in which blocking is the right answer when the two
+    names are the same, because then the short domain *is* the admin domain. So
+    the guard fails open and `main.py` logs it loudly at startup. That is the
+    cheap error: the wrong outcome is the pre-existing one (both surfaces on one
+    name), against a total outage with a misleading message.
+    """
+    configured = domain()
+    return bool(configured) and normalize_host(configured) == primary_host()
+
+
+def is_short_link_host(raw_host: Optional[str]) -> bool:
+    """Is this request addressed to the short-link domain?
+
+    False when `SHORT_LINK_DOMAIN` is unset, which makes the guard a no-op on
+    every box that has not been given a short domain — including a fresh clone
+    and the test suite.
+
+    Reads the `Host` header only, never `X-Forwarded-Host`. nginx sets `Host`
+    from `$host`, i.e. from the server block that matched, and a client-supplied
+    forwarding header is not evidence of anything. There is no bypass in
+    ignoring it either: a request that lies about its Host is routed by nginx to
+    the *other* server block, which is the admin panel it would have reached
+    anyway.
+    """
+    configured_domain = domain()
+    if not configured_domain or short_domain_conflicts():
+        return False
+    return normalize_host(raw_host) == normalize_host(configured_domain)
+
+
+def is_slug_path(path: Optional[str]) -> bool:
+    """Is this the one route the short domain exists to serve?
+
+    `/{slug}` and nothing else — not `/health`, not `/static`, not a trailing
+    slash. Deliberately strict: the point of the guard is that a path is served
+    on the short host only if it is positively a link, so anything new is
+    excluded without anyone remembering to exclude it.
+
+    **`RESERVED_SLUGS` is subtracted, and leaving it out was a real hole.**
+    `settings` is eight characters of the slug alphabet, so the shape test says
+    yes — and `/settings` is registered before `/{slug}`, so routing then hands
+    it to the admin page. Measured before this line existed: `/settings` on the
+    short host answered 302 to the login form while every other admin path
+    answered 404. That is the same collision `RESERVED_SLUGS` closes on the
+    minting side, arriving on the serving side, and it costs nothing to close
+    here because no slug is ever minted from that set.
+    """
+    if not path or not path.startswith("/"):
+        return False
+    candidate = path[1:]
+    return bool(SLUG_RE.match(candidate)) and candidate not in RESERVED_SLUGS
+
+
 def for_counting(template: Optional[str]) -> str:
     """The template as it will be *measured*, with the tag at its rendered width.
 

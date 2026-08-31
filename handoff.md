@@ -805,3 +805,36 @@ has to know before touching any of it:
     assert two rows against eight cost the *same* number of queries, not an
     absolute bound: a bound alone passes happily on a per-row lookup while the
     fixture is small, which is how an N+1 ships under a green suite.
+
+
+---
+
+## Host guard — the short domain serves only short links (2026-08-31)
+
+Added after 5f, because 5f shipped a second public hostname and both names
+answered every route. 449 tests, gate green twice, `agent/accept-5f.sh` criteria
+12-14, six new mutations. Read `status.md` -> "Host-based routing guard" for the
+full account. Four things before touching it:
+
+23. **The authority is the app, not nginx.** `deployment/nginx.conf.template`'s
+    short-link block proxies everything and names no admin path on purpose. A
+    denylist there would have to be updated with every new route, and it would
+    be wrong silently. If you find yourself adding `location /something { deny }`
+    to that block, the answer is almost certainly in
+    `link_service.is_slug_path()`.
+
+24. **`proxy_set_header Host $host` is load-bearing.** The guard compares that
+    header against `SHORT_LINK_DOMAIN`. Change it to a literal or to
+    `$proxy_host` and the guard silently stops matching — every admin route
+    answers on the short domain again, with nothing failing.
+
+25. **The guard fails open when `SHORT_LINK_DOMAIN` is the admin host**, and
+    that is deliberate: enabling it there 404s every page of the product. The
+    startup log distinguishes all three states (conflict, active, unset), so a
+    box behaving oddly is one `journalctl` away from the answer.
+
+26. **`HEALTH_URL` in `deploy.sh` must never be the short domain.** `/health` is
+    404 there, a non-200 rolls the release back, and that would revert every
+    deploy including the one that fixes the box. The default is
+    `127.0.0.1:8000`, which matches no domain, so this only bites someone who
+    overrides it.

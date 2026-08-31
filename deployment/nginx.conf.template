@@ -104,3 +104,80 @@ server {
     # gap this whole section exists to close.
     location ~ /\.(git|env|svn) { deny all; return 404; }
 }
+
+# ─── The short-link domain ────────────────────────────────────────────────────
+# The domain printed in every text message. It is the same app process as the
+# block above — one uvicorn, one nginx — and that is exactly why it needs a
+# block of its own:  without one, every route answers on both names and
+# YOUR_SHORT_DOMAIN/login is the client's entire contact list on the domain a
+# stranger is handed with every campaign.
+#
+#   sudo sed -i 's/YOUR_SHORT_DOMAIN/bida4a.com/g'          /etc/nginx/sites-available/APP_NAME
+#   sudo sed -i 's|YOUR_AUCTION_SITE|https://example.com|g' /etc/nginx/sites-available/APP_NAME
+#   sudo nginx -t && sudo systemctl reload nginx
+#   sudo certbot --nginx -d bida4a.com
+#
+# Confirm both directions afterwards — this is the whole point of the block:
+#   curl -s -o /dev/null -w "%{http_code}\n" https://bida4a.com/login       # 404
+#   curl -sI https://bida4a.com/ | head -1                                  # 302
+#   curl -sI https://bida4a.com/<a-real-slug> | head -1                     # 302
+#
+# **There is no path denylist here, deliberately.** One was considered and
+# rejected: it would have to list every admin path, so it is wrong the first
+# time a route is added and nobody notices — the failure is silent and on the
+# host nobody looks at. The app answers the question instead, in
+# `short_link_host_guard` in app/main.py, which asks whether the path *is* a
+# short link rather than whether it is one of the things we remembered to
+# forbid. So this block proxies everything and lets the middleware decide, and
+# the two files cannot drift because only one of them decides anything.
+server {
+    listen 80;
+    server_name YOUR_SHORT_DOMAIN;
+    # Certbot rewrites this block to redirect to HTTPS when you run it.
+
+    # No Referrer-Policy here, on purpose. The app sets `no-referrer` on the
+    # redirect itself — a slug identifies one buyer and is nobody's analytics —
+    # and `add_header` appends rather than replaces, so setting it here too
+    # would send the header twice on the one response that matters.
+    add_header Strict-Transport-Security "max-age=300" always;
+    add_header X-Frame-Options "DENY" always;
+    add_header X-Content-Type-Options "nosniff" always;
+
+    # Nothing on this host renders: it serves 302s and a plain-text 404. So the
+    # policy is the empty one rather than the app's, and if that ever stops
+    # being true the breakage is loud.
+    add_header Content-Security-Policy "default-src 'none'; frame-ancestors 'none'" always;
+
+    # Certbot's webroot plugin needs this; the --nginx plugin does not, and a
+    # location that exists costs nothing either way. `^~` so it wins over the
+    # proxy below without regex evaluation.
+    location ^~ /.well-known/acme-challenge/ {
+        root /var/www/html;
+    }
+
+    # Somebody will type the bare domain after reading it off a text message.
+    # Send them to the auction house's own site rather than to a 404 — this is
+    # the one path here that is a person rather than a link.
+    location = / {
+        return 302 YOUR_AUCTION_SITE;
+    }
+
+    location / {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_http_version 1.1;
+        # `$host` is what the middleware compares against SHORT_LINK_DOMAIN. If
+        # this is ever changed to a literal or to $proxy_host, the guard stops
+        # matching and every admin route quietly answers on this domain again.
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # No uploads reach this host — the only route it serves is a GET redirect —
+    # so a large body is rejected by nginx instead of being buffered and
+    # proxied to a 404.
+    client_max_body_size 1k;
+
+    location ~ /\.(git|env|svn) { deny all; return 404; }
+}
