@@ -1733,3 +1733,386 @@ rows.
 - **The live box has still not been deployed to.** Criterion 11 cannot pass until
   someone does. The box still runs the pre-5c nginx config, the hot-patched SDK,
   and pre-5d application code.
+
+---
+
+## Module 5h Part A — held-back rows & the capacity floor (appended by session 5h, 2026-08-30)
+
+**Status: Part A complete except the deploy.** Nothing in this session can send
+a message: `SMS_PROVIDER` is `console` in `.env`, in `tests/conftest.py` and in
+every subprocess the acceptance script starts. No live credential was read. No
+contact data was imported, modified or deleted outside the suite's own scratch
+database.
+
+Gate green at both ends, twice in a row. **319 tests at start, 359 at end**
+(+40: 14 held-back release, 26 capacity rounding). Three existing tests changed —
+see below. No source file over 500 lines; `campaign_topup.py` crossed it and
+`campaign_release.py` is the split.
+
+### A1 — `held_back` is its own status
+
+Implements `decisions/005-topping-up-a-contact-the-window-held-back.md`, option 2,
+with all four riders.
+
+- `held_back` added to `MESSAGE_STATUSES`, **outside `BILLABLE_STATUSES`** — the
+  same shape as 5d's `not_sent`, and for the same reason: a message that never
+  reached a carrier is not a segment. `campaign_builder.py` writes it for a
+  contact the suppression window holds back, so `skipped` goes back to meaning
+  only what `sms_message.py` has always said it means.
+- **A top-up releases a hold that has cleared.** Contacts whose *only* row on
+  this campaign is `held_back` are re-adjudicated against **today's** window and
+  their existing rows **flipped** to `pending`. `campaign_release.py` owns the
+  candidate rule; `campaign_topup.py` owns the flip, because a partial write is
+  the outcome that module exists to prevent.
+- **No backfill, and it is recorded where a reader will look for it.**
+  Migration `e2a7c3d15b48` changes no schema — `sms_messages.status` is a plain
+  VARCHAR — and exists solely to state that pre-5h `skipped` rows cannot be
+  classified after the fact and must never be guessed at. A row guessed
+  *held back* becomes a text to a number the region filter excluded.
+- The released row keeps **its own body**. It was rendered for that contact by
+  this campaign; re-rendering would quote one message and queue another.
+- `error_message` is cleared on release: a sent message still carrying "held back
+  so nobody gets two messages in a row" is a lie in the client's own log.
+- The campaign's counters move **both ways**. A released contact is added to
+  `total_recipients` and subtracted from `suppressed_count`/`skipped_count`, or
+  the rail reads "6 recipients · 2 held back" about a campaign that reached six.
+
+**The release does not require a `list:` audience, and the "added since" half
+still does.** That is a widening of 5e's refusal and it is deliberate.
+`NOT_A_LIST_AUDIENCE` exists because "everyone who has joined that audience
+since" is a set nobody chose — last month's memorabilia message to tonight's
+restaurant buyers, which is the defect 5e's review found live. A held-back row is
+the opposite: this campaign resolved that contact itself, counted them, and put
+the number on screen before the send. Refusing to release them because the
+audience was not an upload would leave decision 005's defect standing on every
+campaign that was not built from one. The refusal still fires when there is
+nothing to release.
+
+**Scope note — three files outside the table's 5h list were edited.**
+`campaign_topup.py` because A1's own third bullet is a change to the top-up;
+`routers/campaign_uploads.py` and `_composer-upload.html` because both told the
+client a top-up sends "to everyone added to its list since it went out", which
+stopped being true. `top_up_summary()` owns the sentence now and the endpoint
+renders it verbatim — a released contact is not a new one, and describing them as
+one sends him looking for an upload he never made.
+
+**One reporting fix came with the status split.** `top_up_history()` counted a
+top-up's *held-back* rows as recipients, while `total_recipients` never has — so
+the rail reported the original send as smaller than it was, in the direction
+nobody sanity-checks. Two lines, and they were unwritable before this session:
+the query could not tell a top-up's held-back row from a top-up's sent one.
+
+### A2 — the capacity guard compares exact money
+
+`wholesale_cost()` is the new exact `Decimal`; `wholesale_estimate()` is it
+rounded, and is now for the Float column and our log line only.
+`capacity_assessment()` compares `Decimal` on both sides.
+
+**The session spec's premise does not hold at this box's own rate, and the
+criterion was demonstrated at both.** A2 says a small send "can require $0.00 and
+pass the capacity check on an empty account". At
+`WHOLESALE_COST_PER_SEGMENT=0.009` — `.env`, `.env.example` and the code default,
+and `.env.production` does not override it — one segment estimates at
+`round(0.009, 2)` = **$0.01**, so that send was already refused. The zero case
+needs a blended rate under half a cent; 5e's note quoting "~$0.004" was using the
+line-type lookup price from `compliance.py`, not the segment rate. What *is* wrong
+at 0.009 is that rounding down loses up to three quarters of a cent of
+requirement — six segments ask for $0.075 against a true $0.081 — so a campaign
+can start on a balance that does not cover it. `agent/accept-5h.sh` check 6b
+prints the before/after verdict at both rates rather than asserting the spec's
+version of events.
+
+**The requirement is the larger of the exact cost and the caller's stated one,
+and that is not belt and braces.** Replacing the rounded figure with the exact
+one *loosens* the guard at every count where rounding went up — about half of
+them. The pre-flight capacity check is escalation item 3, which the ruling
+permits tightening and nothing else, so `max()` is what makes the change
+monotonic. `test_the_fix_only_ever_tightens` runs the pre-fix arithmetic and
+asserts it: nothing the old check refused now starts.
+
+**The audit (criterion 7): one site, and it was this one.** Every `round()` in
+`app/` was walked by AST rather than grepped — three of the eight matching lines
+are prose inside docstrings *about* rounding — and the five real call sites are
+four percentages and `required_segments`, which is a segment count computed
+*after* the comparison and never fed back into it. `billing_service` was already
+Decimal end to end since 1b; `marginal_cost()` subtracts before rounding;
+`monitoring_service.check_low_balance()` and `routers/usage.py` compare raw
+provider floats against a raw threshold with no rounding anywhere. **No other
+site rounds a money value before comparing it.** `accept-5h.sh` check 7 freezes
+that list so the next one has to be declared.
+
+### The three existing tests that changed
+
+1. `test_suppression_excludes_two_days_and_includes_five` asserted the held-back
+   row was `skipped`. It now asserts `held_back` **and** that it is not
+   `skipped` — the two halves fail differently, and a build that wrote neither
+   would satisfy an `!=` on its own.
+2. `test_a_suppressed_message_is_never_billed` — same rename. The reason it is
+   unbilled did not change.
+3. `test_a_top_up_refuses_an_audience_that_is_not_its_own_list` pinned the exact
+   `NOT_A_LIST_AUDIENCE` sentence. Its campaign's audience is `all`, so it
+   resolves to every contact in the shared test database and holds back whichever
+   of them the modules that ran first had texted — which is now a second, equally
+   correct refusal. It asserts the property it exists for instead (nobody
+   imported for a different auction is a candidate, by either route), and the
+   sentence is pinned in `test_held_back_release.py` on a campaign constructed
+   with no rows at all. Same lesson as 5g's `OPT_OUT_REASONS` test.
+
+### Acceptance
+
+`agent/accept-5h.sh` is the Part A stop condition — the nine criteria from
+`sessions/session-5h.md`, each a check that runs rather than a claim, with the
+60-turn cap recorded in its header. Criteria 1-8b pass locally. Criterion 9 needs
+the deployed site and is opt-in:
+
+    A4A_URL=https://... A4A_PASSWORD=... bash agent/accept-5h.sh --with-remote
+
+**Check 8b is the one with teeth.** `agent/mutate-5h.py` reverts each fix
+behaviourally, one at a time, in a scratch copy, and requires a test to go red
+for each — 18 mutations, none surviving. It earned its cost on the first run:
+
+- `R7` (two held-back rows for one phone are queued twice) was **not caught**.
+  Nothing in the product can create that state, so no test had reached the
+  guard. It is tested now by constructing the row directly — a guard that only
+  holds while a *different* guard holds is one refactor from not holding.
+- `R16` (held-back rows counted as top-up recipients again) was **not caught**,
+  because the end-to-end test's top-up held nobody back. The new case runs a
+  top-up that releases one contact and holds another in the same run, which is
+  the only shape where the two counts can disagree.
+- The mutation that would have been `R15` — "compare the balance as a float
+  again" — was dropped rather than made to pass. `float(exact_required)` and
+  `Decimal(str(balance))` order identically at every magnitude a carrier balance
+  can hold; what carried the defect was the rounding, which `R13`/`R14` catch.
+  The Decimal comparison is hygiene, and hygiene with no reachable mutation is
+  worth saying out loud rather than dressing up as a green tick. Both the harness
+  and `campaign_service.py` say so at the line.
+
+### What the fresh-context review changed
+
+One synchronous reviewer, per the 5g lesson. Five real defects and one
+misreading; three fixed here, one escalated, one recorded.
+
+1. **A capped campaign released everything the window held back.** The serious
+   one, and the same shape as the defect 5e's review found one set along: the
+   release guard was correct and the set it filtered was wrong. `batch_size` is
+   applied to the *sendable* set at build time, never to the held-back rows, so
+   a campaign capped at 3 with 10 held back sent to 13 on one click — at this
+   client's numbers, a cap of 50 queueing six thousand messages. Reproduced,
+   then closed in the safe direction: `campaigns.batch_size` is now recorded
+   (migration `a91d5f2c6b70`, additive, nullable) and `releasable()` returns
+   nothing for a campaign that carries one. **That is the absence of a change,
+   not a ruling** — it is what a capped campaign did before 5h — and the
+   question of what it *should* do is
+   `decisions/006-which-campaigns-may-release-a-hold.open.md`.
+2. **ESCALATED, same decision file: a campaign the window suppressed *entirely*
+   ends `aborted`, so its held-back rows can never be released.** Decision 005's
+   own example is 6,856 of 6,857 — one send, so `completed`, so the release
+   works. One more suppressed contact and it does not. Fixing it means either
+   moving a campaign out of `aborted` (which `TOP_UP_STATE_ERRORS` warns against
+   by name, on decision 002's reasoning) or storing why it aborted. Both are
+   policy. Recorded at the site in `campaign_outcome.py` as well as in 006.
+3. **"Held back" was said about people the window was not holding.**
+   `releasable()`'s `still_held` was "everything not clear", which swept in rows
+   whose contact no longer exists — `import_service.undo()` deletes contacts, so
+   this is reachable. With the window at **0** the refusal still read "was texted
+   recently and is being held back", which is a sentence about a rule that is not
+   running: the same defect as a failed carrier reporting a chosen dry run. Three
+   buckets now, and no sentence blames the window for a contact who left.
+4. **A test was vacuous.** `test_a_widened_window_does_not_un_send_anybody` built
+   its campaign with the window at 0, so it had no held-back rows and asserted
+   `[] == []` twice — 5e's own vacuous-in-isolation defect, written again. It now
+   holds one contact from the start and asserts the precondition.
+5. **`test_a_suppressed_message_is_never_billed` read a row its neighbour left
+   behind**, and `agent/accept-5h.sh` running each criterion in isolation is what
+   found it — the third time that discipline has caught a test leaning on another.
+   It builds its own campaign now. Pre-existing, from module 4.
+6. **One finding was a misreading and is recorded rather than acted on.** The
+   reviewer read `_pre_fix_verdict()` in `test_capacity_rounding.py` as failing to
+   model the old arithmetic, on the grounds that `wholesale_estimate()` rounds
+   half-up. It does *now* — this session changed it from Python's banker's
+   `round()`, which is what the helper reproduces. The reviewer re-ran the sweep
+   against what it believed was the real pre-fix boundary and found the new check
+   still refuses at every one, so the property holds either way. The helper now
+   says in its docstring why it must not be "corrected" to call
+   `wholesale_estimate()`: doing so would compare the fix against itself.
+
+The reviewer independently confirmed: no double-send on any path it could
+construct; a released row still meets the blocklist and region filters (driven
+with a post-hold STOP — final status `blocked`, nothing sent); the counters hold
+across three successive top-ups at descending windows; `count_sms_segments()`,
+`BILLABLE_STATUSES`, `billing_service` and the suppression *rule* are byte-for-byte
+untouched; `ix_contacts_phone` and every `sms_messages` index survive; the
+migration applies, reverses and re-applies on a clean database; no new
+client-facing string names the carrier; and — brute-forced over 200,000 segment
+counts at eight rates — the capacity check is never more permissive than the one
+it replaced, the worst gap being one float ULP.
+
+### Implementing decision 006 — the two sentences a hold produces (2026-08-30)
+
+Option 1 for both cases, as ruled: a capped campaign releases nobody, and a
+campaign the window held *entirely* stays `aborted`. **No state change, no new
+column, no new transition** — the ruling's whole point is that the defect was in
+the sentence. 359 → 366 tests, gate green twice, `agent/mutate-5h.py` at 27.
+
+**Why the ruling went against the escalation's own recommendation, recorded
+because the reasoning is not obvious.** 005's scenario is 6,856 held and *one
+sent*: rebuilding loses the delivery record, the cost and the campaign's place
+in history, which is what made "create a new campaign" unacceptable and
+justified the whole release mechanism. A 100%-suppressed campaign sent **zero**
+messages — there is nothing to preserve, so a fresh campaign built after the
+hold clears is identical to what a release would have produced. Option 3 would
+have bought a few clicks with a new column and the first code in this repo to
+move a campaign out of `aborted`.
+
+**Case 2 — the abort reason.** `campaign_outcome._all_held_back()`: the cause
+("all 2,140 contacts were texted in the last 3 days and held back"), the
+clearing time ("The hold clears at 10:11am."), and the remedy that works
+("Create the campaign again after that; this one cannot be restarted"). The
+clearing time is `max(last_messaged_at)` across the held set plus **today's**
+window — `campaign_release.hold_clears_at()`, which calls the same
+`suppression_service.suppression_clears_at()` the composer uses one screen
+earlier. Latest, not earliest, for A6's own reason: the earliest names a time at
+which most of the audience is still held, which reads as a promise.
+
+**A6's phrasing is reused by moving the renderer, not by copying it.**
+`preflight_service._clock()` became `suppression_service.clears_at_clock()` and
+the old name delegates. Two sentences about one instant that render it
+differently are worse than one sentence, and 006 asks for A6's wording by name.
+
+**Case 1 — the capped refusal.** `CAPPED_CAMPAIGN_HOLD` was a constant and is
+now `campaign_release.capped_campaign_hold(cap, held, clears_at)`, naming both
+numbers, the remedy, and — after review — when the remedy will work. It lives in
+`campaign_release` because that module makes the decision it explains, which is
+the `send_mode()` pattern, and because `campaign_topup.py` crossed the 500-line
+rule again.
+
+**Both clauses are dropped rather than invented when unknown.** A contact whose
+`last_messaged_at` will not parse still counts as held, and
+`suppression_clears_at()` returns None for it; the sentence then loses the time
+and switches its remedy to "once the hold clears". Never `None` on screen, never
+"the last 0 days" — a wrong clearing time is a date the client plans an auction
+around.
+
+**And when the hold has already lifted, the remedy changes.** Held rows are
+frozen when the draft is built and the run can happen days later, so the
+campaign can have nothing to send while the people it held are perfectly
+reachable — a draft saved Monday and sent Friday, a scheduled send, or the
+window switched to 0 on the Settings screen. Both now read "That hold has since
+cleared. Create the campaign again now." Found by review; the first version
+printed a clearing time three days in the past, in the present tense, and told
+him to wait for it.
+
+**`sessions/session-5h.md` A2 is struck through**, per RULES: 006 records that
+the spec's `$0.00` premise was wrong at the configured rate. Struck rather than
+rewritten, so the ruling's own point — that it was an instance of "a rationale
+and its mechanism have to be checked against each other" — is not hidden by a
+silent correction. Three lessons went into `CLAUDE.md`.
+
+### What the second fresh-context review changed
+
+One synchronous reviewer over the 006 work. Six real findings; five fixed, one
+disagreed with in part.
+
+1. **The gate was red and I said it was green.** Two files over the 500-line
+   rule — `campaign_topup.py` at 506, `campaign_service.py` at 503 — because I
+   ran the gate *before* the 006 edits and reported that run. It is the whole
+   reason `agent/gate.sh` exists and I did not re-run it. `capped_campaign_hold()`
+   moved to `campaign_release.py`, where the decision it explains is made, and
+   the A2 comments in `capacity_assessment()` were consolidated with the
+   docstring that already said the same thing. 482 and 499 now.
+2. **The abort reason told the client to wait for a moment that had gone.** The
+   held rows are frozen at build time and the run can be days later, so a draft
+   saved Monday and sent Friday printed "The hold clears at 27 Aug" in the
+   present tense about people who were then reachable. A window changed to 0 on
+   Settings produced the same shape. `_still_ahead()` splits the three cases and
+   two tests drive them through the real send path.
+3. **`test_the_reason_never_quotes_a_window_of_zero_days` asserted the branch was
+   unreachable, and it was reachable.** The docstring's premise was checked
+   against the mechanism only after review — inside the change that cites that
+   lesson.
+4. **The capped refusal's remedy reached nobody.** "Create a new campaign without
+   a cap" while the window still holds them builds a campaign that holds them
+   again. It now names the clearing time and says so. My own docstring had
+   argued the opposite — that these contacts "are not waiting on the window" —
+   which the sentence contradicted three clauses earlier.
+5. **"all 1 contacts were texted in the last 1 day".** The day was singularised
+   and the count was not, and the test named for plurals pinned the broken half.
+6. **The new lookups could strand a campaign in `running`.** The zero-send
+   adjudication was pure arithmetic before 006 and now issues four queries
+   between the loop finishing and the status being written. `hold_clears_at()`
+   returns None rather than raising — the `/health` pattern from 5g — and the
+   two facts are only read on the branch that uses them.
+
+**Partly disagreed with, and recorded rather than acted on.** The reviewer
+observed that `test_the_abort_reason_and_the_composer_row_quote_one_moment`
+compares one function against itself and so cannot catch finding 2. That is
+true, and it is what the test is for: after 006 there is one implementation, and
+the assertion pins that neither surface has grown a second. Finding 2's coverage
+is the two new tests. Same shape as the R15 gap — a property worth stating and
+worth being honest about the strength of.
+
+### One red gate I could not reproduce
+
+Recorded because a suite that is green five times out of six is exactly what this
+project treats as a defect rather than noise, and because the next session should
+know it was seen.
+
+`agent/gate.sh` reported **"test suite is red"** once, on a run issued in the same
+shell command as a full `pytest tests/` and while `agent/mutate-5h.py` was still
+running in the background. The gate's own pytest emitted no `N passed` line, which
+is consistent with a collection error rather than an assertion failure. I did not
+capture the output — the invocation filtered it — which is the actual mistake here.
+
+Six runs since, all green: three with nothing else in flight, one deliberately
+raced against a mutation run, and one repeating the exact pytest-then-gate
+sequence. No shared-state candidate holds up on inspection either: `conftest.py`
+takes a `tempfile.mkstemp` database per run, `monitoring_service.STATE_FILE` is
+under the tree's own `data/` and the mutation harness's scratch tree has its own,
+and the harness passes a restricted env to every subprocess.
+
+So: unexplained, not reproduced, and not attributed to a cause I cannot show. If
+it recurs, capture the full gate log before doing anything else.
+
+### Found while working (session 5h)
+
+- **`skipped` still carries two meanings on rows written before this change**,
+  and always will. That is decision 005 rider 2 and it is not a defect to fix
+  later — the rows cannot be classified. Anything reading that column has to know
+  the change has a date.
+- **A capped campaign's held-back rows stay held, and a fully-suppressed
+  campaign's can never be released at all.** Both **ruled** by `decisions/006`,
+  option 1: correct as they stand, and both sentences rewritten to say so. What
+  006 asks to be watched for is case 2 becoming routine — same list, consecutive
+  days, an auction cadence that collides with the window. At that point the
+  rebuild stops being a few clicks and `abort_kind` is the right answer, and 006
+  says to reopen the decision rather than work around it. **The window is 0 in
+  production, so nothing can hit this yet; the moment it is raised, check this
+  first.**
+- **`campaigns.batch_size` is recorded but read by exactly one caller.** It
+  exists because the cap was being applied and discarded, which both 5e and 5h
+  hit from opposite sides. Nothing else consults it, and the composer still
+  sends it as a request rather than reading it back.
+- **`assess()` still runs twice per top-up** and now resolves the held-back set
+  on each pass as well. Carried over from 5e, same reasoning (the check has to
+  live where the work happens), same note: fine at 6,857 rows, worth remembering
+  at 50,000.
+- **A released row's `top_up_at` says when it was released, not when it was
+  written.** Deliberate and documented on the column: the stamp funds one report
+  — how the recipient count reached the number on screen — and a released row
+  joins that count on the day it goes out. If a later consumer needs "when was
+  this row created", that is a different column and it does not exist yet.
+- **The campaign rail shows no held-back figure for a top-up that held somebody
+  back.** `suppressed_count` moves and the rail renders it, but the "N held back"
+  text does not distinguish the original send's hold from a top-up's. 5f owns
+  reporting; this is a wording question rather than a correctness one.
+- **`preflight_service.py` was not touched**, though the 5h file list names it.
+  Nothing in either A-item reaches it: it re-states `capacity_assessment()`'s
+  verdict rather than computing one, so the exact comparison arrives there for
+  free, and `check_recent_overlap()` describes the window rather than the rows.
+  Stated because a file listed and untouched otherwise reads as an oversight.
+- **The submission path's block reason and code** are still open, carried from 5g
+  and 5e. Unchanged here — blocklist behaviour is escalation item 5 and no 5h
+  criterion touches it.
+- **The live box has still not been deployed to.** Criterion 9 cannot pass until
+  someone does. The box runs the pre-5c nginx config, the hot-patched SDK, and
+  pre-5d application code.

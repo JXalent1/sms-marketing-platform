@@ -33,6 +33,7 @@ audience does not say which auction the message is about.
 """
 
 import logging
+from decimal import Decimal, ROUND_HALF_UP
 from typing import Any, Callable, Optional, Tuple
 
 from sqlalchemy.orm import Session
@@ -40,7 +41,7 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.models.campaign import Campaign
 from app.models.category import Category
-from app.models.sms_message import SMSMessage
+from app.models.sms_message import SMSMessage, HELD_BACK_STATUS
 from app.services import contact_service, import_service, suppression_service
 from app.sms.phone import find_risky_links
 from app.sms.segments import count_segments
@@ -76,19 +77,50 @@ class CampaignError(Exception):
     """Raised for problems the operator can fix (empty audience, no funds)."""
 
 
-def wholesale_estimate(segments: int) -> float:
-    """What `segments` costs US, at our blended carrier rate.
+def wholesale_cost(segments: int) -> Decimal:
+    """What `segments` costs US, exactly, at our blended carrier rate.
+
+    Unrounded and Decimal, and that is the whole point of it. This is the value
+    the pre-flight capacity check compares against a carrier balance, and 5h A2
+    is what happens when a comparison is fed the rounded one instead: at a
+    blended rate below half a cent a segment, a one-segment send *requires
+    $0.00* and the most valuable safeguard in this codebase is satisfied by an
+    empty account. At the 0.009 this box actually runs, the same rounding is
+    merely loose — the requirement lands up to three quarters of a cent under
+    the true one whenever the estimate rounds down (six segments is the first).
+    Neither is a threshold anybody chose.
+
+    `Decimal(str(rate))` rather than `Decimal(rate)` for `cost_for_segments()`'s
+    reason: the setting is a float, and str() gives the 0.009 that was written
+    in `.env` where Decimal() gives its binary expansion.
 
     OUR cost, not his. It exists to convert a carrier balance into a capacity
-    estimate for the pre-flight check and to fill `campaigns.estimated_cost`,
-    which never crosses the API boundary. His number comes from billing_service
-    at BILLING_PRICE_PER_SEGMENT and is roughly 40% higher.
+    estimate and to fill `campaigns.estimated_cost`, which never crosses the API
+    boundary. His number comes from billing_service at BILLING_PRICE_PER_SEGMENT
+    and is roughly 40% higher.
+    """
+    rate = Decimal(str(settings.WHOLESALE_COST_PER_SEGMENT))
+    return max(0, segments or 0) * rate
+
+
+def wholesale_estimate(segments: int) -> float:
+    """`wholesale_cost()` rounded to cents, for storage and for our own logs.
+
+    Display only. Never compare this — compare `wholesale_cost()`. It fills
+    `campaigns.estimated_cost` (a Float column) and the "$0.05" in a log line,
+    and both of those are places a human reads a figure rather than places a
+    guard decides something.
+
+    Half-up rather than `round()`, matching `billing_service.to_money()`:
+    Python's round() is banker's, and a money figure that disagrees with the one
+    a human computing it by hand would write is a support call waiting to happen.
 
     Lives here rather than in `campaign_service` only so that module can import
-    this one without a cycle; it is re-exported there under the same name, which
-    is where every existing caller reaches for it.
+    this one without a cycle; both names are re-exported there, which is where
+    every existing caller reaches for them.
     """
-    return round((segments or 0) * settings.WHOLESALE_COST_PER_SEGMENT, 2)
+    return float(wholesale_cost(segments).quantize(Decimal("0.01"),
+                                                   rounding=ROUND_HALF_UP))
 
 
 # ─── The category rule ──────────────────────────────────────────────────────
@@ -132,10 +164,14 @@ def create_campaign(db: Session, render: Callable[[str, Any], str], *,
     """Build a campaign and queue one pending SMSMessage per recipient.
 
     Recipients texted inside the suppression window are queued too, as
-    `skipped`. Recording them rather than dropping them is what makes the
+    `held_back`. Recording them rather than dropping them is what makes the
     number visible before the send instead of inferable afterwards: the
     composer shows "1,204 will receive this, 37 held back" while there is
     still time to change the audience.
+
+    `held_back` rather than `skipped` since 5h. The hold expires; `skipped`
+    does not, and a status that means both is a status a top-up cannot act on.
+    See decisions/005.
     """
     category = resolve_category(db, category_id, cross_category_override, list_audience)
 
@@ -170,11 +206,17 @@ def create_campaign(db: Session, render: Callable[[str, Any], str], *,
         # is its own upload, and recording that as a cross-category override
         # would put a decision nobody made into the audit trail.
         cross_category_override=1 if cross_category_override else 0,
+        # Recorded, not re-applied. The cap has already been taken above; this
+        # is here so a later run knows one was asked for — see the column
+        # comment and campaign_release.releasable().
+        batch_size=batch_size if (batch_size and batch_size > 0) else None,
         total_recipients=len(sendable),
         suppressed_count=len(suppressed),
-        # Held-back contacts are skipped, exactly like a blocklisted or
-        # out-of-region number: queued, never sent, never billed. The send
-        # loop adds its own skips to this as it runs.
+        # Held-back contacts are counted here too: queued, not sent, not billed,
+        # exactly like a blocklisted or out-of-region number. The send loop adds
+        # its own skips to this as it runs, and a top-up that releases a
+        # held-back row takes it back out of both counters — the row stops being
+        # skipped on the day it goes out.
         skipped_count=len(suppressed),
         scheduled_at=scheduled_at or None,
         status="draft",
@@ -203,7 +245,11 @@ def create_campaign(db: Session, render: Callable[[str, Any], str], *,
             contact_id=contact.id,
             phone=contact.phone,
             message=render(message_template, contact),
-            status="skipped",
+            # Not "skipped". A region skip is permanent and a hold is not, and
+            # until 5h both were written under the one word — so the top-up that
+            # could have reached these people after the hold cleared had no way
+            # to find them. decisions/005.
+            status=HELD_BACK_STATUS,
             error_message=held_back,
         ))
 

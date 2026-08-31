@@ -33,9 +33,9 @@ client sending real campaigns.
 | 5c | **Live-send blockers** | Part A done · deploy + B pending | 5b Part A | `requirements.txt`, `app/sms/factory.py`, `app/routers/settings.py`, `app/routers/pages.py`, `app/templates/settings.html`, `app/templates/base.html`, `deployment/nginx.conf.template`, `tests/`, `agent/accept-5c.sh` |
 | 5d | **Refuse to send from a degraded box** | Part A done · deploy pending · B is Jordan's | 5c | `app/services/campaign_service.py`, `app/services/campaign_dispatch.py`, `app/services/preflight_service.py`, `app/services/blocklist_service.py`, `app/models/sms_message.py`, `app/sms/factory.py`, `app/sms/compliance.py`, `app/main.py`, `app/routers/campaigns.py`, `app/routers/pages.py`, `app/routers/blocklist.py`, `app/routers/webhooks/{common,telnyx,twilio}.py`, `app/templates/blocklist.html`, `.claude/hooks/verify-gate.sh`, `docs/API.md`, `tests/`, `agent/accept-5d.sh` |
 | 5e | **Campaign-first flow & QoL** | Part A done 2026-08-27 · deploy pending | 5d | `app/routers/campaigns.py`, `app/routers/campaign_uploads.py`, `app/routers/contacts.py`, `app/routers/imports.py`, `app/routers/settings.py`, `app/templates/campaigns.html`, `app/templates/_composer-script.html`, `app/templates/_composer-upload.html`, `app/templates/contacts.html`, `app/templates/settings.html`, `app/services/campaign_service.py`, `app/services/campaign_builder.py`, `app/services/campaign_outcome.py`, `app/services/campaign_topup.py`, `app/services/suppression_service.py`, `app/services/preflight_service.py`, `app/services/import_service.py`, `app/services/contact_service.py`, `app/models/sms_message.py`, `alembic/versions/`, `tests/` |
-| 5f | **Short links & reporting** | After 5e | 5e | `app/models/short_link.py`, `app/routers/links.py`, `app/routers/reports.py`, `app/services/link_service.py`, `app/templates/history.html`, `alembic/versions/`, `tests/` |
+| 5f | **Short links & reporting** | Specced · last planned session | 5e | `app/models/short_link.py`, `app/routers/links.py`, `app/routers/reports.py`, `app/services/link_service.py`, `app/templates/history.html`, `alembic/versions/`, `tests/` |
 | 5g | **Blocklist correctness** | Part A done 2026-08-26 · deploy pending | 5d | `app/sms/compliance.py`, `app/sms/phone.py`, `app/sms/providers/telnyx.py`, `app/routers/webhooks/telnyx.py`, `app/routers/webhooks/twilio.py`, `app/routers/webhooks/common.py`, `app/routers/pages.py`, `app/models/sms_message.py`, `app/models/blocked_number.py`, `app/services/blocklist_service.py`, `app/services/dashboard_service.py`, `app/services/monitoring_service.py`, `alembic/versions/`, `tests/` |
-| 5h | **Held-back rows & the capacity floor** | Parallel-safe with 5f · before client handover | 5e | `app/models/sms_message.py`, `app/services/campaign_builder.py`, `app/services/campaign_service.py`, `app/services/preflight_service.py`, `alembic/versions/`, `tests/` |
+| 5h | **Held-back rows & the capacity floor** | Part A done 2026-08-30 · deploy pending | 5e | `app/models/sms_message.py`, `app/services/campaign_builder.py`, `app/services/campaign_service.py`, `app/services/campaign_release.py`, `app/services/campaign_topup.py`, `app/routers/campaign_uploads.py`, `app/templates/_composer-upload.html`, `alembic/versions/`, `tests/` |
 
 **That's the launch — six sessions, but only four waves. See "Parallel plan" below.**
 
@@ -515,6 +515,56 @@ means `app/services/monitoring_service.py` (the alert channel) and
 survives a dead carrier). Nothing in 5e's file set was touched — including
 `campaign_service.py`, which is why `should_auto_block()` kept its one-argument
 signature.
+
+### 5h — Held-back rows & the capacity floor
+
+Part A landed 2026-08-30, decision 006's wording fix the same day. Two send-path
+corrections from 5e's review. 371 tests (319 + 52), gate green twice, `agent/accept-5h.sh` as the stop condition and
+`agent/mutate-5h.py` (27 mutations) as the check with teeth. The deploy —
+acceptance criterion 9 — is still pending, as it is for 5c, 5d, 5e and 5g.
+
+1. **`held_back` is its own message status**, outside `BILLABLE_STATUSES`, the same
+   shape as 5d's `not_sent`. Implements `decisions/005` option 2 with all four
+   riders: the name, no backfill, flip the row rather than write a second one, and
+   re-run the window against today's value. `skipped` goes back to meaning only
+   what the model's own docstring says it means.
+2. **A top-up releases a hold that has cleared.** Contacts whose only row on the
+   campaign is `held_back` are re-adjudicated and their existing rows flipped to
+   `pending`. This half does **not** require a `list:` audience — see the file-list
+   note below.
+3. **The capacity guard compares exact `Decimal` money.** `wholesale_estimate()`
+   rounded to cents before the comparison; the requirement is now derived from
+   `wholesale_cost()`, unrounded, and rounding happens only for the Float column
+   and the log line.
+
+**5h's file list above is wider than the one this table carried before the session,
+on the same basis as 5d's, 5e's and 5g's.** A1's third bullet — "a top-up includes
+contacts whose only row for this campaign is `held_back`… and flips the existing
+row" — is a change to the top-up, which lives in `campaign_topup.py`, not in any of
+the four files the table named. The endpoint and the confirm dialog came with it
+because both describe a top-up to the client in words that stopped being true
+("everyone added to its list since it went out"), and a client-facing sentence that
+is false is the defect 5d's `abort_reason` work exists to remove.
+`campaign_release.py` is new because `campaign_topup.py` crossed the 500-line rule.
+`app/models/campaign.py` and a second migration came from the review: a released
+hold ignored the campaign's `batch_size` cap, and the cap could not be honoured
+because it was applied at build time and never recorded.
+
+**One question left open.** `decisions/006-which-campaigns-may-release-a-hold.open.md`
+— whether a capped campaign, or one the window suppressed entirely (which ends
+`aborted`, and a top-up refuses those), should be able to release its hold. Both
+currently do nothing, which is what they did before 5h, so nothing is blocked.
+
+**One thing the session spec asserts that this tree does not bear out.** A2 says a
+small send "can require `$0.00` and pass the capacity check on an empty account". At
+`WHOLESALE_COST_PER_SEGMENT=0.009` — the value in `.env`, `.env.example` and the code
+default, and the one production inherits — a one-segment estimate rounds *up*, to
+$0.01, so that send was already refused. The zero case needs a blended rate under
+half a cent. What was wrong at 0.009 is that the requirement lands up to three
+quarters of a cent under the true one wherever the estimate rounds down, so a
+campaign could start on a balance that did not cover it. Both are the same defect
+and the same fix; `agent/accept-5h.sh` check 6b prints the before/after at both
+rates rather than asserting the spec's version of it.
 
 ### Still to brainstorm
 

@@ -33,7 +33,7 @@ from app.core.config import settings
 from app.core.database import SessionLocal
 from app.main import app
 from app.models.campaign import Campaign
-from app.models.sms_message import SMSMessage, BILLABLE_STATUSES
+from app.models.sms_message import SMSMessage, BILLABLE_STATUSES, HELD_BACK_STATUS
 from app.services import preflight_service, suppression_service
 from app.services.campaign_service import CampaignError, CampaignService
 # Scheduling moved to campaign_dispatch in session 5d, when campaign_service
@@ -169,7 +169,14 @@ def test_suppression_excludes_two_days_and_includes_five(seeded):
 
         rows = {m.phone: m for m in db.query(SMSMessage)
                 .filter(SMSMessage.campaign_id == campaign.id)}
-        assert rows[RECENT_PHONE].status == "skipped"
+        # `held_back` since 5h, not `skipped`. The status this row carries is the
+        # whole of decision 005: `skipped` also means "wrong region", which is
+        # permanent, so a row under that word could never be released once the
+        # hold expired. Asserting it is not `skipped` as well as that it is
+        # `held_back` because the two halves fail differently — a build that
+        # wrote neither would satisfy an `!=` on its own.
+        assert rows[RECENT_PHONE].status == HELD_BACK_STATUS
+        assert rows[RECENT_PHONE].status != "skipped"
         assert rows[FRESH_PHONE].status == "pending"
         assert rows[OLD_PHONE].status == "pending"
     finally:
@@ -177,14 +184,30 @@ def test_suppression_excludes_two_days_and_includes_five(seeded):
 
 
 def test_a_suppressed_message_is_never_billed(seeded):
-    """`skipped` is outside the billable set, which is what "unbilled" means."""
-    assert "skipped" not in BILLABLE_STATUSES
+    """`held_back` is outside the billable set, which is what "unbilled" means.
+
+    The status changed in 5h and the reason it is unbilled did not: a message
+    that was never handed to a carrier is not a segment. Same shape as 5d's
+    `not_sent`.
+
+    It builds its own campaign. It used to read the row the test above happens
+    to leave behind, which passed in a full run and failed the moment
+    `agent/accept-5h.sh` ran criterion 4's tests on their own — the acceptance
+    script running each criterion in isolation is precisely what that discipline
+    is for, and this is the third time it has caught a test leaning on a
+    neighbour.
+    """
+    assert HELD_BACK_STATUS not in BILLABLE_STATUSES
 
     db = SessionLocal()
     try:
+        campaign = _create(db, seeded, "billing suppression",
+                           "Sale Thursday. Reply STOP to opt out.",
+                           category_id=seeded["category_id"])
         held = (db.query(SMSMessage)
-                .filter(SMSMessage.phone == RECENT_PHONE,
-                        SMSMessage.status == "skipped")
+                .filter(SMSMessage.campaign_id == campaign.id,
+                        SMSMessage.phone == RECENT_PHONE,
+                        SMSMessage.status == HELD_BACK_STATUS)
                 .first())
         assert held is not None, "the suppressed contact should have a queued row"
         # No sent_at, so it cannot fall inside a billing window either.

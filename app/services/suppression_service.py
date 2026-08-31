@@ -158,3 +158,32 @@ def suppression_clears_at(suppressed: Sequence, days: int) -> Optional[str]:
     return (latest + timedelta(days=days)).isoformat()
 
 
+def clears_at_clock(stamp: Optional[str]) -> str:
+    """A clearing time as "10:11am", or "10:11am on 3 Sep" if it is not today.
+
+    Lives beside the function that computes the timestamp, because two surfaces
+    now render it and they have to agree: the composer's pre-flight checklist
+    row before the send (5e A6) and the abort reason after it (decision 006).
+    Those two sentences are about the same rule and the same moment, and a
+    second copy of this formatting is how they end up disagreeing by an hour.
+
+    The only function in this module that does not take a Session, and it is
+    not an exception to that rule so much as outside it: it reads no window and
+    no setting, it converts a string this module produced into the words a
+    client reads.
+
+    Server-local, like every other time this product prints. **Never raises** —
+    it is decoration on a sentence whose job is to explain a failure, and a
+    malformed timestamp must not take that sentence down with it.
+    """
+    try:
+        when = datetime.fromisoformat(stamp)
+    except (TypeError, ValueError):
+        return str(stamp)
+    hour = when.hour % 12 or 12
+    stamped = f"{hour}:{when.minute:02d}{'am' if when.hour < 12 else 'pm'}"
+    if when.date() == datetime.now().date():
+        return stamped
+    return f"{stamped} on {when.day} {when.strftime('%b')}"
+
+

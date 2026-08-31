@@ -8,7 +8,12 @@ Status lifecycle — the distinction between the first three matters for billing
   undelivered  carrier accepted then dropped it — spam filters land here
   failed       carrier rejected the send outright
   blocked      on our blocklist, never attempted
-  skipped      filtered before send (wrong region) — non-billable, not a failure
+  skipped      filtered before send (wrong region) — non-billable, not a failure,
+               and PERMANENT: nothing clears it
+  held_back    inside the recent-contact suppression window when the draft was
+               built — non-billable, not a failure, and TEMPORARY: the hold
+               expires, and a top-up re-adjudicates the row against today's
+               window and flips it to 'pending'
   not_sent     the send path was degraded — the message never reached a carrier
 
 Bill on ('sent', 'delivered'). Counting only 'sent' silently drops every campaign
@@ -21,6 +26,21 @@ reports every send successful, so before session 5d those rows were written
 'sent' and invoiced at $0.015 for messages nobody received. Keeping the status
 out of BILLABLE_STATUSES is not a pricing concession — a segment that never
 reached a carrier is not a segment. See decisions/002-degraded-box-still-bills.md.
+
+'held_back' is session 5h, and it is the same shape one level along. Until it
+existed, `campaign_builder` wrote a suppressed contact as 'skipped' — the status
+whose contract, three lines up, has always said "wrong region". So one column
+carried a hold that clears with time and an exclusion that never does, nothing
+downstream could tell them apart, and a buyer the window merely deferred was
+unreachable inside that campaign for good. That is the overloaded-column mistake
+CLAUDE.md opens with, caught with two consumers rather than five.
+See decisions/005-topping-up-a-contact-the-window-held-back.md.
+
+**Rows written 'skipped' before 5h are not re-adjudicated and never will be.**
+They may mean either thing and cannot be classified after the fact; guessing
+would turn one defect into an unauditable set of them. The distinction begins
+with campaigns built after the change — see
+alembic/versions/e2a7c3d15b48_held_back_message_status.py.
 """
 
 from sqlalchemy import Column, Integer, String, Text, ForeignKey, Index
@@ -28,9 +48,15 @@ from app.core.database import Base
 
 MESSAGE_STATUSES = (
     "pending", "sent", "delivered", "undelivered", "failed", "blocked", "skipped",
-    "not_sent",
+    "held_back", "not_sent",
 )
 BILLABLE_STATUSES = ("sent", "delivered")
+
+# The one spelling of the held-back status. Two services write it and a third
+# reads it back to release it; a literal in each is how the top-up ends up
+# looking for rows nothing writes. Deliberately outside BILLABLE_STATUSES —
+# a message that was never handed to a carrier is not a segment.
+HELD_BACK_STATUS = "held_back"
 
 
 class SMSMessage(Base):
@@ -69,6 +95,14 @@ class SMSMessage(Base):
     # so without this the campaign's recipient count simply changes and a report
     # three weeks later cannot say why. One `GROUP BY top_up_at` turns that back
     # into "1,200 + 5 added 26 Aug". See app/services/campaign_topup.py.
+    #
+    # A 'held_back' row released by a top-up is stamped too, even though it was
+    # written at the original send. The column funds one report — how the
+    # campaign's recipient count reached the number on screen — and a released
+    # row joins that count on the day it is released, not on the day it was
+    # queued. Leaving it NULL would show "1,200 + 0 added" over a total that grew
+    # by two. The row's own history is intact either way: it is one row, it
+    # carries the body it was rendered with, and it was never sent before.
     top_up_at = Column(String(50), nullable=True)
 
     __table_args__ = (

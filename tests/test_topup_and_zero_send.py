@@ -493,6 +493,17 @@ def test_a_top_up_refuses_an_audience_that_is_not_its_own_list(db):
     auction, on a different day — resolved as "added since" and would have
     received last month's message. There is no list here, so there is no honest
     answer to "who was added"; the refusal says so rather than guessing one.
+
+    **The property is asserted, not the sentence** (changed in 5h). This
+    campaign's audience is `all`, so it resolves to every contact in the shared
+    test database — and whichever of those the hold-back window happened to
+    catch when the draft was built now has a `held_back` row on it. That is a
+    genuine second reason to refuse, with its own correct sentence, and which of
+    the two comes back depends on what the modules that ran earlier texted. The
+    thing this test exists to prove is that nobody imported for a *different*
+    auction is a candidate, and that is what it now asserts. A regression fails
+    it either way: a top-up offering the other auction's contacts has no
+    refusal at all.
     """
     phones = take(2)
     contact_list = contact_service.get_or_create_list(db, f"{NAME_PREFIX}all-audience")
@@ -509,14 +520,21 @@ def test_a_top_up_refuses_an_audience_that_is_not_its_own_list(db):
     assert result.status == "completed" and result.sent_count > 0
 
     # Somebody imports tonight's completely unrelated auction list.
+    other_auction = take(3)
     campaign_builder.create_campaign_from_upload(
         db, CampaignService(db).render, name=f"{NAME_PREFIX}different auction",
-        message_template=MESSAGE, content=default_csv(take(3)))
+        message_template=MESSAGE, content=default_csv(other_auction))
 
     verdict = asyncio.run(campaign_topup.assess(db, result))
-    assert verdict["refusal"] == campaign_topup.NOT_A_LIST_AUDIENCE, (
+    assert verdict["refusal"] in (campaign_topup.NOT_A_LIST_AUDIENCE,
+                                 campaign_topup.ALL_SUPPRESSED), verdict["refusal"]
+    assert verdict["sendable"] == [], (
         f"a top-up on an 'all' campaign offered to text "
         f"{len(verdict['sendable'])} people imported for another auction")
+    reached = {c.phone for c in verdict["sendable"]} | {
+        row.phone for row in verdict["released"]}
+    assert not (reached & set(other_auction)), (
+        "tonight's import reached last month's campaign through the release path")
 
 
 def test_an_intersection_audience_is_not_treated_as_a_list(db):

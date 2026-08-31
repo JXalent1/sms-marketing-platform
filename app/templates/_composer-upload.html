@@ -156,8 +156,15 @@ async function createFromUpload(name, message) {
 // ─── Top up ─────────────────────────────────────────────────────────────────
 
 async function topUpCampaign(id) {
-    if (!confirm('Send this campaign\'s message to everyone added to its list since '
-               + 'it went out? Nobody it already reached is texted again.')) return;
+    // Both halves named, because the second one surprises people: a top-up also
+    // reaches anybody the hold-back window held back at send time whose hold has
+    // since cleared. A dialog that mentioned only the list would be false on a
+    // campaign whose whole top-up is the hold — and on a campaign that has no
+    // list at all, which since 5h can still be topped up for exactly that reason.
+    if (!confirm('Send this campaign\'s message to everyone it has not reached yet '
+               + '— anyone added to its list since it went out, plus anyone the '
+               + 'hold-back window held back whose hold has now cleared? Nobody it '
+               + 'already reached is texted again.')) return;
 
     const res = await fetch(`/api/campaigns/${id}/top-up`, { method: 'POST' });
     const data = await res.json();

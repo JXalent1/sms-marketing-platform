@@ -294,7 +294,27 @@ change to a live table.
   merely *deferred*; the send loop writes it for a destination region that is permanently
   not enabled. `decisions/005` is the first consumer that needs the distinction. This is
   the overloaded-column mistake this file opens with, caught on the way in rather than
-  after five consumers re-derived it.
+  after five consumers re-derived it. **Resolved in 5h:** `held_back` is its own status,
+  outside `BILLABLE_STATUSES`, and rows written `skipped` before that change are never
+  re-adjudicated — they cannot be classified after the fact, and the migration that would
+  have backfilled them says so instead.
+- **A guard that refuses without explaining reads as a broken tool.** `decisions/006`
+  upheld two refusals and rejected both sentences that carried them. "This campaign was
+  stopped before it sent" is true and useless: it names no cause, offers no time, and the
+  client concludes the product is broken — which is what happened here for two
+  consecutive campaigns before anyone ran SQL. A refusal owes three things: what stopped
+  it, in his units; when it lifts, if that is knowable; and the remedy that actually
+  works on *this* object. `zero_send_reason()`'s suppressed branch and
+  `capped_campaign_hold()` are the pattern. This is the same defect as a failed carrier
+  reporting "Dry run", moved from the badge into the sentence underneath it.
+- **One rule, two moments, one sentence-maker.** The suppression window is described
+  before a send (the composer's checklist row) and after it (the stored `abort_reason`).
+  Those are two surfaces on one rule, and a second copy of the arithmetic or the
+  formatting is how they come to disagree about the same instant by an hour.
+  `suppression_clears_at()` computes the moment and `clears_at_clock()` renders it, once;
+  `preflight_service._clock()` delegates rather than implements. Tense still differs by
+  surface — a pre-send refusal must not be worded as a post-hoc one — but the *facts*
+  come from one place.
 
 ## Where things live
 

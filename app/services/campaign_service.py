@@ -29,7 +29,7 @@ from app.models.campaign import Campaign
 from app.models.category import Category
 from app.models.sms_message import SMSMessage
 from app.models.contact import Contact
-from app.services import campaign_outcome
+from app.services import campaign_outcome, campaign_release
 from app.services.blocklist_service import load_blocked_set, block_number
 # Re-exported deliberately: these three names were defined here before 5e split
 # creation out, and `routers/campaigns.py`, `campaign_dispatch.py` and the suite
@@ -37,7 +37,7 @@ from app.services.blocklist_service import load_blocked_set, block_number
 # names would be a rename dressed up as a refactor.
 from app.services.campaign_builder import (        # noqa: F401  (re-export)
     CampaignError, NO_CATEGORY_ERROR, create_campaign as _build_campaign,
-    resolve_category as _resolve_category, wholesale_estimate,
+    resolve_category as _resolve_category, wholesale_cost, wholesale_estimate,
 )
 from app.sms.factory import (
     get_provider, provider_fallback, send_mode, send_path_assessment,
@@ -46,6 +46,7 @@ from app.sms.segments import count_segments
 from app.sms.phone import is_non_us_region, scrub_provider_text
 from app.sms.compliance import should_auto_block
 from datetime import datetime
+from decimal import Decimal
 from typing import Optional
 import asyncio
 import logging
@@ -137,6 +138,16 @@ class CampaignService:
         `balance` and `required` are in dollars at OUR wholesale rate and are
         returned for the caller's *log*. Only `ok` and `detail` are safe to show
         the client, and `detail` is deliberately denominated in segments.
+
+        **The comparison is exact and the rounding happens after it** (5h A2).
+        `estimated_cost` arrives rounded to cents — it fills
+        `campaigns.estimated_cost` and the log line below — and a guard fed a
+        rounded requirement has a threshold nobody chose. Below half a cent a
+        segment it rounds to `$0.00`, and an empty account satisfies "must hold
+        at least nothing"; at the 0.009 this box runs it is looser rather than
+        inert, six segments asking $0.075 against a true $0.081. CLAUDE.md has
+        carried the rule since module 1b: Decimal end to end, round at the edge,
+        never before a comparison.
         """
         if not settings.PREFLIGHT_BALANCE_CHECK:
             return {"ok": True, "detail": "pre-flight disabled", "checked": False}
@@ -146,10 +157,18 @@ class CampaignService:
             return {"ok": True, "detail": "provider does not expose a balance",
                     "checked": False}
 
-        needed = estimated_cost or 0
+        # The larger of what the segments exactly cost and what the caller says
+        # they cost. Normally the same figure to within a rounding step, since
+        # `estimated_cost` is `wholesale_estimate(estimated_segments)` — taking
+        # the max is what guarantees this change can only ever *tighten* the
+        # guard, including for a future caller whose two arguments disagree.
+        exact_needed = max(wholesale_cost(estimated_segments),
+                           Decimal(str(estimated_cost or 0)))
         # Ask for headroom — the estimate uses a blended rate, and real per-carrier
         # rates vary above it.
-        required = needed * 1.5
+        exact_required = exact_needed * Decimal("1.5")
+        needed = float(exact_needed)
+        required = float(exact_required)
 
         # The threshold above is unchanged and deliberately so. What changed is
         # only how the result is *worded*: this string is stored on the campaign
@@ -161,7 +180,14 @@ class CampaignService:
         capacity_segments = int(balance / rate) if rate > 0 else 0
         required_segments = int(round((estimated_segments or 0) * 1.5))
 
-        if balance < required:
+        # Decimal on both sides, `Decimal(str(balance))` for `cost_for_segments()`'s
+        # reason: the provider hands back a float and str() keeps the figure the
+        # carrier reported. This line is hygiene rather than the fix — see where
+        # R15 would have been in `agent/mutate-5h.py`. Comparing these as floats
+        # orders identically at every magnitude a balance can hold; the defect
+        # was rounding the requirement before it got here. Decimal keeps the
+        # chain exact so a later edit cannot slip `n * rate` back into it.
+        if Decimal(str(balance)) < exact_required:
             return {
                 "ok": False, "checked": True, "balance": balance,
                 "required": required, "needed": needed,
@@ -419,13 +445,23 @@ class CampaignService:
                 f"{DEGRADED_STATUS} and none billed"
             )
         elif run["sent"] == 0:
+            suppressed = (suppressed_this_run if top_up
+                          else (campaign.suppressed_count or 0))
+            # Decision 006: when the window took everyone, the reason has to name
+            # the window and when it lifts. Read *after* the loop, so the
+            # clearing time reflects the rows as they stand, and only on the
+            # branch that uses it — the blocked, region and all-failed reasons
+            # never mention a hold, and queries on their path would be new ways
+            # for an adjudication that used to be pure arithmetic to fail.
+            window = (campaign_release.hold_facts(self.db, campaign_id)
+                      if total == 0 and suppressed else {})
             reason = campaign_outcome.zero_send_reason(
                 queued=total,
                 blocked=run["blocked"],
                 region_skipped=run["region_skipped"],
                 failed=run["failed"],
-                suppressed=(suppressed_this_run if top_up
-                            else (campaign.suppressed_count or 0)),
+                suppressed=suppressed,
+                **window,
             )
             logger.error(f"Campaign #{campaign_id} reached nobody: {reason}")
 

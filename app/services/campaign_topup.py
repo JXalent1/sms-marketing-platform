@@ -31,6 +31,34 @@ deleted and re-imported is a new row with the same number and the same person
 holding the handset. It is defence in depth behind the `added_at` window rather
 than the primary rule — a number can be added to a list twice.
 
+**A top-up also releases the people the hold-back window held back** (5h A1,
+decisions/005). Those two sets are reached by different routes and it matters
+which is which. Somebody *added since* is new to the campaign and needs a row.
+Somebody *held back* was in the campaign's audience from the start, was resolved
+into it, and already has a row — the window simply deferred them, and until 5h
+that deferral was written under the same status as "wrong region", which is
+permanent. So the hold expired and nothing could act on it: the buyer stayed
+unreachable inside that campaign for good, and the client's only remedy was to
+rebuild the campaign and lose the first send's numbers.
+
+Four properties, all from decision 005's riders:
+
+  - the window is re-run **against today's value**, not the campaign's. A hold
+    is a property of now.
+  - the existing row is **flipped** to `pending`, never duplicated. One person
+    held back once and reached later is one row with a history.
+  - only a contact whose *only* row on this campaign is `held_back` is
+    eligible. A phone that also has a `sent`, `failed` or `blocked` row was
+    reached, or was refused for a reason the window knows nothing about.
+  - rows written `skipped` before 5h are never touched. They may mean either
+    thing and cannot be classified after the fact.
+
+The release does **not** require a `list:` audience, and the "added since" half
+still does. The refusal above exists because "everyone who has joined that
+audience since" is a set nobody chose; a held-back row is the opposite of that —
+it names a contact this campaign itself resolved, counted and showed on screen
+before the send.
+
 **A top-up is a send, so it runs the send path's own refusals.** The degraded
 provider check and the capacity check run before anything is written, in that
 order, exactly as `preflight()` runs them for a first send — then the same
@@ -52,9 +80,17 @@ from sqlalchemy.orm import Session
 from app.models.campaign import Campaign
 from app.models.contact import Contact
 from app.models.contact_list import ContactListMember
-from app.models.sms_message import SMSMessage
+from app.models.sms_message import SMSMessage, HELD_BACK_STATUS
 from app.services import suppression_service
 from app.services.campaign_builder import CampaignError, wholesale_estimate
+# `releasable()` and `held_back_rows()` moved to their own module when 5h pushed
+# this file past the 500-line rule. The seam is *who may be released* against
+# *running a top-up* — the same one campaign_builder sits on. Re-exported
+# because the release rule is the interesting half of decision 005 and a reader
+# following the top-up here should not have to guess where it went.
+from app.services.campaign_release import (   # noqa: F401  (re-export)
+    capped_campaign_hold, held_back_rows, hold_clears_at, releasable,
+)
 from app.services.campaign_service import CampaignService
 from app.sms.segments import count_segments
 
@@ -78,9 +114,9 @@ TOP_UP_STATE_ERRORS = {
 }
 
 NOTHING_NEW = (
-    "Nobody has been added to this campaign's list since it went out, so there is "
-    "nothing to send. Upload the new contacts to that list, or add them one at a "
-    "time from Contacts, and top up again."
+    "Nobody has been added to this campaign's list since it went out, and nobody it "
+    "held back is clear yet, so there is nothing to send. Upload the new contacts to "
+    "that list, or add them one at a time from Contacts, and top up again."
 )
 
 # Deliberately not "everyone here has already been through this campaign". That
@@ -96,11 +132,14 @@ NOT_A_LIST_AUDIENCE = (
     "auction. Create a new campaign for the new contacts instead."
 )
 
+# Covers both halves deliberately. Since 5h a top-up can be holding back somebody
+# added since *and* somebody it held back at build time who is still inside the
+# window, and a sentence naming only the first would be false about a campaign
+# whose entire hold is the second.
 ALL_SUPPRESSED = (
-    "Every contact added since this campaign sent was texted recently and is being "
-    "held back, so a top-up would reach nobody right now. Nothing was queued."
+    "Everyone this top-up would reach was texted recently and is being held back, so "
+    "it would reach nobody right now. Nothing was queued."
 )
-
 
 def already_reached(db: Session, campaign_id: int) -> set:
     """Every phone number this campaign already has a row for, in any status.
@@ -179,8 +218,9 @@ def new_recipients(db: Session, campaign: Campaign) -> Tuple[List, List]:
 
     Suppression is applied here rather than left to the send loop for the same
     reason `create_campaign()` applies it at build time: the count has to be
-    visible before anything is queued, and a held-back contact gets a `skipped`
-    row so the number is on the record rather than inferable from a gap.
+    visible before anything is queued, and a held-back contact gets a
+    `held_back` row so the number is on the record rather than inferable from a
+    gap.
     """
     list_id = campaign_list_id(campaign)
     if list_id is None:
@@ -190,6 +230,27 @@ def new_recipients(db: Session, campaign: Campaign) -> Tuple[List, List]:
     fresh = [c for c in _added_since(db, list_id, campaign.created_at)
              if c.phone not in reached]
     return suppression_service.partition_recent(db, fresh)
+
+
+def top_up_summary(added: int, released: int) -> str:
+    """What the client is told a top-up is about to do.
+
+    One function so the endpoint and any later surface cannot describe the same
+    run differently — the pattern `send_mode()` established. The two halves are
+    named separately because they are different news: "3 new" is a list that
+    grew, "2 held back earlier" is a hold that has expired, and a client reading
+    the second as the first will go looking for an upload he did not make.
+    """
+    def people(n: int) -> str:
+        return f"{n:,} contact{'' if n == 1 else 's'}"
+
+    if added and released:
+        return (f"Top-up sending to {people(added + released)}: {added:,} added since "
+                f"this campaign went out, {released:,} held back earlier and now clear")
+    if released:
+        return (f"Top-up sending to {people(released)} this campaign held back "
+                f"earlier, now that the hold has cleared")
+    return f"Top-up sending to {people(added)} added since this campaign went out"
 
 
 async def assess(db: Session, campaign: Campaign) -> dict:
@@ -205,33 +266,66 @@ async def assess(db: Session, campaign: Campaign) -> dict:
     router should use, kept here so the wording and the status stay together:
     409 for "the campaign is not in a state for this", 400 for a selector that no
     longer resolves.
+
+    Two candidate sets, and they are gathered under different rules — see the
+    module docstring. `sendable` is people added to the campaign's list since it
+    went out and needs a `list:` audience; `released` is rows this campaign
+    itself held back and needs nothing, because those contacts were resolved into
+    the campaign before it sent.
     """
-    empty = {"code": 409, "sendable": [], "suppressed": [], "bodies": [],
-             "segments": 0}
+    empty = {"code": 409, "sendable": [], "released": [], "suppressed": [],
+             "still_held": [], "bodies": [], "segments": 0}
 
     if campaign.status != "completed":
         return {**empty, "refusal": TOP_UP_STATE_ERRORS.get(
             campaign.status,
             f"This campaign is {campaign.status} and cannot be topped up.")}
 
-    # Before anything is resolved: a campaign without a list of its own has no
-    # "added since" to compute, and guessing one is how a top-up reaches an
-    # audience nobody chose. See the module docstring.
-    if campaign_list_id(campaign) is None:
-        return {**empty, "refusal": NOT_A_LIST_AUDIENCE}
+    # Re-adjudicated against today's window, before the audience question below:
+    # a held-back row belongs to this campaign whatever its audience selector
+    # says, so a campaign on `all` can still release one.
+    released, still_held, departed = releasable(db, campaign)
+
+    # A campaign without a list of its own has no "added since" to compute, and
+    # guessing one is how a top-up reaches an audience nobody chose. That is a
+    # refusal only when there is nothing else to do — see below.
+    is_list_audience = campaign_list_id(campaign) is not None
+    sendable, suppressed = new_recipients(db, campaign) if is_list_audience else ([], [])
+
+    if not sendable and not released:
+        # Ordered by what the client can act on. The cap is a decision he made
+        # and can undo by building the campaign again; the window is a setting;
+        # the audience is neither. A row whose contact has left the list falls
+        # through to the last two, which say there is nothing to send without
+        # blaming a rule — see `releasable()`'s third bucket.
+        held = held_back_rows(db, campaign.id) if campaign.batch_size else []
+        if held:
+            # The clearing time is read here and not inside the sentence, on the
+            # refusal path only: it is three queries, and the other four refusals
+            # have no use for it.
+            refusal = capped_campaign_hold(campaign.batch_size, len(held),
+                                           hold_clears_at(db, campaign.id))
+        elif suppressed or still_held:
+            refusal = ALL_SUPPRESSED
+        elif not is_list_audience:
+            refusal = NOT_A_LIST_AUDIENCE
+        else:
+            refusal = NOTHING_NEW
+        return {**empty, "refusal": refusal, "suppressed": suppressed,
+                "still_held": still_held}
 
     service = CampaignService(db)
-    sendable, suppressed = new_recipients(db, campaign)
-    if not sendable:
-        return {"refusal": ALL_SUPPRESSED if suppressed else NOTHING_NEW,
-                "code": 409, "sendable": [], "suppressed": suppressed,
-                "bodies": [], "segments": 0}
-
     # Rendered once, up front: the bodies are needed for the capacity estimate
     # and again for the rows, and rendering twice risks measuring one message and
     # queueing another.
+    #
+    # A released row is *not* re-rendered. It already carries the body this
+    # campaign composed for that contact, and that body is what will be sent —
+    # measuring anything else here would quote one message and queue another,
+    # which is the defect `exact_segment_totals()` exists to prevent one layer up.
     bodies = [(c, service.render(campaign.message_template, c)) for c in sendable]
-    segments = sum(count_segments(body) for _, body in bodies)
+    segments = (sum(count_segments(body) for _, body in bodies)
+                + sum(count_segments(row.message or "") for row in released))
 
     # The same two refusals a first send gets, in the same order, from the same
     # function — but denominated in what *this* run will queue. Charging five
@@ -240,7 +334,8 @@ async def assess(db: Session, campaign: Campaign) -> dict:
     ok, detail = await service.preflight(campaign, segments=segments,
                                          cost=wholesale_estimate(segments))
     return {"refusal": None if ok else detail, "code": 409,
-            "sendable": sendable, "suppressed": suppressed,
+            "sendable": sendable, "released": released,
+            "suppressed": suppressed, "still_held": still_held,
             "bodies": bodies, "segments": segments}
 
 
@@ -262,6 +357,7 @@ async def top_up(db: Session, campaign_id: int) -> Campaign:
 
     service = CampaignService(db)
     sendable, suppressed = verdict["sendable"], verdict["suppressed"]
+    released = verdict["released"]
     bodies, segments = verdict["bodies"], verdict["segments"]
 
     stamp = datetime.now().isoformat()
@@ -275,22 +371,43 @@ async def top_up(db: Session, campaign_id: int) -> Campaign:
         db.add(SMSMessage(
             campaign_id=campaign.id, contact_id=contact.id, phone=contact.phone,
             message=service.render(campaign.message_template, contact),
-            status="skipped", error_message=held_back, top_up_at=stamp,
+            status=HELD_BACK_STATUS, error_message=held_back, top_up_at=stamp,
         ))
+
+    # Decision 005 rider 3: flip the row, do not write a second one. A person
+    # held back once and reached later is one row with a history, not two rows a
+    # report has to reconcile — and two rows is also how the same handset gets
+    # two copies of one message the day something reads them as separate
+    # recipients. `error_message` is cleared because it explains a hold that is
+    # over; the row is about to be sent, and a sent message carrying "held back
+    # so nobody gets two messages in a row" is a lie in the client's own log.
+    for row in released:
+        row.status = "pending"
+        row.error_message = None
+        row.top_up_at = stamp
 
     # The campaign's totals move, which is what "fold into that campaign" means.
     # `estimated_segments` accumulates for the same reason: it is the campaign's
     # running estimate of what it cost, and leaving it at the first send's figure
     # would under-state a campaign that has been topped up four times.
-    campaign.total_recipients = (campaign.total_recipients or 0) + len(sendable)
-    campaign.suppressed_count = (campaign.suppressed_count or 0) + len(suppressed)
-    campaign.skipped_count = (campaign.skipped_count or 0) + len(suppressed)
+    #
+    # A released row is *subtracted* from the two hold counters as it is added to
+    # the recipients: it was counted as held back at build time and it is not
+    # held back any more. Leaving it in would have the rail read "6 recipients ·
+    # 2 held back" about a campaign that reached all six.
+    campaign.total_recipients = ((campaign.total_recipients or 0)
+                                 + len(sendable) + len(released))
+    campaign.suppressed_count = max(0, (campaign.suppressed_count or 0)
+                                    - len(released)) + len(suppressed)
+    campaign.skipped_count = max(0, (campaign.skipped_count or 0)
+                                 - len(released)) + len(suppressed)
     campaign.estimated_segments = (campaign.estimated_segments or 0) + segments
     campaign.estimated_cost = wholesale_estimate(campaign.estimated_segments)
     db.commit()
 
     logger.info(
         f"Campaign #{campaign_id} top-up: {len(sendable)} new recipient(s), "
+        f"{len(released)} released from the hold-back window, "
         f"{len(suppressed)} held back, ~{segments} segments"
     )
     return await service.run_send_loop(campaign, top_up=True,
@@ -329,6 +446,20 @@ def top_up_history(db: Session, campaign_ids: List[int]) -> dict:
     The original send (`top_up_at IS NULL`) is excluded — it is the campaign's own
     `total_recipients` minus these, and returning it as a "top-up" would have
     every caller filter it back out.
+
+    Rows a top-up *held back* are excluded too, and that is a 5h correction
+    rather than a refinement. The rail renders this as
+    `total_recipients - added` + `added`, and `total_recipients` has never
+    counted a held-back contact — so counting one here reported the original
+    send as smaller than it was, in the direction nobody sanity-checks. Before
+    `held_back` existed there was no way to write this filter; the query could
+    not tell a top-up's held-back row from a top-up's sent one.
+
+    **Going forward only.** A pre-5h top-up wrote its suppressed newcomers as
+    `skipped` with a `top_up_at` stamp, and those rows still pass this filter —
+    correctly, under the no-backfill rule, since a `skipped` row cannot be
+    classified after the fact. A box carrying pre-5h top-ups keeps the old
+    under-report on those campaigns; nothing built after this change does.
     """
     from sqlalchemy import func
 
@@ -338,7 +469,8 @@ def top_up_history(db: Session, campaign_ids: List[int]) -> dict:
     rows = (db.query(SMSMessage.campaign_id, SMSMessage.top_up_at,
                      func.count(SMSMessage.id))
             .filter(SMSMessage.campaign_id.in_(campaign_ids),
-                    SMSMessage.top_up_at.isnot(None))
+                    SMSMessage.top_up_at.isnot(None),
+                    SMSMessage.status != HELD_BACK_STATUS)
             .group_by(SMSMessage.campaign_id, SMSMessage.top_up_at)
             .order_by(SMSMessage.campaign_id, SMSMessage.top_up_at)
             .all())

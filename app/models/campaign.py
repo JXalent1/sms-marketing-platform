@@ -56,6 +56,21 @@ class Campaign(Base):
     # twice this week" and "37 numbers were undeliverable" are different news.
     suppressed_count = Column(Integer, nullable=False, default=0)
 
+    # The cap the client typed, if he typed one: "send to the first 50 as a
+    # test". NULL means no cap was asked for, which is the ordinary case.
+    #
+    # Recorded rather than discarded since 5h, and this is a *record of an
+    # input*, not a new rule — the cap is still applied once, at build time, in
+    # campaign_builder. It is here because a later run has to know a cap
+    # existed. 5e found the first consequence of not knowing (a top-up
+    # delivering to the remainder the cap withheld) and fixed it by changing
+    # what "added since" means; 5h found the second (a released hold ignoring
+    # the cap) and can only refuse if the column says a cap was asked for.
+    # Additive and nullable: campaigns built before it keep NULL, and NULL is
+    # the honest value — we do not know, and none of them can reach the release
+    # path anyway, because no campaign built before 5h has a `held_back` row.
+    batch_size = Column(Integer, nullable=True)
+
     # ISO timestamp a scheduled campaign becomes due. NULL = send on demand.
     # The scheduler hands a due campaign to the same send path a button press
     # does, pre-flight included; this column only decides *when* that happens.

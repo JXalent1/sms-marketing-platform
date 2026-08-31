@@ -48,9 +48,25 @@ hazardous together.
 
 ## A2. The capacity guard must not round itself to zero
 
-`wholesale_estimate()` (`campaign_service.py:58`) rounds to two decimal places, so a
+~~`wholesale_estimate()` (`campaign_service.py:58`) rounds to two decimal places, so a
 small send can require `$0.00` and pass the capacity check on an empty account. The guard
-that exists to stop a blast dying halfway through can be satisfied by nothing.
+that exists to stop a blast dying halfway through can be satisfied by nothing.~~
+
+**Superseded by `decisions/006-which-campaigns-may-release-a-hold.md` → "On A2 — you were
+right and my spec was wrong".** The premise above is false at this installation's rate.
+At `WHOLESALE_COST_PER_SEGMENT = 0.009` — the value in `.env`, `.env.example` and the code
+default, which `.env.production` does not override — a one-segment estimate rounds *up*
+to `$0.01` and was already refused on an empty account. The `$0.00` case needs a blended
+rate under half a cent.
+
+The defect that is real at 0.009 is smaller and in the same place: rounding *down* loses
+up to three quarters of a cent of requirement, so six segments ask for `$0.075` against a
+true `$0.081` and a campaign can start on a balance that does not cover it. Struck rather
+than rewritten because the ruling records the failure as an instance of a lesson this
+project already carries — `CLAUDE.md`, "a rationale and its mechanism have to be checked
+against each other" — and a silently corrected spec would hide that.
+
+The three bullets below stand as written and were implemented.
 
 This is escalation item 3 — the pre-flight capacity check — and it is **ruled on: fix
 it.** The fix strictly tightens the guard, which is the direction that list protects.

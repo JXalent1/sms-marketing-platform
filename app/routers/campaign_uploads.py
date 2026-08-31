@@ -120,7 +120,14 @@ async def top_up_campaign(request: Request, campaign_id: int,
                           background_tasks: BackgroundTasks,
                           db: Session = Depends(get_db),
                           user: str = Depends(require_auth)):
-    """Send this campaign's message to everyone added to its audience since.
+    """Send this campaign's message to everyone it has not reached yet.
+
+    Two sets, gathered under different rules and counted separately in the
+    answer: contacts added to the campaign's list since it went out, and
+    contacts the hold-back window held back whose hold has since cleared (5h A1,
+    decisions/005). Calling the second lot "new recipients" would send the client
+    looking for an upload he never made, so `top_up_summary()` owns the sentence
+    and this endpoint renders it verbatim.
 
     **Refused synchronously**, before anything is queued — 5d's lesson from
     `POST /{id}/send`, which used to answer "sending started" and let the refusal
@@ -150,13 +157,19 @@ async def top_up_campaign(request: Request, campaign_id: int,
         raise HTTPException(status_code=verdict["code"], detail=verdict["refusal"])
 
     added = len(verdict["sendable"])
+    released = len(verdict["released"])
     logger.info(f"Campaign #{campaign_id} top-up triggered by {get_client_ip(request)} "
-                f"| {added} new recipient(s)")
+                f"| {added} new recipient(s), {released} released from the hold-back "
+                f"window")
     background_tasks.add_task(campaign_topup.top_up_background, campaign_id)
     return {
         "success": True,
-        "message": f"Top-up sending to {added:,} new recipient"
-                   f"{'' if added == 1 else 's'}",
-        "recipients": added,
-        "suppressed": len(verdict["suppressed"]),
+        "message": campaign_topup.top_up_summary(added, released),
+        "recipients": added + released,
+        "added": added,
+        "released": released,
+        # Everybody this run is holding back: the newcomers texted recently, and
+        # the rows whose hold has not cleared yet. One number, because "held
+        # back" is one fact about this top-up however the row got there.
+        "suppressed": len(verdict["suppressed"]) + len(verdict["still_held"]),
     }

@@ -43,7 +43,7 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.models.category import Category
 from app.services import billing_service
-from app.services.suppression_service import suppression_days
+from app.services.suppression_service import clears_at_clock, suppression_days
 from app.sms.compliance import STOP_KEYWORDS
 from app.sms.phone import find_risky_links
 from app.sms.segments import count_segments, describe
@@ -300,19 +300,13 @@ def check_recent_overlap(days: int, suppressed_count: int, sendable_count: int,
 def _clock(stamp: Optional[str]) -> str:
     """An ISO timestamp as "10:11am on 29 Aug", or the raw value if unparseable.
 
-    Server-local, like every other time this product prints. Never raises: this
-    is decoration on a checklist row and a malformed timestamp must not take the
-    pre-flight report down with it.
+    Delegates rather than implements. Decision 006 requires the abort reason for
+    a fully-held-back campaign to quote the same clearing time this row does,
+    and two copies of the formatting is how the pre-send sentence and the
+    post-hoc one come to disagree about the same moment. The renderer lives with
+    `suppression_clears_at()`, which produces what it renders.
     """
-    try:
-        when = datetime.fromisoformat(stamp)
-    except (TypeError, ValueError):
-        return str(stamp)
-    hour = when.hour % 12 or 12
-    stamped = f"{hour}:{when.minute:02d}{'am' if when.hour < 12 else 'pm'}"
-    if when.date() == datetime.now().date():
-        return stamped
-    return f"{stamped} on {when.day} {when.strftime('%b')}"
+    return clears_at_clock(stamp)
 
 
 def check_link_shortener(body: str) -> dict:

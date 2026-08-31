@@ -14,23 +14,39 @@ must not retroactively relabel that. It gets the same sentence in
 `abort_reason` and keeps its `completed` badge, which is why every sentence below
 has to name its own cause rather than leaning on the badge next to it.
 
-Everything here is a pure function over counts. No session, no campaign object,
-no writes — so the wording can be asserted directly and the send loop keeps one
-job. Counts come from the run's own rows, not from the campaign's lifetime
-counters, because those already carry the original send's numbers.
+Everything here is a pure function over counts and, since decision 006, one
+timestamp. No session, no campaign object, no writes — so the wording can be
+asserted directly and the send loop keeps one job. The clearing time is computed
+by the caller (`campaign_release.hold_clears_at()`, which has the session) and
+passed in; only its *rendering* happens here, through the same
+`clears_at_clock()` the composer's checklist row uses, so the sentence before
+the send and the sentence after it describe the same moment the same way.
+
+Counts come from the run's own rows, not from the campaign's lifetime counters,
+because those already carry the original send's numbers.
 """
 
+from datetime import datetime
 from typing import List, Optional
 
-# The trailing fact, appended to every reason. It is the sentence the client
-# actually needs — the cause explains it, this is what happened. Past tense
-# throughout: unlike the composer's pre-send refusals (see `send_path_assessment`
-# in app/sms/factory.py), nothing reads this before the run.
+from app.services.suppression_service import clears_at_clock
+
+# The fact every reason carries. It is the sentence the client actually needs —
+# the cause explains it, this is what happened. Past tense throughout: unlike the
+# composer's pre-send refusals (see `send_path_assessment` in app/sms/factory.py),
+# nothing reads this before the run.
+#
+# Trailing everywhere except the fully-held-back branch, where it leads. That
+# sentence has a clearing time and a remedy the client acts on, and decision
+# 006's own example states the fact once, at the front; wedging it back in
+# between the two actionable clauses is how a sentence stops being read.
 NOTHING_SENT = "Nothing was sent."
 
 
 def zero_send_reason(*, queued: int, blocked: int = 0, region_skipped: int = 0,
-                     failed: int = 0, suppressed: int = 0) -> str:
+                     failed: int = 0, suppressed: int = 0,
+                     suppression_days: Optional[int] = None,
+                     clears_at: Optional[str] = None) -> str:
     """Why this run reached nobody, in one sentence naming the cause.
 
     `queued` is how many messages the run actually had to work with — the rows
@@ -41,25 +57,45 @@ def zero_send_reason(*, queued: int, blocked: int = 0, region_skipped: int = 0,
     The four causes are reported in the order that answers "what do I change?":
     an empty audience and a fully-suppressed one are different problems with
     different fixes, and a list that is entirely opted out is neither.
+
+    `suppression_days` and `clears_at` are decision 006's requirement and only
+    the suppressed branch reads them. They stay optional because the clearing
+    time is genuinely unknowable on some inputs — a contact deleted between the
+    build and the send, a timestamp that will not parse — and the sentence has
+    to work without it. `run_send_loop()` always passes both;
+    `test_the_abort_reason_names_the_window_and_when_it_clears` drives the real
+    send path rather than this function, so a wiring that quietly stopped
+    passing them fails there.
     """
     if queued == 0:
         if suppressed:
             # The remedy has to be one that works on *this* campaign, and neither
             # "lower the window" nor "wait" is — which is what an earlier wording
             # of this sentence recommended. Suppression is partitioned when the
-            # draft is built and frozen into `skipped` rows, and the send loop
-            # only ever reads `pending`; nothing moves a campaign back from
+            # draft is built and frozen into `held_back` rows (`skipped` before
+            # 5h, which is the overloading decisions/005 removed), and the send
+            # loop only ever reads `pending`; nothing moves a campaign back from
             # `aborted`. So a client who follows that advice changes a setting,
             # presses send again, and watches the same campaign fail the same
             # way. Naming the window is still worth doing — it is what caused
             # this — but the action is to build the campaign again.
-            return (
-                f"Every contact in this audience — all {suppressed:,} — was texted "
-                f"recently and held back, so there was nobody left to send to. "
-                f"{NOTHING_SENT} Lower the hold-back window in Settings if this is "
-                f"not what you wanted, then create the campaign again — this one "
-                f"cannot be restarted."
-            )
+            #
+            # 5h's release does NOT change this branch, and decision 006 ruled
+            # that it should not: a campaign the window held *entirely* sent
+            # zero messages, so rebuilding it loses nothing — no delivery
+            # record, no cost, no history — which is not true of 005's own
+            # scenario, where one send had happened and rebuilding threw it
+            # away. Option 3 would have made this the first thing in the
+            # codebase to move a campaign out of `aborted`, against decision
+            # 002's reasoning, to save a few clicks.
+            #
+            # **The defect here was the sentence, not the state**, and 006 makes
+            # fixing it mandatory. "Stopped before it sent, create a new
+            # campaign" is true and useless: it does not say why nothing sent or
+            # when he could try again, so a working guard reads as a broken tool
+            # — which is what happened to this client for two consecutive
+            # campaigns before anybody ran SQL against it.
+            return _all_held_back(suppressed, suppression_days, clears_at)
         return (
             f"This audience resolved to nobody, so the campaign had no recipients. "
             f"{NOTHING_SENT}"
@@ -87,6 +123,89 @@ def zero_send_reason(*, queued: int, blocked: int = 0, region_skipped: int = 0,
         f"{_breakdown(blocked=blocked, region_skipped=region_skipped, failed=failed, queued=queued)}. "
         f"{NOTHING_SENT}"
     )
+
+
+def _all_held_back(suppressed: int, days: Optional[int],
+                   clears_at: Optional[str]) -> str:
+    """Decision 006's required sentence: the cause, the window, and when it lifts.
+
+    Three clauses, and each earns its place:
+
+      *the cause* — "all 2,140 contacts were texted in the last 3 days" says why
+      nothing went out, in the client's own terms. The old wording said
+      "recently", which is the word a support call starts with.
+
+      *when it clears* — the actionable half. "2,140 held back" invites "held
+      back until when?", and the answer decides whether he waits or re-cuts the
+      audience. It is the same phrasing the composer's checklist row uses one
+      screen earlier (`preflight_service.check_recent_overlap`) rendered through
+      the same `clears_at_clock()`, because these are two sentences about one
+      moment and they must not differ.
+
+      *the remedy* — build the campaign again. Not "lower the window and press
+      send", which an earlier wording recommended and which cannot work:
+      suppression is frozen into `held_back` rows at build time, the send loop
+      reads only `pending`, and nothing moves a campaign back from `aborted`.
+      A client following that advice watches the same campaign fail the same way.
+
+    **The hold may already have lifted by the time this is written, and then the
+    remedy is different.** The held rows are frozen when the draft is built and
+    the run can happen days later — a draft saved on Monday and sent on Friday,
+    or a scheduled send — so the campaign still has nothing to send while the
+    people it held are now perfectly reachable. Found by this session's review:
+    the first version printed a clearing time three days in the *past*, in the
+    present tense, and told the client to wait for it. A window changed to 0 on
+    the Settings screen produces the same shape. Both now say the hold has gone
+    and to rebuild now, which is true and actionable; neither invents a time.
+
+    The window and the clearing time are dropped independently when they are not
+    known — never invented, and never printed as "the last 0 days", which reads
+    as a fact about the audience rather than about the rule (5e A6's own lesson).
+    """
+    window = (f" in the last {days} day{'s' if days != 1 else ''}"
+              if days else " recently")
+    # "All 1 contacts were texted" — the review found the count pluralised on
+    # one side of the sentence and not the other, and the test that was meant to
+    # catch it pinned the broken half. A 6,857-person list really can hold one
+    # person back, so the singular is a sentence the client sees.
+    people = (f"The one contact in this audience was texted{window}"
+              if suppressed == 1
+              else f"All {suppressed:,} contacts were texted{window}")
+
+    if _still_ahead(clears_at):
+        when = f" The hold clears at {clears_at_clock(clears_at)}."
+        remedy = "Create the campaign again after that"
+    elif clears_at or days == 0:
+        # Either the moment has passed or the window has been switched off. The
+        # hold is over either way, and the only wrong answer is to keep him
+        # waiting for it.
+        when = " That hold has since cleared."
+        remedy = "Create the campaign again now"
+    else:
+        when = ""
+        remedy = "Create the campaign again once the hold clears"
+
+    return (
+        f"{NOTHING_SENT} {people} and held back.{when} {remedy}; this one cannot "
+        f"be restarted."
+    )
+
+
+def _still_ahead(stamp: Optional[str], now: Optional[datetime] = None) -> bool:
+    """Is this clearing time in the future? Unparseable and absent are False.
+
+    False rather than True on anything it cannot read, because the two branches
+    fail differently: a past time presented as future tells the client to wait
+    for a moment that has gone, and "the hold has since cleared" on a hold that
+    has not merely sends him back to a composer that will hold them again — one
+    wastes a day, the other wastes a click.
+    """
+    if not stamp:
+        return False
+    try:
+        return datetime.fromisoformat(stamp) > (now or datetime.now())
+    except (TypeError, ValueError):
+        return False
 
 
 def _breakdown(*, blocked: int, region_skipped: int, failed: int, queued: int) -> str:
