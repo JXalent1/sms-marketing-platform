@@ -2565,3 +2565,237 @@ itself.
   of it — `domain()`, `url_for()`, `validate_target()` — assumes one.
 - **`campaign_service.py` is at exactly 500 lines.** Not over, so the gate
   passes, but the next line anywhere in it forces a split.
+
+---
+
+## Module P1 Part A — the prospect pipeline, 2026-08-31
+
+The holding pen between a scraper and the textable list. **No source
+implementations** — this session built the machinery every future source plugs
+into, because if it is built right adding Google Places is a class and a
+taxonomy, and if it is built wrong every source inherits the damage.
+
+`bash agent/gate.sh` passes, twice. **494 tests** (449 + 45 new).
+`bash agent/accept-P1.sh` is the stop condition; criteria 1-10 pass locally,
+criterion 11 is `--with-remote` and needs the deploy.
+
+### The rule the module exists to enforce
+
+**Buyers, never sellers.** A consignor on the list costs money to text, dilutes
+the audience and puts a competitor on the client's own marketing channel. The
+plan of record enforces it in three places rather than trusting it once, and all
+three are built:
+
+1. **`search_term` and `buyer_rationale` are non-nullable**, and
+   `ProspectSource.ingest()` counts a record without a rationale as `invalid`
+   and persists nothing. A term with no written claim about why those people
+   would raise a paddle cannot reach a reviewer, because a reviewer cannot
+   disagree with a blank.
+2. **The queue shows that rationale on every row**, so the question being
+   answered is "would this person bid?" rather than "is this a real business?"
+   Those have different answers for an estate liquidator with a good website.
+3. **`seller_or_consignor` and `competitor` are first-class reject reasons**,
+   both suppress permanently, and the per-term breakdown counts them apart from
+   every other reason — so a search finding the wrong side of the room becomes
+   visible instead of being something somebody eventually notices.
+
+### Five tables, not three
+
+`prospects`, `scrape_jobs` and `phone_lookups` are the three the session named.
+Two more, and the alternative to each is an overloaded column:
+
+- **`prospect_sightings`** — one row per (prospect, source, term), uniquely
+  constrained. Multi-source corroboration is a `COUNT(DISTINCT source)` over it.
+  The column version is a counter plus a JSON list of terms, which is a domain
+  concept living as a string. The constraint is also what makes a nightly re-run
+  idempotent instead of score-inflating.
+- **`prospect_rejections`** — keyed on the phone, permanent. "Re-ingesting from
+  any source must not resurface it" is a claim about a *number*, not about a row
+  somebody might later tidy up. Same separation `blocked_numbers` has from
+  `contacts.is_active`.
+
+`prospects.phone` is uniquely indexed for the reason `contacts.phone` is: the
+number is the identity. The migration is additive only and touches no existing
+column or index; `ix_contacts_phone` is not in it, and nothing in this module
+inserts a contact except `promote()`, which goes through
+`contact_service.upsert_contact()` like every other ingestion path.
+
+### The gate
+
+Line-type lookup sits in front of everything, because 2,526 of one campaign's
+failures were not-routable numbers — 39% of a 6,857 send, all paid for, all
+still on the list the next morning. Screening costs about $0.0025 a number;
+10,000 businesses is $25 **once**, and the cache is what keeps it once.
+
+- The provider interface is `app/sms/lookup.py` and is DB-free, on the rule that
+  keeps `app/sms/` portable. The cache is `app/services/lookup_service.py`.
+- **The default provider makes no network call at all.** Wiring a paid API in is
+  escalation item 7, and an unexercised provider class is the pinned-SDK bet this
+  project has already lost. It lands with P2.
+- **An answer is permanent; a failure is not.** A carrier that says "landline"
+  is final. A carrier that times out has not answered, and caching that would
+  turn one bad afternoon into a permanent hole — every number screened during it
+  filed `unknown` forever, and `unknown` cannot be promoted.
+- **`unknown` and `toll_free` are not promote-eligible either**, and the reason
+  is asymmetry, not caution: a mobile wrongly held back waits in a queue, and a
+  landline wrongly promoted is paid for on every send from now on. A gate that is
+  switched off refuses; it does not wave things through.
+
+`PROMOTABLE_LINE_TYPES` is one tuple in one place. The queue's "ready to
+promote" tile and the promote button's guard both read it, and a test asserts
+the *property* that the two agree rather than pinning the tuple.
+
+### The runner
+
+Hard timeout, cleanup in a `finally`, and `cleanup_ran` as a **column** rather
+than a log line — the reference system's 17 orphaned browser processes were
+invisible because "the cleanup ran" was only knowable by reading a journal
+nobody read. A timed-out job with `cleanup_ran = 0` is now something you can
+query for.
+
+Two layers of deadline: cooperative (`source.request_stop()`, which a
+well-behaved `fetch()` checks in its paging loop) and abandonment (a daemon
+worker thread, because Python cannot kill a thread and pretending otherwise is
+how a runner comes to believe it cleaned up something still running). That
+second layer is exactly why `cleanup()` belongs to the source: only the source
+holds the handle, and it is called on the runner's thread the moment the
+deadline passes.
+
+A timeout is not a rollback. Records produced before the deadline are persisted,
+through the source's own `ingest()` — not through a loop of the runner's, which
+would be a second call site for the rationale check, the suppression check and
+the provenance requirement.
+
+### What the review found (ten lenses, worked in session)
+
+No reviewer was spawned — CLAUDE.md says to work the lenses directly, and two
+fan-outs produced nothing across 5f and 5g. Eight defects. Every one was found
+by running something — the suite, the mutation harness, driving the real screen
+over HTTP — rather than by reading.
+
+1. **`source_count` could never reach 2.** `_add_sighting()` read the distinct
+   sources *after* `db.add()`ing the new sighting. SQLAlchemy autoflushes on
+   query, so the pending row flushed, the query found its own source in the
+   answer, and the increment never fired — the corroboration term of the score
+   would have been permanently dead while every test about "two sources" still
+   passed on the sighting count. Fixed by reading before the add.
+2. **A repeat of the same search never screened what it found.** `_screen()` was
+   scoped to `sightings.job_id`, and a re-run of the same source and term writes
+   no new sighting — that idempotence is what stops corroboration inflating. So a
+   prospect that missed screening the first time could never be screened by a
+   repeat of the search that found it: `unknown` forever, unpromotable, with
+   nothing on screen saying why. Now scoped to the numbers the run produced.
+3. **The screening pass paid to look up numbers a human had already rejected.**
+   A rejected number is suppressed at ingest, so it never enters the cache — so
+   every re-run of a search that keeps finding it was a fresh $0.0025 for an
+   answer nobody will ever act on. Found by checking the docstring against the
+   code: it claimed rejected records were not paid for, and the query said
+   otherwise. Now filtered to `status == "pending"`.
+4. **A job that blew up in ingestion was reported `completed`.** `_collect()`
+   catches everything the *source* raises, so `failure` is set on that path —
+   but an exception out of the persistence or screening step reached the
+   `finally` with `failure` still None, and it fell straight through to
+   `status = "completed"`. Same defect as a blast that reached nobody reporting
+   "completed", one level down.
+5. **The runner had its own persistence loop.** `ProspectSource.ingest()` is
+   documented as the only path from a source into these tables, and the runner
+   went round it because it drains `fetch()` on another thread and persists
+   afterwards. That is the "guard with one call site" shape before it has a
+   chance to bite. `ingest()` now takes the already-collected records, and a
+   test watches it get called.
+6. **The rescore test proved nothing.** It ran the second job under a
+   *different* source name, so the score rose from corroboration whether or not
+   screening rescored anything. Same shape as 5e's "two assertions comparing
+   0 == 0". Rewritten to use the same source and term, and to assert
+   `source_count` did not move.
+7. **Two cache guards were untested, and only the mutation harness said so.**
+   `screen()` short-circuits on a fully cached set, so the criterion-6 test
+   never reached `line_type_for()`'s own cache read, and never reached the
+   per-number "skip what we already know" check either — a partly cached batch,
+   which is what a nightly job over an overlapping set actually is. Both
+   reverted cleanly with the suite green. Two tests added.
+
+8. **Every sort ran descending.** The API takes a direction and the screen sent
+   `desc` for all of them, so picking "Business" sorted Z to A and picking
+   "Distance" put the farthest business first — the opposite of the question
+   being asked. One map from sort key to direction; score and recency are the
+   only two where bigger is better.
+
+### The mutation harness caught me out first
+
+The first run reported 38 caught, 0 survived — and it was worthless. The run
+before it had been killed on a timeout mid-mutation, leaving the scratch tree
+**already mutated**, so `pristine` was captured from a dirty tree and every
+verdict in the next run was measured on top of a leftover edit. The tell was
+visible in the output and I nearly missed it: one test,
+`test_the_runner_persists_through_the_sources_own_ingest`, was failing for
+almost every mutation, including scoring-weight and router-auth changes it has
+no business noticing. Several mutations were "caught" by that test **and nothing
+else** — R30 among them, which no test actually caught.
+
+Every later run therefore verifies the scratch tree is byte-identical to the
+repo before applying a single patch, and prints `SCRATCH VERIFIED PRISTINE`.
+This is 5g's lesson arriving from a new direction: before trusting a green
+mutation run, check that the tests failing for a mutation are the tests that
+*name* it.
+
+Also checked and clean: the send path is untouched; `app/sms/` still imports
+nothing from the DB layer and neither does `app/sources/`; the migration applies
+to an empty database and `compare_metadata` reports no drift; every new test
+passes on its own; no router reads a cost column or the raw payload (asserted by
+AST, not grep); and every prospect surface — the page, four API routes and the
+CSV export — is scanned at runtime for carrier names, our spend and the raw
+third-party payload.
+
+### Deliberately not built
+
+- **Any source implementation.** Google Places is P2, registries are P3. The
+  registry (`PROSPECT_SOURCES`) is empty and the fakes live in `tests/`.
+- **A carrier lookup provider.** See above — budget decision.
+- **DNC scrub.** The old module-5 sketch listed it; `sessions/session-P1.md` A7
+  specifies E.164 normalisation, blocklist refusal and the opt-out check, and
+  acceptance criterion 7 names only those. Not built, not guessed at.
+- **A "promote landlines anyway" setting.** "Excluded by default" was read as
+  "out of the box", not "unless configured otherwise". Adding a toggle would
+  have been inventing a requirement and weakening a guard in one edit.
+
+### Found while working
+
+- **`contacts.py:BLOCKED_CONTACT_ERROR` and `prospect_service`'s refusals are
+  two wordings for one rule.** The *rule* has one definition
+  (`blocklist_service.is_blocked` / `OPT_OUT_REASONS`), and the two sentences
+  differ because the verbs differ ("not added" vs "not promoted") — but if
+  module 8 touches the Contacts screen, they should be folded into one
+  sentence-maker the way `send_path_assessment()` owns both tenses of the
+  degraded refusal.
+- **A prospect is not deduped against existing contacts.** `modules.md` puts
+  that in P2's scope, so it was left there. Promoting one that is already a
+  contact is harmless today — `upsert_contact()` fills gaps and `tag_contact()`
+  is idempotent — but the queue will show businesses the client already has.
+- **`prospect_service.py` is 451 lines and `campaign_service.py` is still at
+  exactly 500.** The next addition to either forces a split.
+- **The job cost is recorded and never rendered.** `scrape_jobs.cost` and
+  `phone_lookups.cost` are our spend, on the same footing as
+  `WHOLESALE_COST_PER_SEGMENT`; there is no screen for jobs yet, and when one is
+  built neither those nor `scrape_jobs.error` (raw, unscrubbed, a developer's
+  diagnostic) may be on it.
+- **`tests/test_campaign_reports.py::test_no_new_surface_leaks_the_carrier_or_our_cost`
+  is latently flaky, and it is not mine.** It failed once in six full-suite runs
+  during this session and I could not reproduce it in five more. The mechanism is
+  almost certainly line 313: `assert str(settings.WHOLESALE_COST_PER_SEGMENT) not
+  in body` matches the bare string `"0.009"` against an entire response body,
+  and an ISO timestamp spells it whenever the seconds end in `0` and the
+  microseconds start `009` — `...T14:23:40.009312` contains `0.009`. Verified
+  the substring logic; did *not* catch it in the act, so this is a hypothesis
+  with a mechanism, not a confirmed diagnosis. `"0.0043"` on line 314 is the
+  same shape, ten times rarer. This is `CLAUDE.md`'s "a numeric code matched
+  against prose matches phone numbers", one column over: a bare decimal matched
+  against a whole body matches timestamps. The fix is to assert against the
+  parsed fields, or to anchor the figure the way a money string would actually
+  appear. **Left alone** — it is 5f's test and a drive-by edit to another
+  session's white-label assertion is exactly the change that should be reviewed
+  on its own. It can intermittently fail `agent/gate.sh`, which runs with
+  `--maxfail=1`; if it does, re-run before believing it.
+- **`docs/API.md` does not document the prospects API — nor 5f's reports and
+  links routes.** The drift predates this session; the file stops at Settings,
+  Health and Webhooks. Worth one pass when somebody is in there.

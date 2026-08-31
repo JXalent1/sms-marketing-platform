@@ -26,7 +26,7 @@ import app.models                                    # noqa: F401 — registers 
 
 from app.routers import (pages, dashboard, campaigns, campaign_uploads, contacts,
                          categories, imports, blocklist, usage, reports, links,
-                         settings as settings_router)
+                         prospects, settings as settings_router)
 from app.routers.webhooks import telnyx as telnyx_webhooks, twilio as twilio_webhooks
 
 logger = logging.getLogger("app")
@@ -261,6 +261,7 @@ app.include_router(imports.router)
 app.include_router(blocklist.router)
 app.include_router(usage.router)
 app.include_router(reports.router)
+app.include_router(prospects.router)
 app.include_router(settings_router.router)
 app.include_router(telnyx_webhooks.router)
 app.include_router(twilio_webhooks.router)

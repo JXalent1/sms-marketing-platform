@@ -12,10 +12,17 @@ from app.models.sms_message import SMSMessage
 from app.models.blocked_number import BlockedNumber
 from app.models.app_setting import AppSetting
 from app.models.short_link import ShortLink, LinkClick
+from app.models.prospect import Prospect, ProspectSighting, ProspectRejection
+from app.models.scrape import ScrapeJob, PhoneLookup
 
 __all__ = [
     "ShortLink",
     "LinkClick",
+    "Prospect",
+    "ProspectSighting",
+    "ProspectRejection",
+    "ScrapeJob",
+    "PhoneLookup",
     "Contact",
     "Category",
     "ContactCategory",

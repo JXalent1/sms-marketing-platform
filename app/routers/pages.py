@@ -42,6 +42,7 @@ PAGES = [
     ("/contacts", "contacts.html", "contacts"),
     ("/usage", "usage.html", "usage"),
     ("/blocklist", "blocklist.html", "blocklist"),
+    ("/prospects", "prospects.html", "prospects"),
     ("/settings", "settings.html", "settings"),
 ]
 

@@ -36,6 +36,10 @@ client sending real campaigns.
 | 5f | **Short links & reporting** | Part A done 2026-08-31 · deploy pending | 5e | `app/models/short_link.py`, `app/models/campaign.py`, `app/models/sms_message.py`, `app/routers/links.py`, `app/routers/reports.py`, `app/routers/campaigns.py`, `app/routers/campaign_uploads.py`, `app/routers/pages.py`, `app/services/link_service.py`, `app/services/click_classifier.py`, `app/main.py`, `deployment/{nginx.conf.template,bootstrap.sh,deploy.sh}`, `.env.example`, `app/services/report_service.py`, `app/services/history_service.py`, `app/services/cost_reconciliation.py`, `app/services/message_render.py`, `app/services/preflight_totals.py`, `app/services/campaign_builder.py`, `app/services/campaign_service.py`, `app/services/campaign_topup.py`, `app/services/preflight_service.py`, `app/sms/base.py`, `app/sms/providers/{telnyx,console}.py`, `app/core/config.py`, `app/templates/{history,campaign-report,contact-history,campaigns,contacts,base}.html`, `app/templates/_composer-{link,script,upload}.html`, `scripts/cost_report.py`, `alembic/versions/`, `tests/` |
 | 5g | **Blocklist correctness** | Part A done 2026-08-26 · deploy pending | 5d | `app/sms/compliance.py`, `app/sms/phone.py`, `app/sms/providers/telnyx.py`, `app/routers/webhooks/telnyx.py`, `app/routers/webhooks/twilio.py`, `app/routers/webhooks/common.py`, `app/routers/pages.py`, `app/models/sms_message.py`, `app/models/blocked_number.py`, `app/services/blocklist_service.py`, `app/services/dashboard_service.py`, `app/services/monitoring_service.py`, `alembic/versions/`, `tests/` |
 | 5h | **Held-back rows & the capacity floor** | Part A done 2026-08-30 · deploy pending | 5e | `app/models/sms_message.py`, `app/services/campaign_builder.py`, `app/services/campaign_service.py`, `app/services/campaign_release.py`, `app/services/campaign_topup.py`, `app/routers/campaign_uploads.py`, `app/templates/_composer-upload.html`, `alembic/versions/`, `tests/` |
+| P1 | **Prospect pipeline** | Part A done 2026-08-31 · deploy pending | 5f | `app/models/{prospect,scrape}.py`, `app/models/__init__.py`, `app/sms/lookup.py`, `app/sources/prospect_base.py`, `app/sources/__init__.py`, `app/services/{prospect_service,prospect_queue,prospect_scoring,lookup_service,scrape_runner,link_service}.py`, `app/routers/prospects.py`, `app/routers/pages.py`, `app/templates/{prospects,base}.html`, `app/core/config.py`, `app/main.py`, `alembic/versions/`, `tests/`, `agent/{accept-P1.sh,mutate-P1.py}` |
+| P1b | **Lookup provider & gate flake** | Specced · next | P1 | `app/services/lookup_providers/telnyx.py`, `app/services/lookup_service.py`, `tests/test_campaign_reports.py`, `docs/API.md`, `tests/` |
+| P2 | **Google Places source** | After P1 | P1 | `app/sources/google_places.py`, taxonomy config, `tests/` |
+| P3 | **Registries & enrichment** | After P2 | P1 | `app/sources/dbpr.py`, `app/sources/sunbiz.py`, `tests/` |
 
 **That's the launch — six sessions, but only four waves. See "Parallel plan" below.**
 
@@ -67,6 +71,38 @@ provider name from `webhooks/telnyx.py` and `webhooks/twilio.py`.
 500-line rule. `billing_service.py` was in the list and was **not** touched — the
 non-billable status is a change to `sms_message.py`'s status set, which is where
 `BILLABLE_STATUSES` already lived, and the billing query needed no edit.
+
+**P1's file list above is wider than the one this table carried before the session,
+and deliberately so** — the same precedent 5d set. Where it grew and why:
+
+- `app/models/scrape.py` is separate from `prospect.py` because the two halves of
+  the module are two subjects (the holding pen and the job/cache record) and one
+  file carrying both would have gone past 500 lines within the session.
+- `app/sms/lookup.py` exists because the line-type provider talks to a carrier and
+  must not import the DB layer, exactly as `app/sms/factory.py` must not. Only the
+  *cache* is a database concern, and that is `lookup_service.py`.
+- `prospect_queue.py` and `prospect_scoring.py` split the reads and the scoring off
+  `prospect_service.py`, which is the writes and is already 450 lines.
+- `app/routers/pages.py`, `app/main.py`, `app/models/__init__.py`,
+  `app/sources/__init__.py` and `app/templates/base.html` are the mechanical wiring
+  a new screen implies. `base.html` had a comment naming the exact edit that
+  restores the Prospects nav entry; this is that edit.
+- `app/core/config.py` carries the five new settings, because the plan of record
+  says the per-category radii are config values and not code.
+- `app/services/link_service.py` gained one word: `prospects` joins `RESERVED_SLUGS`.
+  A new root page is the event that list exists for, and the same set is subtracted
+  on both the minting and the serving side.
+
+**Two tables beyond the three the session named.** `prospect_sightings` and
+`prospect_rejections`. The alternative to each is an overloaded column — a JSON
+list of corroborating terms, and a status somebody could tidy away — which is the
+mistake `CLAUDE.md` opens with. Reasoning is in the migration's docstring.
+
+**What was deliberately NOT built:** a carrier line-type provider. The interface and
+the cache are here and the default provider makes no network call at all. Wiring a
+paid API in is escalation item 7, and an unexercised provider class is the pinned-SDK
+bet this project has already lost once. It lands with P2, when there is a search to
+spend it on.
 
 ### Deferred until after launch
 

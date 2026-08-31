@@ -57,15 +57,14 @@
    Only routes that exist. The design shows eight items; four of those screens
    are not built, and a nav entry that 404s is worse than an absent one.
 
-   History landed in 5f and is no longer absent.
+   History landed in 5f and is no longer absent. Prospects landed in P1: the
+   review queue exists, so the entry is a route rather than a promise. It sits
+   under Audience because promoting a prospect is how the audience grows.
 
-   Deliberately absent, and what restores each:
+   Deliberately absent, and what restores it:
      Categories — the admin screen for the category tables added in module 2
                   (module 8). Categories themselves already work.
-     Prospects  — the whole prospecting engine is deferred, so there is no badge,
-                  no route and no placeholder here. It comes back with the
-                  discovery sources and the review queue, not before.
-   Restoring one means adding its (href, key, label, icon) tuple below and an
+   Restoring it means adding its (href, key, label, icon) tuple below and an
    arm to nav_icon(); nothing else in this file needs to change.
 #}
 {% set nav_groups = [
@@ -76,6 +75,7 @@
     ]),
     ('Audience', [
         ('/contacts',  'contacts',  'Contacts',        'contacts'),
+        ('/prospects', 'prospects', 'Prospects',       'prospects'),
         ('/blocklist', 'blocklist', 'Opt-outs',        'optouts'),
     ]),
     ('Account', [
@@ -96,6 +96,10 @@
   {%- elif name == 'contacts' -%}
     <circle cx="9" cy="8" r="3.5"/><path d="M2.5 19.5a6.5 6.5 0 0 1 13 0"/>
     <path d="M16.5 5.2a3.5 3.5 0 0 1 0 6.6M17 14.2a6.5 6.5 0 0 1 4.5 5.3"/>
+  {%- elif name == 'prospects' -%}
+    {# A magnifier over a person: finding buyers, not managing the ones we have. #}
+    <circle cx="10.5" cy="10.5" r="6"/><path d="M15.2 15.2 21 21"/>
+    <path d="M8.2 12.6a3 3 0 0 1 4.6 0"/><circle cx="10.5" cy="8.4" r="1.6"/>
   {%- elif name == 'optouts' -%}
     <circle cx="12" cy="12" r="8.5"/><path d="M6 6l12 12"/>
   {%- elif name == 'usage' -%}

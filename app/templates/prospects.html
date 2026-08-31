@@ -1,0 +1,397 @@
+{% extends "base.html" %}
+{# The review queue.
+
+   The reviewer is answering one question — **would this person raise a paddle?**
+   — and the whole layout serves it. Every row carries the buyer rationale that
+   justified the search which found it, because "is this a real business?" and
+   "would this business bid?" have different answers for an estate liquidator
+   with a good website, and the second one is the only one that matters here.
+
+   Nothing on this page tallies anything. Every figure comes from
+   /api/prospects/summary or /api/prospects/terms, counted in one grouped query
+   — the list is capped and a browser-side total under-reports the moment it
+   overflows.
+
+   No cost appears anywhere. Screening a number is our spend, not his; he is
+   billed per segment and for nothing else. #}
+{% block title %}Prospects{% endblock %}
+
+{% block content %}
+<div class="space-y-5">
+
+  {# ─── The tiles ──────────────────────────────────────────────────────────
+     "Ready to promote" is the gate's own count, not "mobile". Its definition
+     lives in lookup_service and both this number and the promote guard read it
+     from there, so the tile can never promise more than the button delivers. #}
+  <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+    <div class="rounded-xl border border-line bg-surface px-4 py-3">
+      <div class="text-2xl font-bold tabular-nums text-ink" id="tilePending">—</div>
+      <div class="text-[11px] font-medium text-ink-3">In review</div>
+    </div>
+    <div class="rounded-xl border border-line bg-surface px-4 py-3">
+      <div class="text-2xl font-bold tabular-nums text-good" id="tileEligible">—</div>
+      <div class="text-[11px] font-medium text-ink-3">Ready to promote</div>
+    </div>
+    <div class="rounded-xl border border-line bg-surface px-4 py-3">
+      <div class="text-2xl font-bold tabular-nums text-ink-2" id="tileUnscreened">—</div>
+      <div class="text-[11px] font-medium text-ink-3">Not screened yet</div>
+    </div>
+    <div class="rounded-xl border border-line bg-surface px-4 py-3">
+      <div class="text-2xl font-bold tabular-nums text-ink-2" id="tilePromoted">—</div>
+      <div class="text-[11px] font-medium text-ink-3">Promoted to contacts</div>
+    </div>
+  </div>
+
+  {# Shown only when nothing has been screened, because that is the state in
+     which every other number on the page is misleading. Named cause, named
+     remedy — a guard that refuses without explaining reads as a broken tool. #}
+  {# `border-l-4 border-warn-ink`, matching the composer's and the report's
+     callouts. There is no `border-warn` token — `warn` exists only as
+     `warn-ink` and `warn-soft` — and an unknown utility is not emitted at all,
+     so it would have rendered a default grey hairline and looked like a
+     styling bug rather than a warning. #}
+  <div id="unscreenedNotice" class="hidden rounded-xl border-l-4 border-warn-ink bg-warn-soft px-4 py-3 text-[13px] text-warn-ink">
+    Number screening has not run on these yet, so none of them can be promoted.
+    Screening tells a mobile from a landline — texting a landline fails and is
+    still charged for.
+  </div>
+
+  {# ─── Filters and the bulk bar ───────────────────────────────────────── #}
+  <div class="flex flex-col gap-3 rounded-xl border border-line bg-surface p-4 lg:flex-row lg:items-end">
+    <label class="flex-1">
+      <span class="mb-1 block text-[11px] font-medium text-ink-3">Search</span>
+      <input type="search" id="filterQuery" placeholder="Business, number or search term"
+             class="w-full rounded-lg border border-line-strong bg-page px-3 py-2 text-sm text-ink
+                    placeholder:text-ink-3 focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand">
+    </label>
+    <label>
+      <span class="mb-1 block text-[11px] font-medium text-ink-3">Status</span>
+      <select id="filterStatus" class="rounded-lg border border-line-strong bg-page px-3 py-2 text-sm text-ink focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand">
+        <option value="pending">In review</option>
+        <option value="promoted">Promoted</option>
+        <option value="rejected">Rejected</option>
+        <option value="all">All</option>
+      </select>
+    </label>
+    <label>
+      <span class="mb-1 block text-[11px] font-medium text-ink-3">Screening</span>
+      <select id="filterEligible" class="rounded-lg border border-line-strong bg-page px-3 py-2 text-sm text-ink focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand">
+        <option value="all">Any</option>
+        <option value="yes">Ready to promote</option>
+        <option value="no">Held by screening</option>
+      </select>
+    </label>
+    <label>
+      <span class="mb-1 block text-[11px] font-medium text-ink-3">Sort by</span>
+      <select id="filterSort" class="rounded-lg border border-line-strong bg-page px-3 py-2 text-sm text-ink focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand">
+        <option value="score">Score</option>
+        <option value="business_name">Business</option>
+        <option value="distance">Distance</option>
+        <option value="term">Search term</option>
+        <option value="created">Newest</option>
+      </select>
+    </label>
+    <a id="exportLink" href="/api/prospects/export.csv"
+       class="rounded-lg border border-line-strong bg-surface px-3 py-2 text-center text-sm font-medium text-ink hover:bg-surface-2">Export</a>
+  </div>
+
+  <div id="bulkBar" class="hidden flex-col gap-3 rounded-xl border border-brand bg-brand-soft p-4 sm:flex-row sm:items-center">
+    <span class="text-sm font-medium text-brand" id="bulkCount"></span>
+    <div class="flex flex-1 flex-col gap-2 sm:flex-row sm:justify-end">
+      <select id="promoteCategory" class="rounded-lg border border-line-strong bg-page px-3 py-2 text-sm text-ink">
+        <option value="">Promote into…</option>
+      </select>
+      <button type="button" id="promoteButton"
+              class="rounded-lg bg-brand px-4 py-2 text-sm font-medium text-on-brand hover:opacity-90 disabled:opacity-40">Promote</button>
+      <select id="rejectReason" class="rounded-lg border border-line-strong bg-page px-3 py-2 text-sm text-ink">
+        <option value="">Reject as…</option>
+      </select>
+      <button type="button" id="rejectButton"
+              class="rounded-lg bg-crit px-4 py-2 text-sm font-medium text-page hover:opacity-90 disabled:opacity-40">Reject</button>
+    </div>
+  </div>
+
+  {# ─── The queue ──────────────────────────────────────────────────────── #}
+  <div class="overflow-hidden rounded-xl border border-line bg-surface">
+    <div class="overflow-x-auto">
+      <table class="w-full min-w-[900px] text-[13px]">
+        <thead>
+          <tr class="border-b border-line text-left text-[11px] uppercase tracking-[0.06em] text-ink-3">
+            <th class="w-10 px-4 py-3"><input type="checkbox" id="selectAll" aria-label="Select every prospect on this page"></th>
+            <th class="px-4 py-3 font-semibold">Business</th>
+            <th class="px-4 py-3 font-semibold">Line type</th>
+            <th class="px-4 py-3 text-right font-semibold">Distance</th>
+            <th class="px-4 py-3 text-right font-semibold">Score</th>
+            <th class="px-4 py-3 font-semibold">Found by — and why they would bid</th>
+          </tr>
+        </thead>
+        <tbody id="prospectRows" class="divide-y divide-line">
+          <tr><td colspan="6" class="px-4 py-8 text-center text-ink-3">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="flex items-center justify-between gap-3">
+    <p class="text-[12px] text-ink-3" id="prospectCount"></p>
+    <div class="flex gap-2">
+      <button type="button" id="prevPage"
+              class="rounded-lg border border-line-strong bg-surface px-3 py-1.5 text-[12px] font-medium text-ink hover:bg-surface-2 disabled:opacity-40">Previous</button>
+      <button type="button" id="nextPage"
+              class="rounded-lg border border-line-strong bg-surface px-3 py-1.5 text-[12px] font-medium text-ink hover:bg-surface-2 disabled:opacity-40">Next</button>
+    </div>
+  </div>
+
+  {# ─── What each search term is actually finding ──────────────────────── #}
+  <div class="overflow-hidden rounded-xl border border-line bg-surface">
+    <div class="border-b border-line px-5 py-3">
+      <h2 class="text-sm font-semibold text-ink">Search terms</h2>
+      <p class="mt-0.5 text-[12px] text-ink-3">
+        A term whose rejections are mostly sellers or competitors is finding the
+        wrong side of the room, and is worth removing.
+      </p>
+    </div>
+    <div class="overflow-x-auto">
+      <table class="w-full min-w-[720px] text-[13px]">
+        <thead>
+          <tr class="border-b border-line text-left text-[11px] uppercase tracking-[0.06em] text-ink-3">
+            <th class="px-5 py-3 font-semibold">Term</th>
+            <th class="px-5 py-3 text-right font-semibold">Found</th>
+            <th class="px-5 py-3 text-right font-semibold">Promoted</th>
+            <th class="px-5 py-3 text-right font-semibold">Rejected</th>
+            <th class="px-5 py-3 text-right font-semibold">Sellers / competitors</th>
+          </tr>
+        </thead>
+        <tbody id="termRows" class="divide-y divide-line">
+          <tr><td colspan="5" class="px-5 py-6 text-ink-3">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// Wording for the gate, so a held row says which kind of number it is rather
+// than only that it is held. The definitions come from the API — this only
+// decides how they look.
+const LINE_TYPES = {
+    mobile:    { label: 'Mobile',      cls: 'bg-good-soft text-good-ink' },
+    voip:      { label: 'VoIP',        cls: 'bg-accent-soft text-accent' },
+    landline:  { label: 'Landline',    cls: 'bg-crit-soft text-crit' },
+    toll_free: { label: 'Toll-free',   cls: 'bg-warn-soft text-warn-ink' },
+    unknown:   { label: 'Not screened', cls: 'bg-surface-2 text-ink-2' },
+};
+const STATUS_STYLES = {
+    pending:  'bg-surface-2 text-ink-2',
+    promoted: 'bg-good-soft text-good-ink',
+    rejected: 'bg-crit-soft text-crit',
+};
+
+// Which way each sort key runs. Not a detail: the API takes a direction and
+// defaulting every key to "desc" means picking "Business" sorts Z to A and
+// picking "Distance" puts the farthest business first — the opposite of the
+// question being asked. Score and recency are the two where bigger is better.
+const SORT_DIRECTION = {
+    score: 'desc', created: 'desc',
+    business_name: 'asc', term: 'asc', distance: 'asc',
+};
+
+let page = 1, pages = 1;
+const selected = new Set();
+
+function filters() {
+    const sort = document.getElementById('filterSort').value;
+    return new URLSearchParams({
+        status:    document.getElementById('filterStatus').value,
+        eligible:  document.getElementById('filterEligible').value,
+        sort:      sort,
+        direction: SORT_DIRECTION[sort] || 'desc',
+        q:         document.getElementById('filterQuery').value.trim(),
+    });
+}
+
+async function loadSummary() {
+    const data = await api('/api/prospects/summary');
+    document.getElementById('tilePending').textContent    = data.pending.toLocaleString();
+    document.getElementById('tileEligible').textContent   = data.promote_eligible.toLocaleString();
+    document.getElementById('tileUnscreened').textContent = data.unscreened.toLocaleString();
+    document.getElementById('tilePromoted').textContent   = data.promoted.toLocaleString();
+    // Only when there is something in review AND none of it can be promoted:
+    // a queue with eligible rows in it is working as intended.
+    document.getElementById('unscreenedNotice').classList.toggle(
+        'hidden', !(data.pending > 0 && data.promote_eligible === 0));
+
+    const reject = document.getElementById('rejectReason');
+    if (reject.options.length <= 1) {
+        data.reject_reasons.forEach(r => reject.add(new Option(r.label, r.value)));
+    }
+}
+
+async function loadCategories() {
+    const data = await api('/api/categories');
+    const select = document.getElementById('promoteCategory');
+    (data.categories || []).filter(c => c.is_active)
+        .forEach(c => select.add(new Option(c.label, c.id)));
+}
+
+async function loadProspects() {
+    const params = filters();
+    params.set('page', page);
+    const data = await api(`/api/prospects?${params}`);
+    pages = data.pages;
+    document.getElementById('exportLink').href = `/api/prospects/export.csv?${filters()}`;
+
+    const body = document.getElementById('prospectRows');
+    if (!data.prospects.length) {
+        body.innerHTML = '<tr><td colspan="6" class="px-4 py-8 text-center text-ink-3">'
+            + 'Nothing here. Prospects arrive from a discovery run.</td></tr>';
+    } else {
+        body.innerHTML = data.prospects.map(p => {
+            const line = LINE_TYPES[p.line_type] || LINE_TYPES.unknown;
+            const miles = p.distance_miles == null ? '—' : `${Math.round(p.distance_miles)} mi`;
+            return `
+            <tr class="align-top hover:bg-surface-2">
+              <td class="px-4 py-3"><input type="checkbox" class="rowCheck" data-id="${p.id}"
+                    ${selected.has(p.id) ? 'checked' : ''} aria-label="Select ${esc(p.business_name || p.phone)}"></td>
+              <td class="px-4 py-3">
+                <div class="font-medium text-ink">${esc(p.business_name || '—')}</div>
+                <div class="font-mono text-[12px] text-ink-2">${esc(p.phone)}</div>
+                <div class="mt-1 flex flex-wrap items-center gap-1.5">
+                  <span class="rounded px-1.5 py-0.5 text-[11px] font-medium ${STATUS_STYLES[p.status] || STATUS_STYLES.pending}">${esc(p.status)}</span>
+                  ${p.category_label ? `<span class="rounded bg-surface-2 px-1.5 py-0.5 text-[11px] text-ink-2">${esc(p.category_label)}</span>` : ''}
+                  ${p.source_count > 1 ? `<span class="rounded bg-brand-soft px-1.5 py-0.5 text-[11px] text-brand">Found by ${p.source_count} searches</span>` : ''}
+                </div>
+              </td>
+              <td class="px-4 py-3 whitespace-nowrap">
+                <span class="inline-flex rounded-full px-2 py-0.5 text-[11px] font-medium ${line.cls}">${esc(line.label)}</span>
+              </td>
+              <td class="px-4 py-3 text-right tabular-nums text-ink-2 whitespace-nowrap">${miles}</td>
+              <td class="px-4 py-3 text-right tabular-nums font-semibold text-ink">${p.score}</td>
+              <td class="px-4 py-3">
+                <div class="text-ink-2">${esc(p.search_term)}</div>
+                {# The claim the reviewer is agreeing or disagreeing with. #}
+                <div class="mt-0.5 max-w-[52ch] text-[12px] italic text-ink-3">${esc(p.buyer_rationale)}</div>
+              </td>
+            </tr>`;
+        }).join('');
+    }
+
+    document.getElementById('prospectCount').textContent =
+        `${data.total.toLocaleString()} prospect${data.total === 1 ? '' : 's'} · page ${data.page} of ${data.pages}`;
+    document.getElementById('prevPage').disabled = data.page <= 1;
+    document.getElementById('nextPage').disabled = data.page >= data.pages;
+    document.querySelectorAll('.rowCheck').forEach(box => {
+        box.addEventListener('change', () => {
+            const id = Number(box.dataset.id);
+            box.checked ? selected.add(id) : selected.delete(id);
+            paintBulkBar();
+        });
+    });
+    paintBulkBar();
+}
+
+function paintBulkBar() {
+    const bar = document.getElementById('bulkBar');
+    bar.classList.toggle('hidden', selected.size === 0);
+    bar.classList.toggle('flex', selected.size > 0);
+    document.getElementById('bulkCount').textContent =
+        `${selected.size} selected`;
+}
+
+async function loadTerms() {
+    const data = await api('/api/prospects/terms');
+    const body = document.getElementById('termRows');
+    if (!data.terms.length) {
+        body.innerHTML = '<tr><td colspan="5" class="px-5 py-6 text-ink-3">No searches have run yet.</td></tr>';
+        return;
+    }
+    body.innerHTML = data.terms.map(t => `
+      <tr class="align-top hover:bg-surface-2">
+        <td class="px-5 py-3">
+          <div class="font-medium text-ink">${esc(t.term)}
+            ${t.flagged ? '<span class="ml-2 rounded bg-crit-soft px-1.5 py-0.5 text-[11px] font-medium text-crit">Finding sellers</span>' : ''}
+          </div>
+          <div class="mt-0.5 max-w-[60ch] text-[12px] italic text-ink-3">${esc(t.buyer_rationale || '—')}</div>
+        </td>
+        <td class="px-5 py-3 text-right tabular-nums text-ink-2">${t.found.toLocaleString()}</td>
+        <td class="px-5 py-3 text-right tabular-nums text-ink-2">${t.promoted.toLocaleString()}</td>
+        <td class="px-5 py-3 text-right tabular-nums text-ink-2">${t.rejected.toLocaleString()}</td>
+        <td class="px-5 py-3 text-right tabular-nums ${t.wrong_side ? 'text-crit' : 'text-ink-3'}">${t.wrong_side.toLocaleString()}</td>
+      </tr>`).join('');
+}
+
+// A promote or reject can succeed for some rows and be refused for others —
+// a landline in the middle of a screenful is the normal case. Both are
+// reported, and the refusals are shown one per line with the reason the API
+// gave, verbatim: paraphrasing a refusal here is how "this is a landline"
+// becomes "something went wrong".
+function reportOutcome(result, verb) {
+    const done = (result.promoted || result.rejected || []).length;
+    const refused = result.refused || [];
+    if (done) showToast(`${done} ${verb}.`, 'success');
+    refused.forEach(r => showToast(
+        `${r.business_name || r.phone}: ${r.reason}`, 'error'));
+    if (!done && !refused.length) showToast('Nothing changed.', 'info');
+}
+
+async function refresh() {
+    selected.clear();
+    document.getElementById('selectAll').checked = false;
+    await Promise.all([loadSummary(), loadProspects(), loadTerms()]);
+}
+
+document.getElementById('promoteButton').addEventListener('click', async () => {
+    const categoryId = document.getElementById('promoteCategory').value;
+    if (!categoryId) { showToast('Pick the category these buyers belong to.', 'error'); return; }
+    const result = await api('/api/prospects/promote', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prospect_ids: [...selected], category_id: Number(categoryId) }),
+    });
+    if (result.detail) { showToast(result.detail, 'error'); return; }
+    reportOutcome(result, 'promoted');
+    refresh();
+});
+
+document.getElementById('rejectButton').addEventListener('click', async () => {
+    const reason = document.getElementById('rejectReason').value;
+    if (!reason) { showToast('Pick a reason. It is what teaches the searches.', 'error'); return; }
+    if (!confirm(`Reject ${selected.size} prospect(s)? Rejections are permanent — `
+                 + `these numbers will not come back from any future search.`)) return;
+    const result = await api('/api/prospects/reject', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prospect_ids: [...selected], reason }),
+    });
+    if (result.detail) { showToast(result.detail, 'error'); return; }
+    reportOutcome(result, 'rejected');
+    refresh();
+});
+
+document.getElementById('selectAll').addEventListener('change', (e) => {
+    document.querySelectorAll('.rowCheck').forEach(box => {
+        box.checked = e.target.checked;
+        const id = Number(box.dataset.id);
+        e.target.checked ? selected.add(id) : selected.delete(id);
+    });
+    paintBulkBar();
+});
+
+['filterStatus', 'filterEligible', 'filterSort'].forEach(id =>
+    document.getElementById(id).addEventListener('change', () => { page = 1; refresh(); }));
+let searchTimer;
+document.getElementById('filterQuery').addEventListener('input', () => {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => { page = 1; refresh(); }, 250);
+});
+document.getElementById('prevPage').addEventListener('click', () => {
+    if (page > 1) { page -= 1; loadProspects(); }
+});
+document.getElementById('nextPage').addEventListener('click', () => {
+    if (page < pages) { page += 1; loadProspects(); }
+});
+
+loadCategories();
+refresh();
+</script>
+{% endblock %}

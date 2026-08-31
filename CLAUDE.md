@@ -49,7 +49,7 @@ These are the commands acceptance criteria reference. Run them and show the outp
   `ModuleNotFoundError: slowapi` and reports **"test suite is red"** — a true statement
   about the wrong interpreter, and a convincing false alarm. Either activate `.venv`
   or run `PATH="$PWD/.venv/bin:$PATH" bash agent/gate.sh`.
-- **Tests:** `python -m pytest tests/ -q` — must exit 0. **259 passing as of session 5g.**
+- **Tests:** `python -m pytest tests/ -q` — must exit 0. **494 passing as of session P1.**
   A lower count means you are on a stale branch, not that tests vanished.
 - **Migrations:** `alembic upgrade head` — must succeed from a clean DB.
 - **Run it:** `./run.sh` then `curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/login` → `200`
@@ -369,6 +369,57 @@ change to a live table.
   setting is wrong, and which of the two errors you would rather explain to a
   client: the pre-existing weakness, or an outage nobody can diagnose.
 
+- **A mutation harness that reuses a dirty scratch tree measures nothing, and it
+  reads as a triumph.** P1's first run reported 38 caught and 0 survived. The run
+  before it had been killed on a timeout mid-mutation, so `pristine` was captured
+  from an already-mutated tree and every verdict sat on top of a leftover edit.
+  The tell was in the output: one test was failing for almost every mutation,
+  including scoring-weight and router-auth changes it has no business noticing,
+  and several mutations were "caught" by that test **and nothing else** — which
+  means they were not caught at all. Two rules follow. Verify the scratch tree is
+  byte-identical to the repo *before* applying a patch and say so on stdout; and
+  when reading the results, check that the tests failing for a mutation are the
+  tests that **name** it. A harness is code, and it fails the same ways.
+- **Test the entry point the mutation is on, not the one that is convenient.**
+  Two of P1's cache guards reverted cleanly with the suite green, because the
+  batch `screen()` short-circuits on a fully cached set and so never reaches
+  either the single-number cache read or the per-number skip. The criterion's
+  test went through the wrapper; the guards live one layer down and on the
+  *partial* case. When a function has a fast path, the fast path is the one your
+  test took.
+- **SQLAlchemy autoflushes on query, so read the old state before you add the new
+  row.** `_add_sighting()` counted a prospect's distinct sources *after*
+  `db.add()`ing the sighting it was about to count. The pending row flushed on
+  the query, the query found its own source in the answer, and the increment
+  never fired — `source_count` could never reach 2, and every test about "found
+  by two searches" still passed because it asserted on the sighting rows. Any
+  "have I seen this before" check that runs after an `add()` in the same session
+  is answering about a world that already includes it.
+- **A guard that is switched off must refuse, not wave things through.** The
+  line-type gate's default provider makes no call and answers `unknown`, and
+  `unknown` is *not* promote-eligible — so a box with no screening credential
+  holds everything in the review queue and says so, rather than promoting
+  landlines it never checked. The tempting edit is the opposite ("unknown just
+  means we haven't looked, let him promote it"), which is how the 2,526-landline
+  campaign comes back one prospect at a time. When the errors are asymmetric —
+  a buyer waiting in a queue against a dead number paid for on every send
+  forever — make the cheap error, and write which one is cheap next to the rule.
+- **The set you spend money on is not the set you produced.** P1's screening pass
+  looked up every number a run yielded, which included numbers a human had
+  already rejected. Those are suppressed at ingest and therefore never enter the
+  cache, so each nightly re-run of the search bought a fresh answer nobody would
+  ever act on. The docstring said rejected records were not paid for and the
+  query said otherwise — found by checking the two against each other, which is
+  the same discipline as running a rationale through its own mechanism.
+- **A bare decimal matched against a whole response body matches timestamps.**
+  `assert str(settings.WHOLESALE_COST_PER_SEGMENT) not in body` looks for
+  `"0.009"`, and `...T14:23:40.009312` contains it — so 5f's white-label scan is
+  latently flaky at roughly one run in several hundred timestamps, and it fails
+  the gate, which runs `--maxfail=1`. Same shape as the `21610` error code that
+  matched a Brevard County phone number: a naked number tested with `in` against
+  prose matches things that are not numbers of that kind. Assert against the
+  parsed field, or anchor the figure the way it would actually be rendered.
+
 ## Where things live
 
 - `A4A_BUILD_PLAN.md` — the full project plan and reasoning
@@ -584,3 +635,27 @@ collision, three separate fixes before it was closed.
 
 When a shape test decides routing, every layer that applies it must subtract the same
 reserved set — from one shared definition, not three copies that drift.
+
+### A mutation harness must prove its own scratch tree is clean
+
+P1's first mutation run reported 38 caught, 0 survived, and was worthless: a killed run
+had left the scratch tree already mutated, so every verdict sat on a leftover edit. The
+only tell was one test failing for scoring-weight and router-auth mutations it has no
+business noticing.
+
+A harness that does not verify its preconditions is a green light wired to nothing. Every
+run now checks the scratch tree is byte-identical to the repo first and prints
+`SCRATCH VERIFIED PRISTINE`. Do the same in every future harness — and treat "a test
+failed for a mutation unrelated to it" as evidence the harness is broken, not the test.
+
+### Unanchored substrings match numbers that happen to appear — three times now
+
+- `21610` (a Twilio code) matched a Brevard County phone number quoted in prose
+- `\b(?:telnyx|…)\b` let `TelnyxError` through, because SDKs glue the name to a word
+- `"0.009"` (our wholesale rate) matched inside the timestamp `...T14:23:40.009312`
+
+Each cost a session. The pattern: a value that is meaningful in one field is meaningless
+noise in another, and a substring sweep over a whole body cannot tell them apart.
+
+Assert against **parsed values in declared fields**, not against a serialized blob. When a
+sweep is genuinely the right tool, anchor it to structure, never to a bare number.

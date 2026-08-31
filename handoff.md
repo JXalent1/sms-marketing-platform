@@ -838,3 +838,98 @@ full account. Four things before touching it:
     deploy including the one that fixes the box. The default is
     `127.0.0.1:8000`, which matches no domain, so this only bites someone who
     overrides it.
+
+---
+
+# Session P1 — the prospect pipeline (Part A), 2026-08-31
+
+## What just happened
+
+The holding pen between a scraper and the textable list, with the line-type gate
+that makes scraping economic and the review step that keeps sellers out. **No
+source implementations** — this session built the machinery, because if it is
+built right adding Google Places is a class and a taxonomy, and if it is built
+wrong every source inherits the damage.
+
+## State of the code
+
+`bash agent/gate.sh` passes, twice. **494 tests** (449 + 45). Migration
+`c8a2e5f14b90` applies to a clean database and `compare_metadata` reports no
+drift. `bash agent/accept-P1.sh` is the stop condition: criteria 1-10 and the
+four structural checks pass locally; criterion 11 is `--with-remote` and needs
+the deploy, which is **not done** — same state as 5c through 5h.
+
+## Where things are
+
+| What | Where |
+|---|---|
+| Tables | `app/models/prospect.py` (prospects, sightings, rejections), `app/models/scrape.py` (jobs, lookups) |
+| Migration | `alembic/versions/c8a2e5f14b90_prospect_pipeline.py` — additive, five tables |
+| Source seam | `app/sources/prospect_base.py`; registry in `app/sources/__init__.py` (`PROSPECT_SOURCES`, empty) |
+| Carrier lookup interface | `app/sms/lookup.py` — DB-free, default provider makes no call |
+| Lookup cache | `app/services/lookup_service.py` — `PROMOTABLE_LINE_TYPES` lives here |
+| Writes | `app/services/prospect_service.py` — record, reject, promote |
+| Reads | `app/services/prospect_queue.py` — queue, summary, term breakdown |
+| Scoring | `app/services/prospect_scoring.py` |
+| Job runner | `app/services/scrape_runner.py` |
+| API | `app/routers/prospects.py` (`/api/prospects`) |
+| Screen | `app/templates/prospects.html`, route in `app/routers/pages.py` |
+| Settings | `app/core/config.py` — five `PROSPECT_*` keys |
+| Acceptance | `agent/accept-P1.sh`, `agent/mutate-P1.py` |
+
+## The five things to know before touching this
+
+1. **`PROMOTABLE_LINE_TYPES` is one tuple in one place.** The "Ready to promote"
+   tile, the queue's `eligible` filter and the promote guard all read it. A
+   second membership test anywhere is how the tile comes to promise more than
+   the button delivers.
+2. **`unknown` is not promote-eligible, and that is the gate working.** With no
+   screening provider configured — the default — every prospect reads
+   `unknown` and nothing can be promoted. That is correct: a gate that is
+   switched off refuses, it does not wave things through. The screen says so
+   in a notice rather than looking broken.
+3. **A rejection is permanent and is keyed on the phone.** `prospect_rejections`
+   is checked at ingest, before anything is written, so the same business from a
+   different source with a different name and payload is suppressed on arrival.
+   Un-rejecting is not a feature.
+4. **`cleanup()` belongs to the source and must be safe to call while `fetch()`
+   is still running.** The runner calls it in a `finally` on every exit path
+   including the timeout, and it does not wait for a worker it can no longer
+   stop — Python cannot kill a thread.
+5. **`raw_payload` and the two `cost` columns never cross the API boundary.**
+   The payload is unvetted third-party data; the costs are our spend, on the
+   `WHOLESALE_COST_PER_SEGMENT` footing. `accept-P1.sh` check 8b asserts it by
+   AST, and there is a mutation for each.
+
+## For whoever writes P2 (Google Places)
+
+- Subclass `ProspectSource`, implement `fetch()` and `cleanup()`, register in
+  `PROSPECT_SOURCES`, and run it through `scrape_runner.run_job()` — never
+  directly. Nothing else needs to change to take a source.
+- **Every search term needs a written buyer rationale.** A record without one is
+  counted `invalid` and persisted nowhere. That is not a formality: the reviewer
+  is answering "would this person bid?" and the rationale is the claim they are
+  agreeing with.
+- **`source_url` is shown to the client and goes into the CSV export.** It must
+  be the human-facing page or search, never the API endpoint — those carry the
+  key in the query string.
+- **A carrier line-type provider is a budget decision** (escalation item 7). The
+  interface is `LineTypeProvider` in `app/sms/lookup.py`; add the class, add one
+  line to `PROVIDERS`, add the credential to config. `accept-P1.sh` check 8d
+  asserts `PROVIDERS == {"none"}` — that check is P1's, and P2's own acceptance
+  script replaces it.
+- **Dedup against existing contacts is P2's**, per `modules.md`. Today a
+  prospect who is already a contact will appear in the queue.
+- The taxonomy in `A4A_BUILD_PLAN.md` includes **Marine**, which has no category
+  row on this box. An unrecognised `category_slug` is logged and dropped rather
+  than refused, so such a prospect lands uncategorised and the reviewer picks at
+  promote time.
+
+## Not done
+
+- **Deploy.** The box still runs the pre-P1 tree. `deployment/deploy.sh` runs
+  `alembic upgrade head`, and this migration is additive with no backfill, so it
+  is a safe one — but it is a live box holding the client's real contacts and
+  message history, and the deploy is a human's call, not this session's.
+- **Criterion 11** (all screens 200 over HTTPS, no leaks) needs that deploy:
+  `A4A_URL=... A4A_PASSWORD=... bash agent/accept-P1.sh --with-remote`.

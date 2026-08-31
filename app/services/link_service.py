@@ -79,9 +79,15 @@ SLUG_RE = re.compile(rf"^[{SLUG_ALPHABET}]{{{SLUG_LENGTH}}}$")
 # `test_no_slug_can_be_minted_that_a_page_already_owns` reads the app's own route
 # table and fails if a new root page could be drawn as a slug. Asserting the
 # property beats pinning the literal — the 5g `OPT_OUT_REASONS` lesson.
+# `prospects` is nine characters and cannot be drawn at SLUG_LENGTH = 8, so it
+# is here for the reason `favicon` and `robots` are: the list is the set of root
+# pages a slug must never spell, and leaving a page out because today's slug
+# length happens to protect it is how the intent dies the day that number
+# changes.
 RESERVED_SLUGS = frozenset({
     "login", "logout", "health", "dashboard", "campaigns", "contacts",
-    "usage", "blocklist", "settings", "history", "static", "favicon", "robots",
+    "usage", "blocklist", "settings", "history", "prospects", "static",
+    "favicon", "robots",
 })
 
 # What the composer says when the tag is used and the domain is not configured.

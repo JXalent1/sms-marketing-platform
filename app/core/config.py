@@ -147,6 +147,56 @@ class Settings(BaseSettings):
     # does it in under one. Set to 0 to switch the timing rule off entirely.
     CLICK_MIN_HUMAN_SECONDS: int = 8
 
+    # ─── Prospecting ────────────────────────────────────────────────────────
+    # Which line-type provider screens scraped numbers. "none" is the default
+    # and makes no calls at all — see app/sms/lookup.py for why the carrier
+    # implementation is not shipped here. An unscreened number reads as
+    # `unknown`, and `unknown` cannot be promoted, so a box with this unset
+    # holds prospects in the queue rather than promoting landlines.
+    PROSPECT_LOOKUP_PROVIDER: str = "none"
+
+    # What ONE line-type lookup costs us, for the job cost record. This is our
+    # spend, on the same footing as WHOLESALE_COST_PER_SEGMENT: the client is
+    # billed per segment and for nothing else, and screening appears on no
+    # invoice of his. It must never reach a response body, a template or an
+    # export — agent/accept-P1.sh asserts that structurally.
+    PROSPECT_LOOKUP_COST_PER_NUMBER: float = 0.0025
+
+    # "Can they collect it." Per category, because a walk-in cooler is a
+    # 150-mile decision and a signed rookie card is a national one.
+    #
+    # A slug mapped to null is national — distance does not constrain it, and a
+    # dealer in Oregon scores the same as one in Broward. A slug absent from
+    # this map falls back to PROSPECT_DEFAULT_RADIUS_MILES, which is the more
+    # conservative of the two, because silently treating an unconfigured
+    # category as national is how a food-truck search starts returning Seattle.
+    #
+    # Config, not code, and the plan of record says to move them once there is
+    # response data to move them with — not before.
+    PROSPECT_CATEGORY_RADIUS_MILES: dict[str, int | None] = {
+        "food_service": 150,
+        "equipment": 150,
+        "general": 150,
+        "estates": 100,
+        "memorabilia": None,
+    }
+    PROSPECT_DEFAULT_RADIUS_MILES: int = 150
+
+    # A scrape job that has not finished in this long is abandoned, its cleanup
+    # is run and it is recorded `timed_out`. Minutes, not hours: the box has
+    # 2 GB, and the failure mode this exists to prevent is a run that holds a
+    # browser process open until something else on the box dies.
+    PROSPECT_JOB_TIMEOUT_SECONDS: int = 300
+
+    # When a search term's rejections skew to seller_or_consignor/competitor,
+    # the term is finding the wrong side of the room and should be retired.
+    # Two numbers, because a share is meaningless on a small sample: one term
+    # with a single seller rejection is not evidence of anything. The minimum
+    # counts rejections, not prospects, because that is the denominator of the
+    # share it guards.
+    PROSPECT_TERM_FLAG_MIN_REJECTIONS: int = 5
+    PROSPECT_TERM_FLAG_SHARE: float = 0.5
+
     # ─── Alerting ───────────────────────────────────────────────────────────
     ALERT_PHONE: str = ""                        # your number, for balance/scrape alerts
     BALANCE_ALERT_THRESHOLD: float = 50.0
