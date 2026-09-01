@@ -154,8 +154,13 @@ def test_the_single_number_path_reads_the_cache_too(db):
     phone = setup.take(1)[0]
     provider = setup.CountingLookupProvider(answers={phone: "mobile"})
 
+    # `skipped` arrived with P1b's spend cap: None on every path where a call
+    # was actually made or read from the cache, and the reason we declined
+    # otherwise. Asserted as the whole dict so a fourth key cannot appear
+    # unnoticed on the answer a future caller reads.
     first = lookup_service.line_type_for(db, phone, provider=provider)
-    assert first == {"line_type": "mobile", "cached": False, "ok": True}
+    assert first == {"line_type": "mobile", "cached": False, "ok": True,
+                     "skipped": None}
 
     second = lookup_service.line_type_for(db, phone, provider=provider)
     assert second["cached"] is True

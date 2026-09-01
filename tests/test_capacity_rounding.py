@@ -37,6 +37,8 @@ from app.core.database import SessionLocal
 from app.services.campaign_builder import wholesale_cost, wholesale_estimate
 from app.services.campaign_service import CampaignService
 
+from tests import _wholesale_scan as scan
+
 # The blended rate at which the guard rounds itself to zero. Not this box's
 # setting — `.env`, `.env.example` and the code default all carry 0.009 — but
 # `WHOLESALE_COST_PER_SEGMENT` is one line of `.env`, it is a *blended* rate
@@ -257,7 +259,11 @@ def test_the_refusal_is_still_denominated_in_segments_and_names_no_money():
     detail = verdict["detail"]
     assert "segments" in detail
     assert "$" not in detail
-    assert str(settings.WHOLESALE_COST_PER_SEGMENT) not in detail
+    # Numbers compared as numbers. This one reads a short sentence rather than a
+    # response body, so it was never going to catch a timestamp — but the audit
+    # in session P1b converted every site of the shape rather than leaving three
+    # spellings of one assertion for the next person to choose between.
+    scan.assert_no_wholesale_figure(detail, where="the capacity refusal")
     assert "Nothing was sent." in detail
     # The money view is present for the caller's log, and only there.
     assert verdict["required"] > 0

@@ -162,6 +162,21 @@ class Settings(BaseSettings):
     # export — agent/accept-P1.sh asserts that structurally.
     PROSPECT_LOOKUP_COST_PER_NUMBER: float = 0.0025
 
+    # The most screening may spend in a calendar month, in dollars.
+    #
+    # This is not a tidiness measure. **Lookups and sends draw on the same
+    # carrier balance**, so a 10,000-number screening run takes $25 out of the
+    # pot `capacity_assessment()` measures, and the failure mode is an overnight
+    # scrape making the next morning's campaign refuse to start with nothing on
+    # any screen connecting the two events. The default is deliberately low: the
+    # cheap error is a queue that stops filling, and the expensive one is a
+    # silent transfer from the sending budget to the lookup budget.
+    #
+    # Zero — or a negative value — switches screening off entirely rather than
+    # meaning "unlimited". A guard that is off refuses; it does not wave things
+    # through, which is the same rule that keeps `unknown` unpromotable.
+    PROSPECT_LOOKUP_MONTHLY_CAP: float = 50.0
+
     # "Can they collect it." Per category, because a walk-in cooler is a
     # 150-mile decision and a signed rookie card is a national one.
     #

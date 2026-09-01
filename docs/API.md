@@ -159,6 +159,93 @@ sent" about a message that reached nobody. A chosen dry run is unaffected.
 
 ---
 
+## Reports & history
+
+Everything here reads. Nothing in this section can send, bill or change a row.
+
+### `GET /api/reports/campaigns?page=1&per_page=25`
+Campaign history, newest first, with each campaign's outcome and click totals
+folded in.
+```json
+{"page": 1, "per_page": 25, "total": 34, "pages": 2,
+ "campaigns": [{"id": 34, "name": "Thursday restaurant", "status": "completed",
+                "category_label": "Food Service", "audience_label": "Food Service",
+                "recipients": 1223, "created_at": "2026-08-30T18:02:11",
+                "started_at": "...", "completed_at": "...", "scheduled_at": null,
+                "abort_reason": null, "sent": 1218, "failed": 5, "held_back": 0,
+                "clicks": 96, "clickers": 84}]}
+```
+
+`abort_reason` is rendered verbatim wherever it appears. Sessions 5d and 5h and
+`decisions/006` settled what a refusal says; a surface that paraphrased it would
+be a second sentence about one fact.
+
+### `GET /api/reports/campaigns/{id}`
+One campaign: what it was, what happened, what was clicked, and what it added to
+the bill. `404` if there is no such campaign.
+```json
+{"campaign": {"id": 34, "name": "...", "status": "completed", "message_template": "...",
+              "audience_label": "...", "category_label": "Food Service",
+              "category_color_token": "s1", "cross_category_override": false,
+              "created_at": "...", "started_at": "...", "completed_at": "...",
+              "scheduled_at": null, "abort_reason": null,
+              "link_target_url": "https://auctions4america.com/aug-30"},
+ "outcome": {"recipients": 1223, "sent": 1218, "delivered": 1180, "failed": 5,
+             "held_back": 0, "blocked": 0, "skipped": 0, "not_sent": 0,
+             "pending": 0, "opted_out": 3},
+ "clicks": {"clicks": 96, "filtered_clicks": 41, "links": 1218, "clickers": 84,
+            "click_through_rate": 6.9},
+ "cost": {"billing_month": "August 2026", "segments": 1218, "cycle_segments": 12664,
+          "cost": 18.27, "price_per_segment": 0.015, "included_segments": 10000},
+ "top_ups": [{"added_at": "2026-08-27T09:14:02", "recipients": 5}]}
+```
+
+Two click numbers, always. SMS links are opened by carrier scanners and handset
+previews before any person sees them, so `filtered_clicks` sits beside the human
+count rather than being folded away — the classification is a heuristic and a
+bare number that quietly excludes things is not honest about being one.
+`click_through_rate` is per distinct human clicker, and `null` when nothing sent.
+
+`cost` is **his** cost, at `BILLING_PRICE_PER_SEGMENT`, priced as the marginal
+campaign in its cycle: `cost_for_segments(cycle) - cost_for_segments(cycle - this)`.
+A campaign that sat entirely inside the 10,000-segment allowance therefore costs
+`0.00`, because that is what he was billed for it. Two campaigns in one cycle are
+each priced as the marginal one, so their costs do not sum to the cycle total
+when the allowance is crossed between them — that is a property of an allowance,
+which is why the screen says "added to this month's bill". `WHOLESALE_COST_PER_SEGMENT`
+appears nowhere in this payload and never will.
+
+### `GET /api/reports/campaigns/{id}/messages?page=1&status=`
+One page of a campaign's recipients, each with its click data. `status` filters
+to one message status.
+```json
+{"page": 1, "per_page": 25, "total": 1223, "pages": 49,
+ "messages": [{"id": 91021, "campaign_id": 34, "contact_id": 812,
+               "phone": "+19545550123", "message": "...", "status": "delivered",
+               "segments": 1, "sent_at": "...", "delivered_at": "...",
+               "top_up_at": null, "error_message": null,
+               "clicks": 1, "bot_clicks": 0, "last_clicked_at": "..."}]}
+```
+
+`error_message` is passed through `scrub_provider_text()` on the way out. It is
+carrier free text and it has reached a client screen once already, via
+`blocked_numbers.notes`.
+
+### `GET /api/reports/contacts/{id}/messages?page=1`
+What one person has been sent and whether they opened it. Same row shape, plus
+`campaign_name` on every row — "Campaign 47" is not what makes a phone call
+possible; "the flooring sale on Tuesday" is. `404` for an unknown contact.
+
+### `GET /api/reports/campaigns/{id}/export`
+The report and its recipients as one CSV (`text/csv`, `Content-Disposition:
+attachment`). Summary rows first, then a row per recipient. Built from the same
+report dict the screen reads, so the two cannot drift. It carries no carrier
+name, no raw provider payload and no wholesale figure — it is the one artefact
+that leaves the building, and `tests/test_campaign_reports.py` scans it at
+runtime rather than trusting this paragraph.
+
+---
+
 ## Contacts & lists
 
 | Route | Purpose |
@@ -254,6 +341,142 @@ the number.
 | `POST /api/categories` | Create |
 | `PATCH /api/categories/{id}` | Rename / recolour |
 | `DELETE /api/categories/{id}` | Remove the category; contacts are kept |
+
+---
+
+## Prospects
+
+The holding pen between a scraper and the textable list. Nothing reaches
+`contacts` from a discovery source except through `POST /api/prospects/promote`.
+
+**The rule the whole module exists to enforce: buyers, never sellers.** A
+consignor on the list costs money to text, dilutes the audience and puts a
+competitor on the client's own marketing channel. `search_term` and
+`buyer_rationale` are non-nullable, every queue row carries the rationale, and
+`seller_or_consignor` and `competitor` are first-class reject reasons that
+suppress permanently.
+
+### `GET /api/prospects`
+One page of the queue. Server-side paging and sorting, always.
+
+| Parameter | Meaning |
+|---|---|
+| `status` | `pending` (default), `promoted`, `rejected` |
+| `category_id` | one category |
+| `line_type` | `mobile`, `voip`, `landline`, `toll_free`, `unknown` |
+| `eligible` | `true` / `false` / `all` — the gate's own definition, not "is it mobile" |
+| `search_term`, `q` | the term that found it; free-text over name and address |
+| `sort`, `direction` | `score`, `created`, `business_name`, `distance`, `term` |
+| `page`, `per_page` | |
+
+```json
+{"prospects": [{"id": 12, "phone": "+19545550123", "business_name": "Taco Truck",
+                "address": "1 Test Way, Fort Lauderdale FL", "category_id": 1,
+                "category_label": "Food Service", "category_slug": "food_service",
+                "category_confidence": 0.8, "distance_miles": 12.0,
+                "line_type": "mobile", "promote_eligible": true, "score": 71,
+                "status": "pending", "source": "google_places",
+                "source_url": "https://...", "scraped_at": "...", "source_count": 2,
+                "search_term": "food trucks fort lauderdale",
+                "buyer_rationale": "Food trucks buy used prep and refrigeration...",
+                "promoted_contact_id": null}],
+ "total": 118, "page": 1, "per_page": 50, "pages": 3}
+```
+
+`raw_payload` is deliberately absent, and so is anything a lookup or a scrape
+cost us. The payload is retained on the row for tracing a disputed record and it
+is whatever a third party returned — the one column here nobody has vetted for
+what it contains or whom it names.
+
+### `GET /api/prospects/summary`
+The tiles above the queue, plus the reject dropdown's options.
+```json
+{"pending": 118, "promoted": 42, "rejected": 31, "total": 191,
+ "promote_eligible": 63, "unscreened": 12,
+ "reject_reasons": [{"value": "seller_or_consignor",
+                    "label": "Seller or consignor — sells to us"}]}
+```
+
+`promote_eligible` is counted with `PROMOTABLE_LINE_TYPES` — the same tuple the
+promote guard reads — rather than with a second idea of a good number.
+`unscreened` is prospects with no lookup row at all; they cannot be promoted,
+because a number nobody has screened has skipped the gate rather than passed it.
+
+### `GET /api/prospects/terms`
+Per search term: what it found, and what its rejections say about it.
+```json
+{"terms": [{"term": "estate liquidators near me", "buyer_rationale": "...",
+            "found": 40, "pending": 2, "promoted": 1, "rejected": 37,
+            "wrong_side": 33, "wrong_side_share": 0.89, "flagged": true,
+            "reasons": {"seller_or_consignor": 30, "competitor": 3, "other": 4}}],
+ "flag_rule": {"min_rejections": 5, "share": 0.5}}
+```
+
+`wrong_side` counts `seller_or_consignor` and `competitor` apart from every
+other reason, which is how a search that finds the wrong side of the room
+becomes visible instead of being something somebody eventually notices. Both
+thresholds are config (`PROSPECT_TERM_FLAG_*`) and are returned so the screen
+can explain the flag rather than assert it.
+
+### `GET /api/prospects/export.csv`
+The current filter as CSV, streamed and page-free. Columns: `phone`,
+`business_name`, `category`, `line_type`, `score`, `distance_miles`, `status`,
+`search_term`, `buyer_rationale`, `source`, `source_url`, `scraped_at`. No
+payload, no cost.
+
+### `POST /api/prospects/promote`
+```json
+{"prospect_ids": [12, 13, 14], "category_id": 1}
+```
+Turns the selection into contacts through `contact_service.upsert_contact()`,
+tagged with the chosen category, and links `promoted_contact_id` back.
+
+**Partial outcomes are the normal case and are reported as such** — a screenful
+where three are landlines returns the ones that went in and the ones that did
+not, each with its reason, rather than 400-ing the batch and making the client
+re-tick fifty rows to find the three.
+```json
+{"success": true, "promoted": [...], "refused": [{"id": 14, "reason": "This is a landline, ..."}],
+ "not_found": [], "category": {"id": 1, "slug": "food_service", "label": "Food Service"}}
+```
+
+Refusal order is opt-out, then unreachable, then blocked, then the line-type
+gate: an opt-out outranks a landline because one is a person's request and the
+other is a property of a wire. The gate's wording comes from
+`lookup_service.refusal_for()`, so this screen and the queue's filter cannot
+disagree about which numbers pass.
+
+### `POST /api/prospects/reject`
+```json
+{"prospect_ids": [15], "reason": "seller_or_consignor", "notes": "auction house"}
+```
+Says no permanently. The rejection is keyed on the **phone number**, not the
+row, so re-ingesting the same business from a different source does not
+resurface it — the same separation `blocked_numbers` has from
+`contacts.is_active`. An unknown reason is a 400, and the dropdown is served
+from the same list `reject()` accepts.
+
+### Line-type screening
+
+Every prospect passes a line-type gate before it can be promoted, because 2,526
+of one campaign's failures on this client's list were not-routable numbers — 39%
+of a 6,857-message send, all paid for. There is no API for it: screening runs
+with the discovery job.
+
+`PROSPECT_LOOKUP_PROVIDER` defaults to `none`, which makes **no call at all** and
+answers `unknown`, and `unknown` is not promote-eligible — so a box with no
+screening credential holds prospects in the queue rather than promoting
+landlines it never checked. Session P1b added the carrier provider beside it;
+switching it on is one line of `.env` and it spends real money, which is why the
+default did not move.
+
+`PROSPECT_LOOKUP_MONTHLY_CAP` (default `$50`) is a hard ceiling on that spend,
+checked before every call. **Lookups and sends draw on the same carrier
+balance**, so an unbounded screening run is a silent transfer out of the pot the
+campaign pre-flight check measures. A pass that reaches the cap stops spending,
+logs how many numbers went unscreened, and leaves them screenable next month.
+Nothing about the cap or the per-lookup price appears in any response: it is our
+cost, on the same footing as `WHOLESALE_COST_PER_SEGMENT`.
 
 ---
 
@@ -434,6 +657,36 @@ wordings live in `compliance.CONFIGURATION_ALERT_DETAIL` and name no carrier.
 
 Until 5g the product's only response to this was to block the recipient forever
 for a problem on our side.
+
+---
+
+## Short links (public — this is what the recipient taps)
+
+### `GET /{slug}`
+Resolves one slug and redirects (302) to the campaign's target URL, recording
+the click. An unknown slug returns **404 with a plain-text body and no brand**:
+this is served to whoever typed it, and an unknown slug is not an occasion to
+tell a stranger whose links these are.
+
+Two things about this route are load bearing:
+
+- **It is registered last**, so `/settings` and every other page wins the match
+  first. `RESERVED_SLUGS` also removes those words from slug *minting*, and
+  `is_slug_path()` subtracts the same set on the serving side — one collision,
+  three layers, and each must subtract the same definition rather than keep its
+  own copy.
+- **`SHORT_LINK_DOMAIN` gets its own host guard** (`short_link_host_guard` in
+  `app/main.py`): the short domain serves short links and nothing else. It is a
+  positive test rather than a denylist, so a page added tomorrow is excluded by
+  default instead of by somebody remembering. If the setting is mis-set to the
+  admin host the guard **fails open** and logs loudly at startup — there is no
+  configuration in which blocking every request is the right answer.
+
+A click arriving within `CLICK_MIN_HUMAN_SECONDS` of the carrier accepting the
+message is recorded as a filtered click rather than a human one. Nobody reads a
+text, unlocks a handset and taps a link in three seconds; the carrier's own URL
+scanner does it in under one. Both counts are reported — see
+`GET /api/reports/campaigns/{id}`.
 
 ---
 

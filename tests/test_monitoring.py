@@ -25,6 +25,8 @@ from app.core.database import SessionLocal
 from app.models.sms_message import SMSMessage
 from app.services import monitoring_service
 
+from tests import _wholesale_scan as scan
+
 
 @pytest.fixture
 def captured(monkeypatch, tmp_path):
@@ -123,7 +125,12 @@ def test_the_alert_never_quotes_our_wholesale_rate(captured, monkeypatch):
     asyncio.run(monitoring_service.check_low_balance())
 
     body = captured[0].lower()
-    assert str(settings.WHOLESALE_COST_PER_SEGMENT) not in body
+    # Parsed numbers, not a substring sweep — the fifth site of that defect in
+    # this suite and the one session P1b's audit grep found rather than its
+    # author. An alert is short and carries no timestamp, so this one was never
+    # going to flake; it is converted because leaving two spellings of one
+    # assertion is how the next person picks the wrong one.
+    scan.assert_no_wholesale_figure(body, where="the low-balance alert")
     assert "telnyx" not in body and "twilio" not in body
 
 

@@ -1,0 +1,173 @@
+{
+  "_README": [
+    "Recorded number-lookup responses, one per line type the gate has to tell",
+    "apart. Shapes only — every number is in the 555 reserved range and every",
+    "carrier name is a real one taken from public documentation, so nothing here",
+    "identifies a person or a business.",
+    "",
+    "These are replayed through the SDK's own response model in",
+    "tests/test_lookup_provider.py rather than fed to the provider as loose",
+    "dicts. That is the point of the file: a fixture the SDK refuses to parse is",
+    "a pin that no longer matches the code, and this project has already shipped",
+    "one of those and found out on the morning of a sale.",
+    "",
+    "No test in this repo calls the real API. See the module docstring."
+  ],
+  "mobile": {
+    "data": {
+      "caller_name": null,
+      "carrier": {
+        "error_code": null,
+        "mobile_country_code": "310",
+        "mobile_network_code": "260",
+        "name": "T-Mobile USA, Inc.",
+        "normalized_carrier": "T-Mobile",
+        "type": "mobile"
+      },
+      "country_code": "US",
+      "fraud": null,
+      "national_format": "(954) 555-0123",
+      "phone_number": "+19545550123",
+      "portability": {
+        "altspid": null,
+        "altspid_carrier_name": null,
+        "altspid_carrier_type": null,
+        "city": "FORT LAUDERDALE",
+        "line_type": "Wireless",
+        "lrn": "9545550000",
+        "ocn": "6529",
+        "ported_date": null,
+        "ported_status": "N",
+        "spid": "6529",
+        "spid_carrier_name": "T-Mobile USA, Inc.",
+        "spid_carrier_type": "wireless",
+        "state": "FL"
+      },
+      "record_type": "number_lookup"
+    }
+  },
+  "landline": {
+    "data": {
+      "caller_name": null,
+      "carrier": {
+        "error_code": null,
+        "mobile_country_code": null,
+        "mobile_network_code": null,
+        "name": "AT&T Florida",
+        "normalized_carrier": "AT&T",
+        "type": "fixed line"
+      },
+      "country_code": "US",
+      "fraud": null,
+      "national_format": "(954) 555-0187",
+      "phone_number": "+19545550187",
+      "portability": {
+        "altspid": null,
+        "altspid_carrier_name": null,
+        "altspid_carrier_type": null,
+        "city": "FORT LAUDERDALE",
+        "line_type": "Landline",
+        "lrn": "9545550000",
+        "ocn": "9417",
+        "ported_date": null,
+        "ported_status": "N",
+        "spid": "9417",
+        "spid_carrier_name": "AT&T Florida",
+        "spid_carrier_type": "landline",
+        "state": "FL"
+      },
+      "record_type": "number_lookup"
+    }
+  },
+  "voip": {
+    "data": {
+      "caller_name": null,
+      "carrier": {
+        "error_code": null,
+        "mobile_country_code": null,
+        "mobile_network_code": null,
+        "name": "Bandwidth.com CLEC LLC",
+        "normalized_carrier": "Bandwidth",
+        "type": "voip"
+      },
+      "country_code": "US",
+      "fraud": null,
+      "national_format": "(954) 555-0155",
+      "phone_number": "+19545550155",
+      "portability": {
+        "city": "FORT LAUDERDALE",
+        "line_type": "VoIP",
+        "ported_status": "N",
+        "state": "FL"
+      },
+      "record_type": "number_lookup"
+    }
+  },
+  "toll_free": {
+    "data": {
+      "caller_name": null,
+      "carrier": {
+        "error_code": null,
+        "mobile_country_code": null,
+        "mobile_network_code": null,
+        "name": "Somos, Inc.",
+        "normalized_carrier": null,
+        "type": "toll free"
+      },
+      "country_code": "US",
+      "fraud": null,
+      "national_format": "(800) 555-0111",
+      "phone_number": "+18005550111",
+      "portability": {
+        "city": null,
+        "line_type": "Toll Free",
+        "ported_status": "",
+        "state": null
+      },
+      "record_type": "number_lookup"
+    }
+  },
+  "ambiguous": {
+    "data": {
+      "caller_name": null,
+      "carrier": {
+        "error_code": null,
+        "mobile_country_code": null,
+        "mobile_network_code": null,
+        "name": "Level 3 Communications, LLC",
+        "normalized_carrier": null,
+        "type": "fixed line or mobile"
+      },
+      "country_code": "US",
+      "fraud": null,
+      "national_format": "(954) 555-0166",
+      "phone_number": "+19545550166",
+      "portability": {
+        "city": "MIAMI",
+        "line_type": null,
+        "ported_status": "N",
+        "state": "FL"
+      },
+      "record_type": "number_lookup"
+    }
+  },
+  "no_classification": {
+    "data": {
+      "caller_name": null,
+      "carrier": {
+        "error_code": null,
+        "mobile_country_code": null,
+        "mobile_network_code": null,
+        "name": null,
+        "normalized_carrier": null,
+        "type": null
+      },
+      "country_code": "US",
+      "fraud": null,
+      "national_format": "(954) 555-0199",
+      "phone_number": "+19545550199",
+      "portability": null,
+      "record_type": "number_lookup"
+    }
+  }
+}

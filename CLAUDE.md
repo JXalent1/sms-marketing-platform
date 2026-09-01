@@ -49,7 +49,7 @@ These are the commands acceptance criteria reference. Run them and show the outp
   `ModuleNotFoundError: slowapi` and reports **"test suite is red"** — a true statement
   about the wrong interpreter, and a convincing false alarm. Either activate `.venv`
   or run `PATH="$PWD/.venv/bin:$PATH" bash agent/gate.sh`.
-- **Tests:** `python -m pytest tests/ -q` — must exit 0. **494 passing as of session P1.**
+- **Tests:** `python -m pytest tests/ -q` — must exit 0. **544 passing as of session P1b.**
   A lower count means you are on a stale branch, not that tests vanished.
 - **Migrations:** `alembic upgrade head` — must succeed from a clean DB.
 - **Run it:** `./run.sh` then `curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/login` → `200`
@@ -411,6 +411,40 @@ change to a live table.
   ever act on. The docstring said rejected records were not paid for and the
   query said otherwise — found by checking the two against each other, which is
   the same discipline as running a rationale through its own mechanism.
+- **Parsing numerically is necessary and not sufficient — sometimes the other
+  field's value *is* your figure.** P1b replaced `"0.009" in body` with a scan
+  that tokenises decimals and compares them as numbers, which fixes
+  `...T14:23:40.009312` cleanly. It does not fix `...T14:23:00.009000`: that
+  seconds field parses as **exactly** 0.009, the token boundaries are right, and
+  no lookbehind can separate a number from itself. The fix is to remove the
+  *structure* first — clock times are stripped before tokenising — and to refuse
+  the spelling that only a clock uses (a price is `0.009`; `00.009` is not).
+  Note what was tempting and wrong: "ignore anything after a colon" would have
+  dismissed the clock and also every real leak, because FastAPI serialises
+  compactly and a leak reads `{"rate":0.009}`. And note how it was found — 20
+  clean runs said nothing, and walking all 6,000 spellings of the timestamp
+  found it immediately. When the bug is one-in-hundreds, enumerate the space
+  rather than sampling it.
+- **A scrubber downstream will cover for a defect upstream, and a test after
+  both proves neither.** P1b's lookup provider is required to build its error
+  text from named fields rather than passing `str(exc)` through — and the test
+  asserted on the *stored* row, which `scrub_provider_text()` had already
+  cleaned. Reverting the provider to the raw string broke nothing. When two
+  layers each remove a thing, at least one test has to sit between them.
+- **A test can name a guard and never reach it.** `if self.cap <= 0: return
+  False` only decides anything when a lookup is priced at zero *and* nothing has
+  been spent yet; at any real price the comparison below it already refuses, so
+  the obvious test passes with the guard deleted. Ask which arrangement makes
+  the guard the only thing deciding, and construct that — the mutation harness
+  will tell you when you have not, and it took two rounds here.
+- **Automate the audit; your own sweep will miss a site.** P1b's brief was to
+  find every remaining bare-numeric assertion. Reading the suite found four.
+  The grep written for the acceptance check found the fifth, in
+  `test_monitoring.py`, on its first run. The same check's first version also
+  flagged a comment quoting the old assertion and three `__pycache__` binaries —
+  the fourth time here that a measurement script has counted prose describing a
+  rule as a violation of it. Both halves are the lesson: write the check, and
+  then check the check.
 - **A bare decimal matched against a whole response body matches timestamps.**
   `assert str(settings.WHOLESALE_COST_PER_SEGMENT) not in body` looks for
   `"0.009"`, and `...T14:23:40.009312` contains it — so 5f's white-label scan is

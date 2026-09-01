@@ -255,10 +255,18 @@ assert provider.name == "disabled" and result.line_type == "unknown"
 assert "unknown" not in __import__(
     "app.services.lookup_service", fromlist=["x"]).PROMOTABLE_LINE_TYPES, (
     "unknown is promote-eligible, so a box with screening off promotes landlines")
-# And there is no registered provider that could call anything.
-assert set(lookup.PROVIDERS) == {"none"}, (
-    f"a carrier lookup provider is registered ({sorted(lookup.PROVIDERS)}). "
-    f"That is a budget decision — RULES.md escalation item 7.")
+# SUPERSEDED BY SESSION P1b, which ruled on RULES.md escalation item 7 and
+# wired the carrier lookup provider in. This assertion read:
+#
+#     assert set(lookup.PROVIDERS) == {"none"}, "a carrier lookup provider is
+#     registered. That is a budget decision — RULES.md escalation item 7."
+#
+# It was right for P1 and is wrong now: a registered provider is the ruling,
+# not a violation of it. What still has to hold — and is what this check was
+# actually protecting — is that reaching it takes a deliberate edit to
+# PROSPECT_LOOKUP_PROVIDER on a live box. Asserted above, on the *default*.
+assert lookup.get_lookup_provider().name == "disabled", (
+    "the configured provider is not the no-call one")
 PY
 if [[ $? -ne 0 ]]; then
   bad "the default screening path could reach a paid API, or unknown is promotable"

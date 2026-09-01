@@ -19,27 +19,34 @@ This module talks to a carrier and knows a carrier's vocabulary, so it lives in
 That is the same split as `app/sms/factory.py` and the send path, and it is why
 the SMS engine survived being moved between clients.
 
-## Why the default provider makes no call
+## Why the default provider still makes no call
 
 `DisabledLineTypeProvider` is the default and answers `unknown` for everything
-without touching a network. Two reasons, and neither is timidity:
-
-  - **A carrier lookup is money.** Wiring a paid API into the product is a
-    budget decision, not an implementation one — `RULES.md` escalation item 7.
-    The carrier implementation lands with the first real source (P2), when
-    there is a search to spend it on.
-  - **A provider class nobody can run is a runtime contract nobody checked.**
-    This codebase has already shipped a pinned SDK major version the provider
-    was written against and did not match; nothing failed until the morning of a
-    sale. An unexercised second one would be the same bet.
+without touching a network. Session P1b ruled on escalation item 7 and wired the
+carrier implementation in beside it, but the *default* did not move: switching
+screening on is one line of `.env` on a live box and it spends real money, so it
+stays a human's decision rather than a consequence of deploying.
 
 `unknown` is not promote-eligible, so a box with screening switched off does not
 quietly promote landlines — it holds everything in the review queue and says
 why. A gate that is off refuses; it does not wave things through.
+
+## Why the price lives here
+
+The carrier charges per call, so what a call costs is part of the carrier
+conversation, exactly as the vocabulary it answers in is. It is defined once,
+here, and `app/services/lookup_service.py` re-exports it: the provider needs it
+to report what it spent and cannot import a service, and the spend cap needs it
+to decide whether one more call fits under the ceiling. Two copies of a rate is
+how a cap comes to disagree with the ledger it is capping.
+
+**It is our cost, not the client's**, on the same footing as
+`WHOLESALE_COST_PER_SEGMENT`. He is billed per segment and for nothing else.
 """
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from decimal import Decimal
 import logging
 
 from app.core.config import settings
@@ -119,35 +126,69 @@ class DisabledLineTypeProvider(LineTypeProvider):
         return LineTypeResult(line_type="unknown", ok=False, error=self.DETAIL)
 
 
+def cost_per_lookup() -> Decimal:
+    """Our per-call spend, as Decimal. Never rendered — see the module docstring.
+
+    Decimal from end to end rather than at the rounding step: session 1b's
+    lesson is that float arithmetic on money drifts below half-cent boundaries,
+    and both a job cost and a monthly cap are sums of several thousand of these.
+    """
+    return Decimal(str(settings.PROSPECT_LOOKUP_COST_PER_NUMBER))
+
+
+# Import paths rather than classes, which `_load()` resolves at call time.
+# `app.sms.providers.telnyx_lookup` imports `LineTypeProvider` from this module,
+# so naming the class here directly would be a circular import — and the send
+# factory carries the same indirection for the same shape of reason.
 PROVIDERS = {
-    "none": DisabledLineTypeProvider,
+    "none": "app.sms.lookup:DisabledLineTypeProvider",
+    "telnyx": "app.sms.providers.telnyx_lookup:TelnyxLineTypeProvider",
 }
 
 _instance: LineTypeProvider | None = None
 
 
+def _load(path: str) -> type:
+    module_path, class_name = path.split(":")
+    module = __import__(module_path, fromlist=[class_name])
+    return getattr(module, class_name)
+
+
 def get_lookup_provider(force_reload: bool = False) -> LineTypeProvider:
     """The configured line-type provider (cached).
 
-    Degrades to the disabled provider on an unrecognised name rather than
-    raising, for the reason `get_provider()` does: this is read from `.env` on a
-    live box, and a typo should cost screening, not the ability to log in. The
-    degraded state is safe here in a way it is not on the send path — `unknown`
-    promotes nobody — but it is still logged at ERROR so it is not silent.
+    Degrades to the disabled provider on an unrecognised name, a missing SDK or
+    a missing credential rather than raising, for the reason `get_provider()`
+    does: this is read from `.env` on a live box, and a typo should cost
+    screening, not the ability to log in.
+
+    The degraded state is safe here in a way it is not on the send path —
+    `unknown` promotes nobody, so the failure mode is a queue that will not
+    empty rather than a campaign that silently goes nowhere — and no client
+    surface describes it either way: the queue tells him a number is unscreened,
+    which is true whether screening is switched off or broken. It is logged at
+    ERROR so the difference is recoverable by whoever has to fix it.
     """
     global _instance
     if _instance is not None and not force_reload:
         return _instance
 
     name = (settings.PROSPECT_LOOKUP_PROVIDER or "none").lower()
-    if name not in PROVIDERS:
+    try:
+        if name not in PROVIDERS:
+            raise LookupError(
+                f"Unknown PROSPECT_LOOKUP_PROVIDER '{name}'. "
+                f"Options: {', '.join(PROVIDERS)}"
+            )
+        instance = _load(PROVIDERS[name])()
+    except Exception as exc:
         logger.error(
-            "Unknown PROSPECT_LOOKUP_PROVIDER %r. Options: %s. Falling back to "
-            "no screening — every prospect will read as unscreened and none can "
-            "be promoted.", name, ", ".join(PROVIDERS),
+            "Could not start the line-type provider %r: %s. Falling back to no "
+            "screening — every prospect will read as unscreened and none can be "
+            "promoted.", name, exc,
         )
-        name = "none"
+        instance = _load(PROVIDERS["none"])()
 
-    _instance = PROVIDERS[name]()
+    _instance = instance
     logger.info("Line-type provider active: %s", _instance.name)
     return _instance

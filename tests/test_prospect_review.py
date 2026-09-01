@@ -18,11 +18,13 @@ from app.models.contact import Contact
 from app.models.prospect import (
     Prospect, ProspectRejection, REJECT_REASONS, WRONG_SIDE_REASONS,
 )
+from app.models.scrape import PhoneLookup
 from app.routers import prospects as prospects_router
 from app.services import blocklist_service, lookup_service, prospect_queue
 from app.services import prospect_service
 
 from tests import _prospect_setup as setup
+from tests import _wholesale_scan as scan
 
 PASSWORD = "devpassword123"
 
@@ -429,6 +431,47 @@ def test_no_prospect_surface_leaks_a_payload_a_carrier_or_our_cost(db, client, f
         haystack = response.text.lower()
         for needle in FORBIDDEN:
             assert needle not in haystack, f"{path} carries {needle!r}"
+        # And the figures themselves, compared as numbers rather than hunted
+        # for as substrings — session P1b wired a paid lookup in, so the
+        # per-number screening cost is now a second wholesale figure with the
+        # same rule attached to it as the per-segment one.
+        if response.headers["content-type"].startswith("application/json"):
+            scan.assert_no_wholesale_field(response.json(), where=path)
+        else:
+            scan.assert_no_wholesale_figure(response.text, where=path)
+
+
+def test_the_carriers_name_on_a_lookup_row_reaches_no_prospect_surface(db, client):
+    """`phone_lookups.provider` holds the carrier's name on a screening box.
+
+    P1b is what put it there — before it, that column read `disabled` on every
+    row, so the scan above could not have caught this even in principle: it runs
+    with a fake whose name is `fake-lookup`, and a surface that rendered the
+    column would have passed by carrying a word that is not a carrier's. So the
+    row is stamped with the real name here and the surfaces are run again.
+
+    Nothing reads the column today. This is the test that notices the day
+    something does — a screen for scrape jobs is the obvious candidate, and
+    `status.md` says which three columns must not be on it.
+    """
+    phone = setup.take(1)[0]
+    _seed(db, phone, name="Screened Kitchen")
+    row = db.query(PhoneLookup).filter(PhoneLookup.phone == phone).one()
+    row.provider = "telnyx"
+    db.commit()
+
+    try:
+        for path in ("/prospects", "/api/prospects?per_page=200",
+                     "/api/prospects/summary", "/api/prospects/terms",
+                     "/api/prospects/export.csv"):
+            response = client.get(path)
+            assert response.status_code == 200, path
+            assert "telnyx" not in response.text.lower(), (
+                f"{path} renders the line-type provider's name")
+    finally:
+        # Left as the suite found it: every other module's scan reads this table.
+        row.provider = "fake-lookup"
+        db.commit()
 
 
 def test_the_export_carries_the_rationale_and_nothing_it_should_not(db, client):

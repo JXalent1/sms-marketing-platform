@@ -2799,3 +2799,255 @@ third-party payload.
 - **`docs/API.md` does not document the prospects API — nor 5f's reports and
   links routes.** The drift predates this session; the file stops at Settings,
   Health and Webhooks. Worth one pass when somebody is in there.
+
+---
+
+## Module P1b Part A — the lookup provider, and a gate that flakes, 2026-08-31
+
+Three things: the paid line-type provider RULES.md escalation item 7 was
+blocking, the flaky white-label assertion that could fail a sound build, and
+`docs/API.md`'s drift. `bash agent/accept-P1b.sh` is the stop condition;
+criteria 1-9 pass locally, criterion 10 is `--with-remote` and needs the deploy.
+
+**544 tests** (494 + 50 new). `bash agent/gate.sh` passes, twice.
+
+### A1 — the provider, and the two things it is not allowed to spend on
+
+`app/sms/providers/telnyx_lookup.py` is one class against the interface P1
+built: `client.number_lookup.retrieve(phone, type="carrier")`, the cheap MCC/MNC
+query rather than the CNAM one. Recorded responses live in
+`tests/fixtures/number_lookup_responses.json` and are replayed **through the
+SDK's own response model** — a fixture the SDK will not parse means the pin and
+the code have drifted, which is the defect that took a launch morning once
+already.
+
+**The default did not move.** `PROSPECT_LOOKUP_PROVIDER` is still `none`, which
+makes no call at all. Switching screening on starts spending real money, so it
+is one line of `.env` on a live box rather than a consequence of deploying.
+
+Three constraints, and the first is the session's reason for existing.
+
+1. **Lookups and sends draw on the same balance.**
+   `PROSPECT_LOOKUP_MONTHLY_CAP` (default $50) is a hard ceiling checked
+   *before* every call, in `line_type_for()` — the one place a call is actually
+   made — so a caller that forgets to pass a budget still cannot spend past it.
+   A pass that reaches the cap stops spending, writes **no row** for the numbers
+   it skipped (they are screenable next month; a refusal of ours is not an
+   answer to cache), and logs one line naming the count and the remedy. Nothing
+   about the cap reaches a client surface: the queue says a number is
+   unscreened, which is true, and the cap is denominated in our money.
+2. **The cache is mandatory.** Unchanged from P1 and now asserted from the
+   other direction too — an already-known number is one of the three
+   populations we must never pay for.
+3. **Never spend on a number nobody will use.** `unusable_numbers()` subtracts
+   permanently rejected prospects and blocklisted numbers. It queries the two
+   tables directly rather than calling `prospect_service.is_suppressed()` and
+   `blocklist_service.is_blocked()` — it runs over a whole scrape, and
+   `prospect_service` imports `lookup_service`, so the reverse import is a
+   cycle. That leaves two statements of one rule, so the test asserts the
+   *property* that they agree rather than pinning either list.
+
+Two smaller decisions worth knowing about:
+
+- **`cost_per_lookup()` moved to `app/sms/lookup.py`** and is re-exported here.
+  The carrier charges per call, so the price belongs beside the carrier
+  conversation; the provider needs it to report what it spent and cannot import
+  a service, and the cap needs the same number. Two copies is how a cap comes to
+  disagree with the ledger it caps.
+- **`phone_lookups.cost` accumulates on a retry** instead of being overwritten.
+  The monthly total is summed from that column, so a number billed twice inside
+  one month would otherwise count once and the ceiling would permit more than it
+  says. Across a month boundary it over-states slightly, which is the direction
+  to be wrong in.
+
+An answer we cannot act on is still an answer: `fixed line or mobile`,
+`voicemail`, `pager` and the rest come back `ok=True, line_type="unknown"` and
+are cached forever, because asking again next month cannot make them less
+ambiguous. The one case that is **not** an answer is a response carrying no line
+type at all — that is schema drift or our own bug, the money is already spent,
+and freezing it into the cache would be P1's permanent-hole failure arriving
+through a new door.
+
+### A2 — the assertion that could fail a sound build
+
+`assert str(settings.WHOLESALE_COST_PER_SEGMENT) not in body` searched an entire
+serialized response for the bare string `"0.009"`, and `...T14:23:40.009312`
+contains it. `tests/_wholesale_scan.py` replaces it: numbers are found **as
+numbers** and compared **as numbers**, and a JSON response is compared field by
+field. `0.0090` and `0.009` now compare equal, which the substring test got
+wrong in the other direction.
+
+`PROSPECT_LOOKUP_MONTHLY_CAP` is deliberately **not** in the value sweep. Its
+default is `50.0`, and a bare 50 is a message count, a page size and a contact
+id — sweeping for it would reproduce the exact defect being removed. Round
+numbers are asserted by field name.
+
+**Parsing numerically was necessary and not sufficient, and the check written
+for the criterion is what said so.** Criterion 7 asks for twenty consecutive
+runs; twenty samples is weak evidence about a one-in-several-hundred event, so
+check 7b walks *every* timestamp containing `0.009` instead — and it failed
+immediately, on `14:23:00.009000`. Same timestamp family, but its seconds field
+parses as **exactly** 0.009: the token boundaries are right and the number
+really is our rate, so no lookbehind can tell them apart. Clock times are now
+removed before anything is tokenised, and the tokeniser separately refuses a
+redundant leading zero — a price is `0.009`, and `00.009` is a clock. A colon is
+deliberately *not* excluded, because FastAPI serialises compactly and a real
+leak reads `{"rate":0.009}` with no space; a rule that dismissed anything after
+a colon would have missed every JSON leak in the app while looking rigorous.
+
+### The audit: five sites, and the two I did not find by reading
+
+Criterion 8. Every site in the suite that tested one of our figures as a
+substring:
+
+1. `test_campaign_reports.py::test_no_new_surface_leaks_the_carrier_or_our_cost`
+   — the known flake, two assertions (`0.009` and `0.0043`) over eight bodies
+   including two HTML pages and a CSV export. **Converted.**
+2. `test_whitelabel.py::test_no_response_quotes_our_wholesale_rate` — **the one
+   the session was sent to find.** The same assertion over *every* client-facing
+   GET route, discovered from the app's own route table, and those routes render
+   timestamps by the hundred. It had simply not lost the dice roll yet, and it
+   would have failed on a route nobody had touched. **Converted.**
+3. `test_campaign_preflight.py::test_preflight_response_never_quotes_our_wholesale_rate`
+   — the whole preflight body. **Converted** to a field-by-field walk.
+4. `test_capacity_rounding.py` and `test_degraded_send_path.py` — two assertions
+   over a short refusal *sentence*. Low risk, since a sentence has no timestamp
+   in it, but converted anyway: leaving three spellings of one assertion is how
+   the next person picks the wrong one.
+5. `test_monitoring.py::test_the_alert_never_quotes_our_wholesale_rate` — **and
+   I did not find this one by reading.** `agent/accept-P1b.sh` check 8 greps for
+   the shape, and the grep found it on its first run. Converted. That is the
+   argument for automating the audit rather than declaring it done: my own sweep
+   of the suite missed a site and the sweep I wrote for the criterion did not.
+
+`agent/accept-P1b.sh` check 8 keeps the property. **No remaining site tests one
+of our figures as a substring.**
+
+**The check's own first version was wrong, in this project's most familiar
+way.** It flagged a *comment* in `test_whitelabel.py` quoting the old assertion,
+plus three `__pycache__` binaries. That is the fourth time here that a
+measurement script has counted prose describing a rule as a violation of it. It
+is now anchored to an `assert` statement and restricted to `*.py`.
+
+### A3 — `docs/API.md`
+
+Prospects, reports and history, and the public short-link route: three sections
+that did not exist. The payload shapes were read off the services rather than
+recalled, and four details were wrong on the first pass and corrected against
+the code (`per_page` defaults, the `top_ups` keys, the prospect sort names, the
+reject-reason labels).
+
+### What the review found (worked in session, no spawned reviewers)
+
+The mutation harness earned its keep again: **27 mutations, three survived the
+first run, and all three were holes in my tests rather than in the code.**
+
+1. **`C3 a cap of zero means unlimited` survived.** The test named the guard and
+   never reached it: at the configured price, `cost <= remaining` already
+   refuses on an exhausted cap, so the assertion passed whether or not the
+   `cap <= 0` branch existed. The branch only bites when a lookup is priced at
+   **zero** — which is exactly what somebody sets while wiring up a provider
+   they believe is free. The test now drives that case.
+2. **`P3 an unmapped carrier word falls through as mobile` survived.** Nothing
+   exercised a line type outside the recorded fixtures. Now the SDK's own
+   `Literal` is read and every value it declares must have a row in
+   `CARRIER_LINE_TYPES` — so a classification added upstream fails here rather
+   than defaulting onto the contact list.
+3. **`P7 the raw SDK error string is stored, payload and all` survived**, and
+   this one generalises. The assertion was on the **stored row**, and
+   `scrub_provider_text()` strips a payload as well as a carrier name — so the
+   scrubber was covering for the provider and the provider's own guarantee was
+   untested. Same shape as 5f's "a property proved of a helper is not proved of
+   its only caller": if two layers each fix a thing, a test downstream of both
+   proves nothing about either. The assertion is now on what the provider
+   returns, before the scrubber sees it.
+
+Three more came from working the lenses directly rather than from the harness:
+
+4. **An unreadable cost string would have taken the screening pass down *and*
+   poisoned the ledger.** `Decimal(cost)` sat between the provider call and the
+   row write, so a provider reporting `"$0.0025 USD"` would have raised after
+   the money was spent and before the answer was stored — and if it had been
+   stored raw, every later `spend_this_month()` would have raised on it, which
+   is one bad row disabling the ceiling for the rest of the month. Found by
+   reading the write path against the read path. `_charged()` parses at the
+   boundary, logs, and treats unreadable as zero; the column can now only hold
+   something `Decimal` can read.
+5. **A pass reported `rate x attempts` rather than what it was charged.** The
+   two are the same number until a call fails, and a failed call is a lookup
+   performed and not a charge — so a bad afternoon would have written spend into
+   `scrape_jobs.cost` that the carrier never billed. One module was reporting our
+   spend two ways; it now reports the ledger's own delta.
+6. **`phone_lookups.provider` holds the carrier's name on a screening box**, and
+   before this session it read `disabled` on every row. Nothing renders it —
+   checked against `prospect_queue`, the four API routes and `EXPORT_COLUMNS` —
+   but the existing runtime scan could not have caught it even in principle,
+   because it screens with a fake called `fake-lookup` and a surface rendering
+   the column would have passed by carrying a word that is not a carrier's.
+   There is now a test that stamps the real name on a row and runs every
+   prospect surface again.
+
+A fourth came from the acceptance script's own machinery. When the scanner's
+regex changed, mutation `S2` stopped applying — and the harness reported
+**PATCH DID NOT APPLY** and failed the run rather than counting it as a pass.
+That is the guard working: a patch that does not apply proves nothing, and the
+alternative is a mutation quietly dropping out of the set every time the code it
+targets is edited. Repaired against the new regex, with two more added for the
+clock strip and the leading-zero rule.
+
+Also checked and clean: the send path is untouched; `app/sms/` still imports
+nothing from the DB layer; no migration was needed (no schema change); the
+suite is green twice; every new test passes on its own; and the mutation run is
+27 caught, 0 survived, on a tree verified byte-identical to the repo before the
+first patch.
+
+### Deliberately not done
+
+- **No real API call, at any point.** Not to validate the provider, not in the
+  gate, not in acceptance. Every fixture is recorded and every provider under
+  test has its client replaced before use.
+- **`.env` and `.env.production` untouched**, as the session constrains.
+  Production therefore inherits `PROSPECT_LOOKUP_MONTHLY_CAP=50.0` from the code
+  default, and screening stays off until Jordan sets
+  `PROSPECT_LOOKUP_PROVIDER=telnyx` — which is escalation item 6/7's territory,
+  not this session's.
+- **The existing contact list is not screened.** Explicitly out of scope: that
+  is a decision about spending real money on live data.
+- **No jobs screen.** `scrape_jobs.cost`, `phone_lookups.cost` and the cap are
+  ours; when a screen is built, none of the three may be on it.
+
+### Found while working
+
+- **`agent/mutate-P1.py` does not verify its scratch tree**, though `CLAUDE.md`
+  says every run now does and prints `SCRATCH VERIFIED PRISTINE`. What actually
+  protects P1's run is `accept-P1.sh` doing `rm -rf` before the rsync, which is
+  a different guarantee: it holds only when the harness is invoked through that
+  script. `agent/mutate-P1b.py` implements the documented check for real —
+  every file it patches is compared byte for byte against the repo's copy first,
+  and the run aborts if any differs. Worth back-porting to the four earlier
+  harnesses; not done here, since they are other sessions' files.
+- **`agent/accept-P1.sh` check 8d had to be amended.** It asserted
+  `set(lookup.PROVIDERS) == {"none"}` with the comment "that is a budget
+  decision — RULES.md escalation item 7". P1b *is* the ruling on that item, so
+  the assertion was right for P1 and wrong now. Struck through in place with the
+  old text quoted and the superseding session named, per RULES.md; what it was
+  really protecting — that reaching the carrier takes a deliberate `.env` edit —
+  is still asserted, on the default.
+- **`lookup_service.py` is 421 lines** and `prospect_service.py` is 451. The
+  next addition to either forces a split.
+- **"Screening is off" and "screening is broken" are one state today.**
+  `get_lookup_provider()` falls back to the no-call provider on a bad name, a
+  missing SDK or a missing credential — correct, for `get_provider()`'s reason —
+  and `DisabledLineTypeProvider.DETAIL` then says screening "is not switched
+  on", which is false in the broken case. It reaches no screen: nothing renders
+  `phone_lookups.error`, and the queue's own wording ("this number has not been
+  screened yet") is true either way. But this is 5d's shape with the surface not
+  yet built, so if a screening or jobs screen is ever added it needs **three**
+  states, not two, and the failed one has to say so — `send_mode()` is the
+  pattern.
+- **A screening pass stopped by the cap is invisible on the jobs record.**
+  `scrape_jobs` has `lookups_performed` and `lookups_cached` and no column for
+  "skipped", so a run that screened nothing because the cap was reached looks
+  like a run that had nothing to screen. The prospects are correctly shown as
+  unscreened and the log names the cause, but the job row does not.
+  `scrape_runner.py` and a migration are outside this session's file list.

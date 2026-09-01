@@ -24,6 +24,7 @@ from app.services import billing_service, preflight_service
 from app.services.campaign_service import CampaignService
 
 from tests import _guardrail_setup as setup
+from tests import _wholesale_scan as scan
 
 PASSWORD = os.environ["ADMIN_PASSWORD"]
 
@@ -184,12 +185,17 @@ def test_preflight_capacity_row_matches_the_send_paths_own_verdict():
 
 def test_preflight_response_never_quotes_our_wholesale_rate(client, seeded):
     """The capacity assessment carries a balance and our rate. Neither ships."""
-    body = client.post("/api/campaigns/preflight", json={
+    response = client.post("/api/campaigns/preflight", json={
         "message_template": f"{settings.BRAND_NAME}: sale. Reply STOP to opt out.",
         "audience": seeded["audience"],
         "category_id": seeded["category_id"],
-    }).text
-    assert str(settings.WHOLESALE_COST_PER_SEGMENT) not in body
+    })
+    body = response.text
+    # Field by field rather than as a substring sweep of the body: a bare
+    # "0.009" matches inside an ISO timestamp's microseconds, which is how the
+    # same assertion in `test_campaign_reports.py` came to fail one sound build
+    # in six. See `tests/_wholesale_scan.py`.
+    scan.assert_no_wholesale_field(response.json(), where="/api/campaigns/preflight")
     assert "balance" not in body.lower()
     assert "wholesale" not in body.lower()
 

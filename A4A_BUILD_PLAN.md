@@ -97,3 +97,58 @@ against both prospects and existing contacts.
 **P3 — registries and enrichment.** FL DBPR food-service and contractor licences, Sunbiz
 officer names. The prize is *new* licences: a kitchen licensed last month is being fitted
 this month, and that timing beats volume.
+
+---
+
+## Seashells — a named niche, added 2026-09-01
+
+The client asked for this specifically: seashell businesses perform unusually well for him.
+
+### The inversion to be careful about
+
+"People who sell seashells" reads like a seller, and this plan's one rule is buyers only.
+It isn't. **A shell shop buys inventory to stock its shelves** — it bids at his auction.
+Same shape as resale shops under Estates, and the same shape that made me wrongly list
+estate liquidators as buyers in the first draft.
+
+The genuine sellers here are **shell wholesalers and importers**, who are more likely to
+consign surplus stock to him than bid on it. Excluded, and named in the exclusion list.
+
+### Buyer types
+
+| Buyer | Why they bid |
+|---|---|
+| Shell and beach shops | inventory to resell — the core of this niche |
+| Coastal souvenir and gift shops | shells as stock, especially Gulf-coast towns |
+| Beach / nautical decor retailers | decor lots |
+| Interior designers and stagers doing coastal work | already in Estates; shells overlap |
+| Aquarium and reef shops | shells, coral, specimens |
+| Jewellery makers and craft suppliers | raw material by weight |
+| Collectors — conchologists | specimen shells, the high-value end |
+
+### Geography: national, with a dense Florida cluster
+
+Shells ship cheaply, so the collector market is national like memorabilia. But Florida is
+the centre of it — Sanibel, Captiva and the Gulf coast — so a local sweep and a national
+sweep will both pay, and they are different search runs with different radii.
+
+### Sources beyond Google Places
+
+Places will find shell shops, souvenir and decor retailers. Two source types will find the
+higher-intent end and neither is a Places query:
+
+- **Shell club and conchological society directories**, and **shell show exhibitor
+  lists.** Public, targeted, and a membership list is a list of people who buy specimen
+  shells on purpose. The highest-intent seashell source available.
+- **Marketplace sellers** on eBay and Etsy listing shells. These are literally "people who
+  sell seashells" — they buy inventory to resell, and they are not in Places. A separate
+  source type; note it for P3+ rather than bending Places to reach it.
+
+### Where it lives in the product
+
+**Not a new category.** The palette is validated at four hues plus neutral and is already
+full, and since 5e the campaign-first flow means a niche does not need a category to be
+textable — upload the list, name the campaign "Seashell Auction 9/14", send.
+
+Seashells is a **search-term group in the P2 taxonomy**, with its own buyer rationale per
+term, promoted into General or left untagged as the operator prefers.

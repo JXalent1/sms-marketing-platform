@@ -30,6 +30,7 @@ from app.services import link_service, report_service
 from app.services.campaign_service import CampaignService
 
 from tests import _link_setup as setup
+from tests import _wholesale_scan as scan
 
 PASSWORD = "devpassword123"
 IPHONE_UA = ("Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) "
@@ -309,9 +310,17 @@ def test_no_new_surface_leaks_the_carrier_or_our_cost(db, client):
             body = response.text.lower()
             for word in FORBIDDEN:
                 assert word not in body, f"{path} leaks {word!r}"
-            # The exact figure, in every spelling it would appear in.
-            assert str(settings.WHOLESALE_COST_PER_SEGMENT) not in body, path
-            assert "0.0043" not in body, f"{path} leaks the carrier's own price"
+            # Our own figures, compared as numbers rather than looked for as
+            # substrings. This used to be `str(WHOLESALE_COST_PER_SEGMENT) not
+            # in body`, which searches an entire serialized response for the
+            # bare string "0.009" — and `...T14:23:40.009312` contains it. One
+            # failure in about six full-suite runs, on a gate that stops at the
+            # first one. See `tests/_wholesale_scan.py` for the defect class and
+            # `tests/test_wholesale_scan.py` for the proof it still fires.
+            if response.headers["content-type"].startswith("application/json"):
+                scan.assert_no_wholesale_field(response.json(), where=path)
+            else:
+                scan.assert_no_wholesale_figure(response.text, where=path)
 
         # And the scrubbed wording did survive, so the scan above is not
         # passing because the field is simply absent.

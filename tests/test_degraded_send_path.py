@@ -38,6 +38,7 @@ from app.core.config import settings
 from app.models.campaign import Campaign
 from app.models.contact import Contact
 from app.models.contact_list import ContactList, ContactListMember
+
 from app.models.sms_message import SMSMessage, BILLABLE_STATUSES
 from app.main import app
 from app.services import billing_service, contact_service
@@ -47,6 +48,7 @@ from app.sms import factory
 # the layer that knows the carrier's name owns every client-safe sentence about
 # it, which is the same reason scrub_provider_text() lives in app/sms/phone.py.
 from app.sms.factory import send_path_assessment
+from tests import _wholesale_scan as scan
 from tests._provider_setup import degraded_provider
 
 PASSWORD = os.environ["ADMIN_PASSWORD"]
@@ -206,7 +208,9 @@ def test_the_refusal_quotes_no_money_and_names_no_carrier():
     with degraded_provider():
         detail = send_path_assessment()["detail"]
     assert "$" not in detail, detail
-    assert str(settings.WHOLESALE_COST_PER_SEGMENT) not in detail, detail
+    # See `tests/_wholesale_scan.py`: our figures are compared as numbers
+    # everywhere now, not looked for as substrings.
+    scan.assert_no_wholesale_figure(detail, where="the degraded refusal")
 
 
 # ─── A1: the composer shows it before the send ──────────────────────────────

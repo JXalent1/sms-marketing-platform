@@ -933,3 +933,105 @@ the deploy, which is **not done** — same state as 5c through 5h.
   message history, and the deploy is a human's call, not this session's.
 - **Criterion 11** (all screens 200 over HTTPS, no leaks) needs that deploy:
   `A4A_URL=... A4A_PASSWORD=... bash agent/accept-P1.sh --with-remote`.
+
+---
+
+# Session P1b — the lookup provider, and a gate that flakes (Part A), 2026-08-31
+
+## What just happened
+
+Three things, one of which spends money and one of which could fail a green
+build.
+
+1. **The Telnyx line-type lookup provider is wired in.** RULES.md escalation
+   item 7 was ruled on by the session spec, so this is the paid API the whole
+   prospecting economic case rests on: $0.0025 a number, against 2,526
+   not-routable numbers in one campaign's failures.
+2. **The flaky white-label assertion is gone**, along with four more sites of
+   the same defect class — including the one that scanned *every* client-facing
+   route and had simply not lost the dice roll yet. The fifth was found by the
+   acceptance check rather than by reading, which is the argument for writing
+   the check.
+3. **`docs/API.md` documents prospects, reports/history and the public
+   short-link route.** It stopped at Settings before.
+
+## State of the code
+
+- **544 tests** (494 + 50). `bash agent/gate.sh` green twice.
+- `bash agent/accept-P1b.sh` — criteria 1-9 pass. Criterion 10 needs the deploy.
+- `agent/mutate-P1b.py`: 27 mutations, 0 survive, on a scratch tree verified
+  byte-identical to the repo before the first patch (it prints
+  `SCRATCH VERIFIED PRISTINE`).
+- No migration. Nothing about this session changes the schema.
+
+## Where things are
+
+- `app/sms/providers/telnyx_lookup.py` — the provider. One class,
+  `client.number_lookup.retrieve(phone, type="carrier")`.
+- `app/sms/lookup.py` — the registry (`PROVIDERS`, now two entries, loaded by
+  import path to avoid a cycle) and `cost_per_lookup()`, which moved here.
+- `app/services/lookup_service.py` — the cache, the monthly spend cap
+  (`LookupBudget`, `spend_this_month()`, `monthly_cap()`) and
+  `unusable_numbers()`.
+- `tests/_wholesale_scan.py` — the one way to ask "did our own cost reach the
+  client", and it parses before it compares. `tests/test_wholesale_scan.py`
+  proves it in both directions.
+- `tests/fixtures/number_lookup_responses.json` — recorded carrier responses,
+  replayed through the SDK's own model.
+
+## The five things to know before touching this
+
+- **Lookups and sends draw on the same carrier balance.** That is the whole
+  reason the cap exists: a 10,000-number screening run takes $25 out of the pot
+  `capacity_assessment()` measures, so an overnight scrape can make the next
+  morning's campaign refuse to start with nothing on any screen connecting the
+  two events. `PROSPECT_LOOKUP_MONTHLY_CAP` is checked **before** each call, in
+  `line_type_for()`. Do not move it to the caller: `screen()` passes a budget
+  down as an optimisation, and the rule must survive a caller that forgets.
+- **A refusal of ours is not an answer to cache.** A number skipped for cost or
+  because nobody will ever text it gets **no row**, so it is screenable next
+  month. Writing `unknown` there would be P1's permanent-hole failure with a new
+  cause.
+- **`phone_lookups.cost` accumulates on a retry.** The monthly total is summed
+  from that column; overwriting it lets a number billed twice in a month count
+  once, and a ceiling that under-counts permits more than it says.
+- **The default provider still makes no call, and that is deliberate.**
+  Screening starts spending the moment `PROSPECT_LOOKUP_PROVIDER=telnyx` is set,
+  so it is a human's `.env` edit on a live box. Neither `.env` nor
+  `.env.production` was touched by this session.
+- **`_wholesale_scan` compares parsed numbers, never substrings — and parsing
+  numerically was necessary but not sufficient.** `14:23:00.009000` parses as
+  *exactly* 0.009, so clock times are stripped before tokenising and a token
+  with a redundant leading zero is refused. A colon is deliberately not
+  excluded: FastAPI serialises compactly, and a real leak reads `{"rate":0.009}`
+  with no space. If you add a client-facing surface, scan it with
+  `assert_no_wholesale_field()` (JSON) or `assert_no_wholesale_figure()`
+  (HTML/CSV). Do not reintroduce `str(settings.SOMETHING) not in body`: that is
+  the assertion this session removed from five places, and
+  `agent/accept-P1b.sh` check 8 greps for it.
+
+## For whoever switches screening on
+
+1. Set `PROSPECT_LOOKUP_PROVIDER=telnyx` in `.env` on the box. `TELNYX_API_KEY`
+   is already there.
+2. Decide `PROSPECT_LOOKUP_MONTHLY_CAP`. The default is $50 and it is not in
+   `.env`, so the box inherits it from `app/core/config.py`. $50 is 20,000
+   lookups, and it comes out of the same balance sends draw on.
+3. Watch the journal for `Screening stopped at the monthly cap`. That is the
+   only place the cap is reported — by design, since it is denominated in our
+   money and the client's screens say only that a number is unscreened.
+
+## Not done
+
+- **Deploy.** The box still runs the pre-P1 tree. This session adds no
+  migration, so P1's is still the one waiting. A live box holding the client's
+  contacts and message history is a human's call.
+- **Criterion 10** (all screens 200 over HTTPS, no carrier name, no wholesale
+  figure) needs that deploy:
+  `A4A_URL=... A4A_PASSWORD=... bash agent/accept-P1b.sh --with-remote`.
+- **Screening the existing contact list.** Explicitly out of scope — spending
+  real money on live data is Jordan's decision.
+- **A "skipped by the cap" column on `scrape_jobs`.** A run that screened
+  nothing because the cap was reached currently looks like a run with nothing to
+  screen. Noted in `status.md` under "Found while working"; it needs
+  `scrape_runner.py` and a migration, both outside this session's file list.

@@ -33,6 +33,7 @@ from app.models.campaign import Campaign
 from app.services import contact_service
 from app.services.campaign_service import CampaignService
 from app.sms import factory
+from tests import _wholesale_scan as scan
 from tests._provider_setup import degraded_provider
 
 PASSWORD = os.environ["ADMIN_PASSWORD"]
@@ -313,10 +314,26 @@ def test_campaign_payloads_carry_no_estimated_cost(client):
 
 
 def test_no_response_quotes_our_wholesale_rate(client):
-    """The rate itself, in case a future payload helpfully includes it."""
-    rate = str(settings.WHOLESALE_COST_PER_SEGMENT)
+    """The rate itself, in case a future payload helpfully includes it.
+
+    This was `str(WHOLESALE_COST_PER_SEGMENT) not in response.text` over every
+    client-facing route — the broadest instance of the defect that made
+    `test_no_new_surface_leaks_the_carrier_or_our_cost` flaky, and the one
+    session P1b's audit was sent to find. A bare `"0.009"` tested against a
+    whole body matches the microsecond field of an ISO timestamp, and these
+    routes render timestamps by the hundred: contacts, campaigns, history,
+    webhook receipts. It had simply not lost the dice roll yet.
+
+    Numbers are now compared as numbers, and a JSON response is compared field
+    by field. `tests/_wholesale_scan.py` carries the reasoning and
+    `tests/test_wholesale_scan.py` proves the scanner still fires.
+    """
     for path in _get_routes():
-        assert rate not in client.get(_fill(path)).text, path
+        response = client.get(_fill(path))
+        if response.headers.get("content-type", "").startswith("application/json"):
+            scan.assert_no_wholesale_field(response.json(), where=path)
+        else:
+            scan.assert_no_wholesale_figure(response.text, where=path)
 
 
 # ─── The pre-flight refusal is worded in his units ──────────────────────────

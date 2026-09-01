@@ -37,9 +37,9 @@ client sending real campaigns.
 | 5g | **Blocklist correctness** | Part A done 2026-08-26 · deploy pending | 5d | `app/sms/compliance.py`, `app/sms/phone.py`, `app/sms/providers/telnyx.py`, `app/routers/webhooks/telnyx.py`, `app/routers/webhooks/twilio.py`, `app/routers/webhooks/common.py`, `app/routers/pages.py`, `app/models/sms_message.py`, `app/models/blocked_number.py`, `app/services/blocklist_service.py`, `app/services/dashboard_service.py`, `app/services/monitoring_service.py`, `alembic/versions/`, `tests/` |
 | 5h | **Held-back rows & the capacity floor** | Part A done 2026-08-30 · deploy pending | 5e | `app/models/sms_message.py`, `app/services/campaign_builder.py`, `app/services/campaign_service.py`, `app/services/campaign_release.py`, `app/services/campaign_topup.py`, `app/routers/campaign_uploads.py`, `app/templates/_composer-upload.html`, `alembic/versions/`, `tests/` |
 | P1 | **Prospect pipeline** | Part A done 2026-08-31 · deploy pending | 5f | `app/models/{prospect,scrape}.py`, `app/models/__init__.py`, `app/sms/lookup.py`, `app/sources/prospect_base.py`, `app/sources/__init__.py`, `app/services/{prospect_service,prospect_queue,prospect_scoring,lookup_service,scrape_runner,link_service}.py`, `app/routers/prospects.py`, `app/routers/pages.py`, `app/templates/{prospects,base}.html`, `app/core/config.py`, `app/main.py`, `alembic/versions/`, `tests/`, `agent/{accept-P1.sh,mutate-P1.py}` |
-| P1b | **Lookup provider & gate flake** | Specced · next | P1 | `app/services/lookup_providers/telnyx.py`, `app/services/lookup_service.py`, `tests/test_campaign_reports.py`, `docs/API.md`, `tests/` |
+| P1b | **Lookup provider & gate flake** | Part A done 2026-08-31 · deploy pending | P1 | `app/sms/providers/telnyx_lookup.py`, `app/sms/lookup.py`, `app/services/lookup_service.py`, `app/core/config.py`, `.env.example`, `docs/API.md`, `CLAUDE.md`, `tests/{test_lookup_provider,test_wholesale_scan,_wholesale_scan}.py`, `tests/fixtures/number_lookup_responses.json`, `tests/{test_campaign_reports,test_whitelabel,test_campaign_preflight,test_capacity_rounding,test_degraded_send_path,test_prospect_review,test_prospect_pipeline}.py`, `agent/{accept-P1b.sh,mutate-P1b.py,accept-P1.sh}` |
 | P2 | **Google Places source** | After P1 | P1 | `app/sources/google_places.py`, taxonomy config, `tests/` |
-| P3 | **Registries & enrichment** | After P2 | P1 | `app/sources/dbpr.py`, `app/sources/sunbiz.py`, `tests/` |
+| P3 | **Registries, marketplaces & enrichment** | After P2 | P1 | `app/sources/dbpr.py`, `app/sources/sunbiz.py`, `tests/` |
 
 **That's the launch — six sessions, but only four waves. See "Parallel plan" below.**
 
@@ -656,6 +656,40 @@ quarters of a cent under the true one wherever the estimate rounds down, so a
 campaign could start on a balance that did not cover it. Both are the same defect
 and the same fix; `agent/accept-5h.sh` check 6b prints the before/after at both
 rates rather than asserting the spec's version of it.
+
+### P1b — the lookup provider, and a gate that flakes
+
+Part A landed 2026-08-31. 544 tests (494 + 50), gate green twice,
+`agent/accept-P1b.sh` as the stop condition and `agent/mutate-P1b.py` (27
+mutations, on a tree verified byte-identical to the repo first) as the check
+with teeth. The deploy — acceptance criterion 10 — is still pending, as it is
+for 5c, 5d, 5e, 5g, 5h, 5f and P1.
+
+**The file list above differs from the one this table carried before the
+session, in one place that matters.** It named
+`app/services/lookup_providers/telnyx.py`; the class shipped as
+`app/sms/providers/telnyx_lookup.py` instead. The registry it has to be
+registered in is `PROVIDERS` in `app/sms/lookup.py`, and `app/sms/` may not
+import from `app.services` — that boundary is the one the gate's check 6
+enforces and the reason the SMS engine survived being moved between clients. A
+provider that only talks to a carrier is `app/sms/` work by that rule; the parts
+that need the database (the cache, the monthly spend cap, the "never spend on a
+number nobody will use" guard) stayed in `app/services/lookup_service.py`, which
+is where they were already.
+
+`agent/accept-P1.sh` is in the list because P1b **is** the ruling on RULES.md
+escalation item 7, and P1's check 8d asserted that no carrier lookup provider
+was registered. That assertion was right for P1 and wrong the moment this
+session shipped. Struck through in place with the old text quoted and the
+superseding session named, per RULES.md's rule about specs a later decision
+overtakes; what it was really protecting — that reaching the carrier takes a
+deliberate `.env` edit on a live box — is still asserted, on the default.
+
+**`PROSPECT_LOOKUP_MONTHLY_CAP` is new config, defaulting to $50.** Neither
+`.env` nor `.env.production` was touched, so production inherits the default and
+screening stays off until `PROSPECT_LOOKUP_PROVIDER=telnyx` is set by hand.
+That edit spends money on every scrape and is escalation item 6/7's territory,
+not an agent's.
 
 ### Still to brainstorm
 
