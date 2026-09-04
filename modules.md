@@ -36,9 +36,9 @@ client sending real campaigns.
 | 5f | **Short links & reporting** | Part A done 2026-08-31 · deploy pending | 5e | `app/models/short_link.py`, `app/models/campaign.py`, `app/models/sms_message.py`, `app/routers/links.py`, `app/routers/reports.py`, `app/routers/campaigns.py`, `app/routers/campaign_uploads.py`, `app/routers/pages.py`, `app/services/link_service.py`, `app/services/click_classifier.py`, `app/main.py`, `deployment/{nginx.conf.template,bootstrap.sh,deploy.sh}`, `.env.example`, `app/services/report_service.py`, `app/services/history_service.py`, `app/services/cost_reconciliation.py`, `app/services/message_render.py`, `app/services/preflight_totals.py`, `app/services/campaign_builder.py`, `app/services/campaign_service.py`, `app/services/campaign_topup.py`, `app/services/preflight_service.py`, `app/sms/base.py`, `app/sms/providers/{telnyx,console}.py`, `app/core/config.py`, `app/templates/{history,campaign-report,contact-history,campaigns,contacts,base}.html`, `app/templates/_composer-{link,script,upload}.html`, `scripts/cost_report.py`, `alembic/versions/`, `tests/` |
 | 5g | **Blocklist correctness** | Part A done 2026-08-26 · deploy pending | 5d | `app/sms/compliance.py`, `app/sms/phone.py`, `app/sms/providers/telnyx.py`, `app/routers/webhooks/telnyx.py`, `app/routers/webhooks/twilio.py`, `app/routers/webhooks/common.py`, `app/routers/pages.py`, `app/models/sms_message.py`, `app/models/blocked_number.py`, `app/services/blocklist_service.py`, `app/services/dashboard_service.py`, `app/services/monitoring_service.py`, `alembic/versions/`, `tests/` |
 | 5h | **Held-back rows & the capacity floor** | Part A done 2026-08-30 · deploy pending | 5e | `app/models/sms_message.py`, `app/services/campaign_builder.py`, `app/services/campaign_service.py`, `app/services/campaign_release.py`, `app/services/campaign_topup.py`, `app/routers/campaign_uploads.py`, `app/templates/_composer-upload.html`, `alembic/versions/`, `tests/` |
-| P1 | **Prospect pipeline** | Part A done 2026-08-31 · deploy pending | 5f | `app/models/{prospect,scrape}.py`, `app/models/__init__.py`, `app/sms/lookup.py`, `app/sources/prospect_base.py`, `app/sources/__init__.py`, `app/services/{prospect_service,prospect_queue,prospect_scoring,lookup_service,scrape_runner,link_service}.py`, `app/routers/prospects.py`, `app/routers/pages.py`, `app/templates/{prospects,base}.html`, `app/core/config.py`, `app/main.py`, `alembic/versions/`, `tests/`, `agent/{accept-P1.sh,mutate-P1.py}` |
-| P1b | **Lookup provider & gate flake** | Part A done 2026-08-31 · deploy pending | P1 | `app/sms/providers/telnyx_lookup.py`, `app/sms/lookup.py`, `app/services/lookup_service.py`, `app/core/config.py`, `.env.example`, `docs/API.md`, `CLAUDE.md`, `tests/{test_lookup_provider,test_wholesale_scan,_wholesale_scan}.py`, `tests/fixtures/number_lookup_responses.json`, `tests/{test_campaign_reports,test_whitelabel,test_campaign_preflight,test_capacity_rounding,test_degraded_send_path,test_prospect_review,test_prospect_pipeline}.py`, `agent/{accept-P1b.sh,mutate-P1b.py,accept-P1.sh}` |
-| P2 | **Google Places source** | After P1 | P1 | `app/sources/google_places.py`, taxonomy config, `tests/` |
+| P1 | **Prospect pipeline** | Done · deployed 2026-09-01 | 5f | `app/models/{prospect,scrape}.py`, `app/models/__init__.py`, `app/sms/lookup.py`, `app/sources/prospect_base.py`, `app/sources/__init__.py`, `app/services/{prospect_service,prospect_queue,prospect_scoring,lookup_service,scrape_runner,link_service}.py`, `app/routers/prospects.py`, `app/routers/pages.py`, `app/templates/{prospects,base}.html`, `app/core/config.py`, `app/main.py`, `alembic/versions/`, `tests/`, `agent/{accept-P1.sh,mutate-P1.py}` |
+| P1b | **Lookup provider & gate flake** | Done · deployed 2026-09-01 | P1 | `app/sms/providers/telnyx_lookup.py`, `app/sms/lookup.py`, `app/services/lookup_service.py`, `app/core/config.py`, `.env.example`, `docs/API.md`, `CLAUDE.md`, `tests/{test_lookup_provider,test_wholesale_scan,_wholesale_scan}.py`, `tests/fixtures/number_lookup_responses.json`, `tests/{test_campaign_reports,test_whitelabel,test_campaign_preflight,test_capacity_rounding,test_degraded_send_path,test_prospect_review,test_prospect_pipeline}.py`, `agent/{accept-P1b.sh,mutate-P1b.py,accept-P1.sh}` |
+| P2 | **Google Places source** | Specced · next | P1b | `app/sources/google_places.py`, `app/sources/taxonomy.py`, `app/core/config.py`, `agent/mutate-{1,5d,5f,P1}.py`, `tests/` |
 | P3 | **Registries, marketplaces & enrichment** | After P2 | P1 | `app/sources/dbpr.py`, `app/sources/sunbiz.py`, `tests/` |
 
 **That's the launch — six sessions, but only four waves. See "Parallel plan" below.**
@@ -695,3 +695,39 @@ not an agent's.
 
 **Data streams for A4A** — what recurring sources of *buyers* exist. Deferred with the
 prospecting engine; now the next design conversation, not a build item yet.
+
+---
+
+## Requested 2026-09-04 — retire the category model for named lists
+
+Jordan's dad prefers how the Williamson build (wagmarketingbot.com) handles lists: **one
+flat dropdown of past lists, each titled by the campaign that first used it**, newest
+first, with `⭐ ALL BIDDERS — MAIN LIST` pinned at the top. No industry sections. You either
+upload a fresh list or pick one you used before.
+
+This retires the five-category model — Food Service, Equipment & Machinery, Estates,
+Memorabilia, General Merchandise — that the entire build originally existed to serve.
+
+**The trigger was real.** His dad asked where to put the list for a yacht auction, and the
+honest answer was that none of the five categories fit. A sixth would have had no colour
+left: the palette is validated at four hues plus neutral and is already full.
+
+### Most of this is already done
+
+Session 5e made the category optional and made upload-per-campaign the primary flow, and
+`contact_lists` / `audience = "list:<id>"` have existed since the skeleton. What remains is
+largely presentation:
+
+- Remove the category picker from the audience selector
+- Present a flat recency-sorted list of named lists, ALL BIDDERS pinned
+- Decide the fate of the Contacts page category tabs and the five dashboard category cards
+
+### The open question — ask Jordan before speccing
+
+**Hidden but retained, or removed entirely?**
+
+Retaining them underneath keeps cross-campaign rollups possible later ("how do estate
+buyers perform against memorabilia"), at the cost of a concept still in the schema that
+nobody sees. Removing them is simpler and matches how the product is actually used.
+
+Not a decision to take on his behalf — it forecloses a reporting axis.
