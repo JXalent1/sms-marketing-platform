@@ -37,9 +37,10 @@ client sending real campaigns.
 | 5g | **Blocklist correctness** | Part A done 2026-08-26 · deploy pending | 5d | `app/sms/compliance.py`, `app/sms/phone.py`, `app/sms/providers/telnyx.py`, `app/routers/webhooks/telnyx.py`, `app/routers/webhooks/twilio.py`, `app/routers/webhooks/common.py`, `app/routers/pages.py`, `app/models/sms_message.py`, `app/models/blocked_number.py`, `app/services/blocklist_service.py`, `app/services/dashboard_service.py`, `app/services/monitoring_service.py`, `alembic/versions/`, `tests/` |
 | 5h | **Held-back rows & the capacity floor** | Part A done 2026-08-30 · deploy pending | 5e | `app/models/sms_message.py`, `app/services/campaign_builder.py`, `app/services/campaign_service.py`, `app/services/campaign_release.py`, `app/services/campaign_topup.py`, `app/routers/campaign_uploads.py`, `app/templates/_composer-upload.html`, `alembic/versions/`, `tests/` |
 | 5i | **Named lists replace categories** | Part A done 2026-09-04 · deploy pending | 5h, P1b | `app/models/{contact_list,sms_message}.py`, `app/services/{contact_service,dashboard_service,campaign_builder,campaign_service,import_service,report_service,history_service}.py`, `app/routers/{campaigns,contacts,dashboard,imports}.py`, `app/templates/{campaigns,contacts,today}.html`, `app/templates/_composer-{script,upload}.html`, `alembic/versions/`, `tests/`, `agent/{accept-5i.sh,mutate-5i.py}` |
+| 5j | **Index migration, cost guard & list archive/rename** | Specced · next | 5i | `app/models/{contact_list,sms_message}.py`, `app/services/{contact_service,dashboard_service}.py`, `app/routers/contacts.py`, `app/templates/{campaigns}.html`, `app/templates/_composer-{lists,script}.html`, `alembic/versions/`, `tests/`, `agent/{accept-5j.sh,mutate-5j.py}` |
 | P1 | **Prospect pipeline** | Done · deployed 2026-09-01 | 5f | `app/models/{prospect,scrape}.py`, `app/models/__init__.py`, `app/sms/lookup.py`, `app/sources/prospect_base.py`, `app/sources/__init__.py`, `app/services/{prospect_service,prospect_queue,prospect_scoring,lookup_service,scrape_runner,link_service}.py`, `app/routers/prospects.py`, `app/routers/pages.py`, `app/templates/{prospects,base}.html`, `app/core/config.py`, `app/main.py`, `alembic/versions/`, `tests/`, `agent/{accept-P1.sh,mutate-P1.py}` |
 | P1b | **Lookup provider & gate flake** | Done · deployed 2026-09-01 | P1 | `app/sms/providers/telnyx_lookup.py`, `app/sms/lookup.py`, `app/services/lookup_service.py`, `app/core/config.py`, `.env.example`, `docs/API.md`, `CLAUDE.md`, `tests/{test_lookup_provider,test_wholesale_scan,_wholesale_scan}.py`, `tests/fixtures/number_lookup_responses.json`, `tests/{test_campaign_reports,test_whitelabel,test_campaign_preflight,test_capacity_rounding,test_degraded_send_path,test_prospect_review,test_prospect_pipeline}.py`, `agent/{accept-P1b.sh,mutate-P1b.py,accept-P1.sh}` |
-| P2 | **Google Places source** | Specced · next | P1b | `app/sources/google_places.py`, `app/sources/taxonomy.py`, `app/core/config.py`, `agent/mutate-{1,5d,5f,P1}.py`, `tests/` |
+| P2 | **Google Places source** | Specced · after 5j | P1b | `app/sources/google_places.py`, `app/sources/taxonomy.py`, `app/core/config.py`, `agent/mutate-{1,5d,5f,P1}.py`, `tests/` |
 | P3 | **Registries, marketplaces & enrichment** | After P2 | P1 | `app/sources/dbpr.py`, `app/sources/sunbiz.py`, `tests/` |
 
 **That's the launch — six sessions, but only four waves. See "Parallel plan" below.**
@@ -803,7 +804,7 @@ the Python-side default on `contact_list.created_at` described below.
 
 ### 5j — the index migration, the archive/rename controls
 
-**Written up but not yet specced. It is the next session, ahead of P2.**
+**Specced 2026-09-04: `sessions/session-5j.md`. Not yet run. It is the next session, ahead of P2.**
 
 Two things forced it into existence on deploy day, and they belong together because both
 are about the list picker being the product now rather than a corner of it.
