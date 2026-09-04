@@ -36,9 +36,10 @@ client sending real campaigns.
 | 5f | **Short links & reporting** | Part A done 2026-08-31 · deploy pending | 5e | `app/models/short_link.py`, `app/models/campaign.py`, `app/models/sms_message.py`, `app/routers/links.py`, `app/routers/reports.py`, `app/routers/campaigns.py`, `app/routers/campaign_uploads.py`, `app/routers/pages.py`, `app/services/link_service.py`, `app/services/click_classifier.py`, `app/main.py`, `deployment/{nginx.conf.template,bootstrap.sh,deploy.sh}`, `.env.example`, `app/services/report_service.py`, `app/services/history_service.py`, `app/services/cost_reconciliation.py`, `app/services/message_render.py`, `app/services/preflight_totals.py`, `app/services/campaign_builder.py`, `app/services/campaign_service.py`, `app/services/campaign_topup.py`, `app/services/preflight_service.py`, `app/sms/base.py`, `app/sms/providers/{telnyx,console}.py`, `app/core/config.py`, `app/templates/{history,campaign-report,contact-history,campaigns,contacts,base}.html`, `app/templates/_composer-{link,script,upload}.html`, `scripts/cost_report.py`, `alembic/versions/`, `tests/` |
 | 5g | **Blocklist correctness** | Part A done 2026-08-26 · deploy pending | 5d | `app/sms/compliance.py`, `app/sms/phone.py`, `app/sms/providers/telnyx.py`, `app/routers/webhooks/telnyx.py`, `app/routers/webhooks/twilio.py`, `app/routers/webhooks/common.py`, `app/routers/pages.py`, `app/models/sms_message.py`, `app/models/blocked_number.py`, `app/services/blocklist_service.py`, `app/services/dashboard_service.py`, `app/services/monitoring_service.py`, `alembic/versions/`, `tests/` |
 | 5h | **Held-back rows & the capacity floor** | Part A done 2026-08-30 · deploy pending | 5e | `app/models/sms_message.py`, `app/services/campaign_builder.py`, `app/services/campaign_service.py`, `app/services/campaign_release.py`, `app/services/campaign_topup.py`, `app/routers/campaign_uploads.py`, `app/templates/_composer-upload.html`, `alembic/versions/`, `tests/` |
+| 5i | **Named lists replace categories** | Specced · next | 5h, P1b | `app/models/{contact_list,sms_message}.py`, `app/services/{contact_service,dashboard_service,campaign_builder,report_service,history_service}.py`, `app/routers/{campaigns,contacts,dashboard}.py`, `app/templates/{campaigns,contacts,today}.html`, `app/templates/_composer-{script,upload}.html`, `alembic/versions/`, `tests/`, `agent/{accept-5i.sh,mutate-5i.py}` |
 | P1 | **Prospect pipeline** | Done · deployed 2026-09-01 | 5f | `app/models/{prospect,scrape}.py`, `app/models/__init__.py`, `app/sms/lookup.py`, `app/sources/prospect_base.py`, `app/sources/__init__.py`, `app/services/{prospect_service,prospect_queue,prospect_scoring,lookup_service,scrape_runner,link_service}.py`, `app/routers/prospects.py`, `app/routers/pages.py`, `app/templates/{prospects,base}.html`, `app/core/config.py`, `app/main.py`, `alembic/versions/`, `tests/`, `agent/{accept-P1.sh,mutate-P1.py}` |
 | P1b | **Lookup provider & gate flake** | Done · deployed 2026-09-01 | P1 | `app/sms/providers/telnyx_lookup.py`, `app/sms/lookup.py`, `app/services/lookup_service.py`, `app/core/config.py`, `.env.example`, `docs/API.md`, `CLAUDE.md`, `tests/{test_lookup_provider,test_wholesale_scan,_wholesale_scan}.py`, `tests/fixtures/number_lookup_responses.json`, `tests/{test_campaign_reports,test_whitelabel,test_campaign_preflight,test_capacity_rounding,test_degraded_send_path,test_prospect_review,test_prospect_pipeline}.py`, `agent/{accept-P1b.sh,mutate-P1b.py,accept-P1.sh}` |
-| P2 | **Google Places source** | Specced · next | P1b | `app/sources/google_places.py`, `app/sources/taxonomy.py`, `app/core/config.py`, `agent/mutate-{1,5d,5f,P1}.py`, `tests/` |
+| P2 | **Google Places source** | Specced · parallel-safe with 5i | P1b | `app/sources/google_places.py`, `app/sources/taxonomy.py`, `app/core/config.py`, `agent/mutate-{1,5d,5f,P1}.py`, `tests/` |
 | P3 | **Registries, marketplaces & enrichment** | After P2 | P1 | `app/sources/dbpr.py`, `app/sources/sunbiz.py`, `tests/` |
 
 **That's the launch — six sessions, but only four waves. See "Parallel plan" below.**
@@ -722,12 +723,47 @@ largely presentation:
 - Present a flat recency-sorted list of named lists, ALL BIDDERS pinned
 - Decide the fate of the Contacts page category tabs and the five dashboard category cards
 
-### The open question — ask Jordan before speccing
+### Decided 2026-09-04 (Jordan)
 
-**Hidden but retained, or removed entirely?**
+**Hidden but retained.** Every category surface comes off the client's screens; nothing
+comes out of the schema. `categories`, `contact_categories`, `contact_lists.category_id`,
+`campaigns.category_id`, `campaigns.cross_category_override` and the `--s1`..`--s4`
+palette variables all stay.
 
-Retaining them underneath keeps cross-campaign rollups possible later ("how do estate
-buyers perform against memorabilia"), at the cost of a concept still in the schema that
-nobody sees. Removing them is simpler and matches how the product is actually used.
+Three reasons it is retention and not a compromise:
 
-Not a decision to take on his behalf — it forecloses a reporting axis.
+1. **Prospecting is keyed on categories.** `prospect_scoring.py`, `prospect_service.py`,
+   `prospect_base.py` and the five per-category radius settings in `core/config.py` are
+   P2's taxonomy. Removal is not a UI change — it is a redesign of a specced module.
+2. **Historical campaigns store `category:<slug>` selectors**, and `audience_label()`
+   renders them in campaign history and every per-campaign report. Deleting the
+   resolution path breaks every report older than this session.
+3. It keeps the cross-campaign reporting axis open at the cost of a comment.
+
+**The dashboard's five category cards become recent-list cards** — the pinned
+`⭐ ALL BIDDERS — MAIN LIST` first, then the five most recent lists, each showing its
+contact count and days since it was last actually texted. The em-dash rule for a list
+never texted is carried over verbatim.
+
+**The prospect review queue keeps its category** and still requires one to promote. That
+is the taxonomy, not the list model, and it is stated in the spec so a later session does
+not tidy it away.
+
+### The defect this surfaced
+
+`contact_lists.created_at` has two writers keeping two clocks — the same shape as
+`contact_list_members.added_at` in `CLAUDE.md`. `contact_service.py:90` omits the column
+and gets SQLite's `CURRENT_TIMESTAMP` (**UTC**, space-separated); `import_service.py:247`
+writes `datetime.now().isoformat()` (**local**, `T`-separated). Both spellings are in the
+live database. Nothing compared these rows until now; 5i makes recency the sort order of
+the picker, so the error becomes visible and is one-directional — every server-defaulted
+row reads up to five hours newer than it is.
+
+Fixed in 5i A1: one writer, a normalising migration classified by spelling (the two
+writers are 1:1 with the two formats), and ordering by a parsed value rather than a
+string.
+
+### The session
+
+`sessions/session-5i.md`, written 2026-09-04, not yet run. Its file set is disjoint from
+P2's, so the two can run in parallel.
