@@ -1,26 +1,26 @@
-"""Category-first CSV import API: preview → commit → undo.
+"""CSV import API: preview → commit → undo.
 
-Separate from `/api/contacts/import`, which is the skeleton's uncategorised
-import and stays as it is for now. This is the flow the client actually uses:
-he picks tonight's niche first, sees what the file will do, then commits.
+Separate from `/api/contacts/import`, which is the skeleton's flow and answers
+400 with a pointer here. This is the standalone Contacts-screen import: it
+produces a named list and no campaign, and the campaign-first upload
+(`POST /api/campaigns/from-upload`) is the other way in.
 
-`category_id` is a required form field on both preview and commit. Making it
-optional here would put the "which category?" decision in the UI's hands, and a
-missing category is exactly the mistake that silently produces an untagged
-audience nobody can safely text.
+**A category is no longer required, and the reason is a product change rather
+than a loosening.** Until 5i this route called `import_service.require_category()`
+and refused an untagged upload, on the grounds that a pile of contacts nobody
+had tagged was a pile nobody could safely text. 5i replaced the tag with the
+thing that was actually carrying the meaning: the import lands in a **named
+list**, the client names it, and that list is what a campaign points at. An
+import with a list name is not untagged — it is named, which is strictly more
+than a category ever told anyone.
 
-That is still true *here* after 5e A2 made the category optional in the service.
-This is the standalone Contacts-screen import: it produces a pile of contacts and
-no campaign, so an untagged one is a pile nobody can safely text. The campaign
-upload flow (`POST /api/campaigns/from-upload`) is the case A2 opened up, because
-there the list it creates is the campaign's entire audience — the targeting is the
-list, not a category. Both routes call the same importer; they differ only in
-whether a category is required of the caller, and each says why.
+`list_name` is optional on the wire and the importer falls back to a dated name
+(`import_service.batch_list_name()`), because a name that collides or is left
+blank must not lose the file. The Contacts screen requires one of the client
+before it posts, which is a different question from what this endpoint accepts.
 
-`require_category()` is called explicitly rather than left to FastAPI's required
-form field. A 422 with a validation blob is not the sentence anyone should read
-for this, and the service is where the rule has to hold for a caller that is not
-HTTP.
+`category_id` is still accepted. Nothing in the UI sends one, and the taxonomy
+it writes into is retained for prospecting — see `sessions/session-5i.md` A8.
 """
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
@@ -42,7 +42,6 @@ async def preview_import(file: UploadFile = File(...),
                          db: Session = Depends(get_db),
                          user: str = Depends(require_auth)):
     try:
-        import_service.require_category(db, category_id)
         return import_service.preview(db, await file.read(), category_id)
     except LookupError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -53,11 +52,12 @@ async def preview_import(file: UploadFile = File(...),
 @router.post("/commit")
 async def commit_import(file: UploadFile = File(...),
                         category_id: Optional[int] = Form(None),
+                        list_name: Optional[str] = Form(None),
                         db: Session = Depends(get_db),
                         user: str = Depends(require_auth)):
     try:
-        import_service.require_category(db, category_id)
-        result = import_service.commit(db, await file.read(), category_id)
+        result = import_service.commit(db, await file.read(), category_id,
+                                       list_name=list_name)
     except LookupError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except ValueError as e:

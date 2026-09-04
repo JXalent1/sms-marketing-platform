@@ -1,7 +1,14 @@
 """Contacts and lists API.
 
-CSV import is NOT here any more. The category-first flow in routers/imports.py
-is the only supported path — see the note on the retired endpoints below.
+CSV import is NOT here any more. `routers/imports.py` is the only supported
+path — see the note on the retired endpoints below.
+
+**The category endpoints below are retained and have no caller in the UI.**
+Session 5i took every category surface off the client's screens without taking
+anything out of the schema: `/api/contacts/categories` and the two bulk routes
+still work, still do what they say, and nothing in `contacts.html` calls them.
+Deleting them is schema-adjacent and 5i deliberately did not do it — the
+taxonomy they write into is what the prospecting pipeline is keyed on.
 """
 
 import csv
@@ -29,9 +36,8 @@ router = APIRouter(prefix="/api/contacts", tags=["contacts"])
 # replacement rather than 404ing, because "gone" without "go here instead" is
 # how an integration gets rebuilt against the wrong flow a second time.
 IMPORT_RETIRED = (
-    "Uncategorised import has been withdrawn. Every import is tagged with a "
-    "category at upload time: POST /api/imports/preview then "
-    "/api/imports/commit, both with a category_id."
+    "This import endpoint has been withdrawn. Every import now lands in a named "
+    "list: POST /api/imports/preview then /api/imports/commit, with a list_name."
 )
 
 
@@ -198,14 +204,14 @@ async def bulk_remove_category(payload: BulkCategoryRequest, db: Session = Depen
         raise HTTPException(status_code=404, detail=str(e))
 
 
-# ─── Retired: uncategorised import ──────────────────────────────────────────
+# ─── Retired: the skeleton's import ─────────────────────────────────────────
 #
-# These were the skeleton's original flow and they accepted an upload with no
-# category. That is precisely the mistake the category work exists to make
-# impossible: an untagged block of contacts is one nobody can safely text, and
-# it is invisible until the day a Memorabilia collector is sent an ad for a
-# walk-in cooler. They answer 400 rather than being deleted outright so an
-# older client or a bookmarked script is told where the flow went.
+# These were the skeleton's original flow and they produced a block of contacts
+# belonging to nothing — no tag under module 2's model, and no named list under
+# 5i's. Either way it is a block nobody can safely text, and it is invisible
+# until the day a memorabilia collector is sent an ad for a walk-in cooler. They
+# answer 400 rather than being deleted outright so an older client or a
+# bookmarked script is told where the flow went.
 
 @router.post("/import/preview")
 async def preview_import_retired(user: str = Depends(require_auth)):

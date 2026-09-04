@@ -52,6 +52,23 @@ MESSAGE_STATUSES = (
 )
 BILLABLE_STATUSES = ("sent", "delivered")
 
+# What counts as "this reached a handset" on every screen that reports freshness
+# or delivery: the dashboard's days-since-last-send, the campaign report's
+# delivered figure, and the per-list recency the composer's picker is sorted by.
+#
+# Deliberately NOT `BILLABLE_STATUSES`, even though the two sets are identical
+# today. "Did this reach a handset?" and "do we invoice for this?" are separate
+# questions that happen to share an answer; binding them together means a
+# commercial change to the billable set would silently rewrite the freshness
+# figures the client schedules his auctions against.
+#
+# It lives here, beside the set it must not become, because it was defined
+# independently in `dashboard_service` and again in `report_service` — and
+# session 5i would have made it three. Two definitions of one rule is how two
+# screens come to disagree about what "texted" means. Do not assert its contents
+# in a test; assert that the screens reading it agree.
+SENT_STATUSES = ("sent", "delivered")
+
 # The one spelling of the held-back status. Two services write it and a third
 # reads it back to release it; a literal in each is how the top-up ends up
 # looking for rows nothing writes. Deliberately outside BILLABLE_STATUSES —

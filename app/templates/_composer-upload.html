@@ -39,7 +39,7 @@ function resetSummary() {
         .forEach(id => { el(id).textContent = '0'; });
     el('sumCost').textContent = '—';
     el('sumSuppressedNote').classList.add('hidden');
-    el('sumCategory').textContent = '—';
+    el('sumAudience').textContent = '—';
 }
 
 document.querySelectorAll('.audience-mode').forEach(tab => {
@@ -48,13 +48,15 @@ document.querySelectorAll('.audience-mode').forEach(tab => {
 
 // ─── Checking the file before committing to it ──────────────────────────────
 
+// The file and nothing else. The upload used to carry an optional tag for
+// later roll-ups; 5i took that control off the screen, so this path now sends
+// no tag at all rather than sending an empty one. The list the upload creates
+// is the campaign's whole audience, which is the record of who it was for.
 function uploadPayload() {
     const file = el('uploadFile').files[0];
     if (!file) { showToast('Choose a CSV file first', 'error'); return null; }
     const form = new FormData();
     form.append('file', file);
-    const category = el('uploadCategory').value;
-    if (category) { form.append('category_id', category); }
     return form;
 }
 
@@ -84,7 +86,7 @@ function paintUploadCounts(d) {
         `${willReach.toLocaleString()} of ${(d.rows || 0).toLocaleString()} rows can be texted.</p>` +
         `<p class="mt-1">` +
         `${(d.new_contacts || 0).toLocaleString()} new · ` +
-        `${((d.existing_contacts || 0) + (d.already_in_category || 0)).toLocaleString()} already on your list · ` +
+        `${(d.existing_contacts || 0).toLocaleString()} already on your list · ` +
         `${(d.duplicates || 0).toLocaleString()} repeated in the file · ` +
         `${(d.unusable || 0).toLocaleString()} without a usable number` +
         `</p>` +
@@ -92,11 +94,17 @@ function paintUploadCounts(d) {
             ? `<p class="mt-1 text-warn-ink">${d.opted_out.toLocaleString()} ` +
               `${d.opted_out === 1 ? 'number has' : 'numbers have'} opted out and will be skipped.</p>`
             : '') +
-        (d.category_label
-            ? `<p class="mt-1 text-ink-3">Tagging as ${esc(d.category_label)}.</p>`
-            : `<p class="mt-1 text-ink-3">No category tag. The list itself is this campaign's audience.</p>`);
+        `<p class="mt-1 text-ink-3">The list this creates is this campaign's audience.</p>`;
     box.classList.remove('hidden');
 }
+
+// "Already on your list" used to add a second bucket to this figure — the one
+// the importer fills for a number already carrying the tag an upload is
+// applying. This path stopped sending a tag in 5i, so that bucket is now 0 by
+// construction and summing it in would be arithmetic over a term that cannot
+// exist. `import_service._analyze()` states the identity these figures
+// partition; if a tag ever returns to this path, the missing term returns with
+// it and this line is where it goes.
 
 el('uploadFile').addEventListener('change', () => {
     el('uploadCounts').classList.add('hidden');

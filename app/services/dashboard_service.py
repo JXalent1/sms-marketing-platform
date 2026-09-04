@@ -11,7 +11,7 @@ Two rules this file exists to hold:
   1. **Freshness comes from actual sends, never from a campaign's audience
      string.** A campaign row records who it *meant* to text; `sms_messages`
      records who was actually texted. The message table stays correct when a
-     campaign targets a union of two categories, when a send was aborted
+     campaign targets a union of two lists, when a send was aborted
      half-way, and when someone edits a saved selector afterwards — and it needs
      nothing from the campaign schema, which is being extended in a parallel
      session.
@@ -29,21 +29,17 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.models.campaign import Campaign
 from app.models.blocked_number import BlockedNumber
-from app.models.category import Category, ContactCategory
-from app.models.contact import Contact
-from app.models.sms_message import SMSMessage
+from app.models.contact_list import ContactListMember
+from app.models.sms_message import SENT_STATUSES, SMSMessage
 from app.services import billing_service, blocklist_service, contact_service
 
-# What counts as "this category has been texted".
-#
-# Deliberately not imported from BILLABLE_STATUSES even though the two sets are
-# identical today. "Did this reach a handset?" and "do we invoice for this?" are
-# separate questions that happen to share an answer; binding them together means
-# a commercial change to the billable set would silently rewrite the freshness
-# figures the client schedules his auctions against.
-SENT_STATUSES = ("sent", "delivered")
+# `SENT_STATUSES` — what counts as "these people have been texted" — is imported
+# from the model rather than defined here. It was defined independently here and
+# in `report_service`, and session 5i's per-list freshness query in
+# `contact_service` would have made it three. The reasoning for keeping it apart
+# from `BILLABLE_STATUSES` moved with it; read it there before binding them.
 
-# Outcome buckets for the per-category bars. 'sent' is deliberately absent:
+# Outcome buckets for the per-list bars. 'sent' is deliberately absent:
 # it means the carrier accepted the message and has not yet reported back, so
 # counting it as delivered would show 100% delivered for a campaign whose
 # receipts have not landed. Those are surfaced as "awaiting receipt" instead.
@@ -64,105 +60,94 @@ def _today() -> date:
 def _days_since(iso: Optional[str], today: date = None) -> Optional[int]:
     """Whole days between an ISO timestamp and today. None when never.
 
-    None and 0 are opposite facts — "never texted" and "texted this morning" —
-    so this never collapses one into the other.
+    Delegates rather than implements. `contact_service.list_summaries()` reports
+    the same figure for the picker, and this screen and that one must not be
+    able to disagree about how old the same send is — the same argument that
+    made `preflight_service._clock()` delegate to `suppression_service`.
     """
-    if not iso:
-        return None
-    try:
-        when = date.fromisoformat(str(iso)[:10])
-    except ValueError:
-        return None
-    return max(0, ((today or _today()) - when).days)
+    return contact_service.days_since(iso, today or _today())
 
 
 def _iso_days_ago(days: int) -> str:
     return (_today() - timedelta(days=days)).isoformat()
 
 
-# ─── Category cards ─────────────────────────────────────────────────────────
+# ─── List cards ─────────────────────────────────────────────────────────────
 
-def _last_sent_by_category(db: Session) -> dict:
-    """category_id -> most recent send timestamp. One grouped query.
+# How many list cards the grid shows, after the pinned one. Five, because the
+# grid was built for five and a dashboard that grows without bound stops being a
+# dashboard. The picker in the composer is not capped — it is a dropdown, and
+# every list he has ever used belongs in it.
+RECENT_LIST_CARDS = 5
 
-    Joins messages to the tagging table rather than to the campaign, so a
-    campaign that targeted two categories refreshes both.
+
+def _card(entry: dict, threshold: int) -> dict:
+    """One `list_summaries()` entry as a card the template can draw.
+
+    `days_label` is what the template prints, and the em-dash rule is the reason
+    this function exists rather than the template deciding: a list that has never
+    been texted shows an em dash, **not a zero**. "0" reads as "texted today",
+    which is the exact opposite of the truth, and under the old category cards
+    that is what kept a whole niche from ever being picked.
+
+    No swatch and no colour token. There is no palette token on a list, and
+    colour was never the identity channel here anyway — the label was.
     """
-    rows = (db.query(ContactCategory.category_id, func.max(SMSMessage.sent_at))
-            .join(SMSMessage, SMSMessage.contact_id == ContactCategory.contact_id)
-            .filter(SMSMessage.status.in_(SENT_STATUSES),
-                    SMSMessage.sent_at.isnot(None))
-            .group_by(ContactCategory.category_id)
-            .all())
-    return {category_id: last for category_id, last in rows if last}
+    days = entry["days_since_sent"]
+    return {
+        "selector": entry["selector"],
+        "label": entry["label"],
+        "kind": entry["kind"],
+        "contacts": entry["count"],
+        "last_sent_at": entry["last_sent_at"],
+        "days_since_last_send": days,
+        "days_label": "—" if days is None else str(days),
+        "days_caption": "never texted" if days is None
+                        else ("today" if days == 0
+                              else ("day ago" if days == 1 else "days ago")),
+        "stale": days is not None and days > threshold,
+    }
 
 
-def _contacts_by_category(db: Session) -> dict:
-    """category_id -> active contacts carrying it. One grouped query."""
-    rows = (db.query(ContactCategory.category_id, func.count(Contact.id))
-            .join(Contact, Contact.id == ContactCategory.contact_id)
-            .filter(Contact.is_active == 1)
-            .group_by(ContactCategory.category_id)
-            .all())
-    return dict(rows)
+def list_cards(db: Session) -> List[dict]:
+    """The pinned entry, then the five most recent lists.
 
+    Session 5i replaced the five category cards with these. Same card shape,
+    same grid, same staleness threshold and the same em-dash rule — what changed
+    is what a card is *about*, because the client's question is "when did I last
+    text these people", and after 5i "these people" is a named list rather than
+    one of five niches that never fitted a yacht auction.
 
-def category_cards(db: Session) -> List[dict]:
-    """One card per active category, in sort_order.
-
-    `days_label` is what the template prints. A category that has never been
-    texted shows an em dash, not a zero: "0" reads as "texted today", which is
-    the opposite of the truth and would keep a whole niche from ever being
-    picked.
+    Built from `contact_service.list_summaries()` rather than from a second
+    query, so the card and the dropdown entry for the same list cannot report
+    different counts or different freshness. That ordering — newest first, by a
+    parsed `created_at` — is the picker's, and it is the whole reason A1 had to
+    land first.
     """
-    today = _today()
-    last_sent = _last_sent_by_category(db)
-    counts = _contacts_by_category(db)
     threshold = settings.DASHBOARD_STALE_DAYS
+    entries = contact_service.list_summaries(db)
 
-    cards = []
-    for row in (db.query(Category)
-                .filter(Category.is_active == 1)
-                .order_by(Category.sort_order, Category.label).all()):
-        days = _days_since(last_sent.get(row.id), today)
-        cards.append({
-            "id": row.id,
-            "slug": row.slug,
-            "label": row.label,
-            "color_token": row.color_token,
-            "contacts": counts.get(row.id, 0),
-            "last_sent_at": last_sent.get(row.id),
-            "days_since_last_send": days,
-            "days_label": "—" if days is None else str(days),
-            "days_caption": "never texted" if days is None
-                            else ("today" if days == 0
-                                  else ("day ago" if days == 1 else "days ago")),
-            "stale": days is not None and days > threshold,
-        })
-    return cards
+    pinned = [e for e in entries if e["kind"] == "all"]
+    lists = [e for e in entries if e["kind"] == "list"][:RECENT_LIST_CARDS]
+    return [_card(e, threshold) for e in pinned + lists]
 
 
 # ─── The hero ───────────────────────────────────────────────────────────────
 
-def _category_for_campaign(db: Session, campaign: Campaign,
-                           cards: List[dict]) -> Optional[dict]:
+def _list_for_campaign(db: Session, campaign: Campaign,
+                       cards: List[dict]) -> Optional[dict]:
     """The card this campaign is aimed at, or None.
 
-    Prefers `campaigns.category_id` when that column exists — a parallel session
-    is adding it — and otherwise reads the first category out of the audience
-    selector, which is how module 2 already stores the same fact.
+    Matched on the campaign's own audience selector, which is the record of what
+    it was pointed at. `list:47` finds the card for list 47; `all` finds the
+    pinned card. Anything else — a `category:` selector on a campaign predating
+    5i, a `source:` selector, a list that has fallen off the five most recent —
+    finds nothing, and the hero then prints an em dash rather than guessing. A
+    guessed figure here is indistinguishable from a measured one, and this is
+    the tile he schedules against.
     """
-    category_id = getattr(campaign, "category_id", None)
-    if category_id:
-        return next((c for c in cards if c["id"] == category_id), None)
-
-    selector = (campaign.audience or "")
-    for term in selector.replace("&", ",").split(","):
-        term = term.strip()
-        if term.startswith("category:"):
-            slug = term.split(":", 1)[1].split(",")[0].strip()
-            return next((c for c in cards if c["slug"] == slug), None)
-    return None
+    selector = (campaign.audience or "").strip()
+    return next((c for c in cards if c["selector"] == selector), None)
 
 
 def next_up(db: Session, cards: List[dict]) -> Optional[dict]:
@@ -194,13 +179,13 @@ def next_up(db: Session, cards: List[dict]) -> Optional[dict]:
     if campaign is None:
         return None
 
-    card = _category_for_campaign(db, campaign, cards)
+    card = _list_for_campaign(db, campaign, cards)
     try:
         audience = contact_service.audience_count(db, campaign.audience)
     except ValueError:
         # A saved selector with a typo in it. The hero says so rather than
         # showing a confident zero, which is indistinguishable from an empty
-        # category and is how a campaign gets "sent" to nobody.
+        # list and is how a campaign gets "sent" to nobody.
         audience = None
 
     return {
@@ -208,7 +193,7 @@ def next_up(db: Session, cards: List[dict]) -> Optional[dict]:
         "name": campaign.name,
         "status": campaign.status,
         "scheduled_at": getattr(campaign, "scheduled_at", None),
-        "category": card,
+        "list": card,
         "audience_selector": campaign.audience,
         "audience_label": contact_service.audience_label(db, campaign.audience),
         "audience_count": audience,
@@ -310,54 +295,70 @@ def segment_chart(db: Session, days: int = CHART_DAYS) -> dict:
     return {"bars": bars, "peak": peak, "total": sum(by_day.values()), "days": days}
 
 
-# ─── Per-category last-send outcomes ────────────────────────────────────────
+# ─── Per-list last-send outcomes ────────────────────────────────────────────
 
 def last_send_outcomes(db: Session, cards: List[dict], limit: int = 3) -> List[dict]:
-    """Delivered / failed / blocked for each category's most recent campaign.
+    """Delivered / failed / blocked for each list's most recent campaign.
 
     Scoped to one campaign rather than a date window because that is the
     question being asked — "how did the last blast to these people go?" — and
-    because a blocked message has no sent_at at all, so a window would silently
+    because a blocked message has no `sent_at` at all, so a window would silently
     drop exactly the outcome worth seeing.
+
+    Keyed on list membership since 5i, where it was keyed on category tags. Same
+    shape, same reasoning; a campaign that reached members of two lists shows
+    under both, exactly as one that targeted two categories used to.
+
+    The pinned "all" card is deliberately absent: every campaign reaches some of
+    "all bidders", so a row for it would be the most recent campaign restated
+    under a heading that says "by list", three times out of three.
     """
-    pairs = (db.query(ContactCategory.category_id, SMSMessage.campaign_id,
+    list_ids = [c["selector"].split(":", 1)[1] for c in cards
+                if c["kind"] == "list" and ":" in c["selector"]]
+    list_ids = [int(i) for i in list_ids]
+    if not list_ids:
+        return []
+
+    pairs = (db.query(ContactListMember.list_id, SMSMessage.campaign_id,
                       func.max(SMSMessage.sent_at))
-             .join(SMSMessage, SMSMessage.contact_id == ContactCategory.contact_id)
-             .filter(SMSMessage.status.in_(SENT_STATUSES),
+             .join(SMSMessage, SMSMessage.contact_id == ContactListMember.contact_id)
+             .filter(ContactListMember.list_id.in_(list_ids),
+                     SMSMessage.status.in_(SENT_STATUSES),
                      SMSMessage.sent_at.isnot(None),
                      SMSMessage.campaign_id.isnot(None))
-             .group_by(ContactCategory.category_id, SMSMessage.campaign_id)
+             .group_by(ContactListMember.list_id, SMSMessage.campaign_id)
              .all())
 
     latest = {}
-    for category_id, campaign_id, sent_at in pairs:
-        if category_id not in latest or sent_at > latest[category_id][1]:
-            latest[category_id] = (campaign_id, sent_at)
+    for list_id, campaign_id, sent_at in pairs:
+        if list_id not in latest or sent_at > latest[list_id][1]:
+            latest[list_id] = (campaign_id, sent_at)
 
     chosen = sorted(latest.items(), key=lambda kv: kv[1][1], reverse=True)[:limit]
     if not chosen:
         return []
 
-    by_card = {c["id"]: c for c in cards}
-    counts = (db.query(ContactCategory.category_id, SMSMessage.campaign_id,
+    by_card = {int(c["selector"].split(":", 1)[1]): c for c in cards
+               if c["kind"] == "list" and ":" in c["selector"]}
+    counts = (db.query(ContactListMember.list_id, SMSMessage.campaign_id,
                        SMSMessage.status, func.count(SMSMessage.id))
-              .join(SMSMessage, SMSMessage.contact_id == ContactCategory.contact_id)
-              .filter(ContactCategory.category_id.in_([c[0] for c in chosen]),
+              .join(SMSMessage, SMSMessage.contact_id == ContactListMember.contact_id)
+              .filter(ContactListMember.list_id.in_([c[0] for c in chosen]),
                       SMSMessage.campaign_id.in_([c[1][0] for c in chosen]))
-              .group_by(ContactCategory.category_id, SMSMessage.campaign_id,
+              .group_by(ContactListMember.list_id, SMSMessage.campaign_id,
                         SMSMessage.status)
               .all())
 
     tally = {}
-    for category_id, campaign_id, status, count in counts:
-        tally.setdefault((category_id, campaign_id), {})[status] = count
+    for list_id, campaign_id, status, count in counts:
+        tally.setdefault((list_id, campaign_id), {})[status] = count
 
     out = []
-    for category_id, (campaign_id, sent_at) in chosen:
-        card = by_card.get(category_id)
-        if card is None:                       # deactivated since it was texted
+    for list_id, (campaign_id, sent_at) in chosen:
+        card = by_card.get(list_id)
+        if card is None:                       # dropped off the card grid since
             continue
-        statuses = tally.get((category_id, campaign_id), {})
+        statuses = tally.get((list_id, campaign_id), {})
         total = sum(statuses.get(s, 0) for _, group in OUTCOME_BUCKETS for s in group)
         segments = []
         for name, group in OUTCOME_BUCKETS:
@@ -370,7 +371,7 @@ def last_send_outcomes(db: Session, cards: List[dict], limit: int = 3) -> List[d
                 "pct": round(count / total * 100) if total else 0,
             })
         out.append({
-            "category": card,
+            "list": card,
             "campaign_id": campaign_id,
             "sent_at": sent_at,
             "total": total,
@@ -383,10 +384,10 @@ def last_send_outcomes(db: Session, cards: List[dict], limit: int = 3) -> List[d
 # ─── The whole screen ───────────────────────────────────────────────────────
 
 def dashboard(db: Session) -> dict:
-    cards = category_cards(db)
+    cards = list_cards(db)
     return {
         "next_up": next_up(db, cards),
-        "categories": cards,
+        "lists": cards,
         "tiles": stat_tiles(db),
         "chart": segment_chart(db),
         "outcomes": last_send_outcomes(db, cards),

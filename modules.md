@@ -36,7 +36,7 @@ client sending real campaigns.
 | 5f | **Short links & reporting** | Part A done 2026-08-31 · deploy pending | 5e | `app/models/short_link.py`, `app/models/campaign.py`, `app/models/sms_message.py`, `app/routers/links.py`, `app/routers/reports.py`, `app/routers/campaigns.py`, `app/routers/campaign_uploads.py`, `app/routers/pages.py`, `app/services/link_service.py`, `app/services/click_classifier.py`, `app/main.py`, `deployment/{nginx.conf.template,bootstrap.sh,deploy.sh}`, `.env.example`, `app/services/report_service.py`, `app/services/history_service.py`, `app/services/cost_reconciliation.py`, `app/services/message_render.py`, `app/services/preflight_totals.py`, `app/services/campaign_builder.py`, `app/services/campaign_service.py`, `app/services/campaign_topup.py`, `app/services/preflight_service.py`, `app/sms/base.py`, `app/sms/providers/{telnyx,console}.py`, `app/core/config.py`, `app/templates/{history,campaign-report,contact-history,campaigns,contacts,base}.html`, `app/templates/_composer-{link,script,upload}.html`, `scripts/cost_report.py`, `alembic/versions/`, `tests/` |
 | 5g | **Blocklist correctness** | Part A done 2026-08-26 · deploy pending | 5d | `app/sms/compliance.py`, `app/sms/phone.py`, `app/sms/providers/telnyx.py`, `app/routers/webhooks/telnyx.py`, `app/routers/webhooks/twilio.py`, `app/routers/webhooks/common.py`, `app/routers/pages.py`, `app/models/sms_message.py`, `app/models/blocked_number.py`, `app/services/blocklist_service.py`, `app/services/dashboard_service.py`, `app/services/monitoring_service.py`, `alembic/versions/`, `tests/` |
 | 5h | **Held-back rows & the capacity floor** | Part A done 2026-08-30 · deploy pending | 5e | `app/models/sms_message.py`, `app/services/campaign_builder.py`, `app/services/campaign_service.py`, `app/services/campaign_release.py`, `app/services/campaign_topup.py`, `app/routers/campaign_uploads.py`, `app/templates/_composer-upload.html`, `alembic/versions/`, `tests/` |
-| 5i | **Named lists replace categories** | Specced · next | 5h, P1b | `app/models/{contact_list,sms_message}.py`, `app/services/{contact_service,dashboard_service,campaign_builder,report_service,history_service}.py`, `app/routers/{campaigns,contacts,dashboard}.py`, `app/templates/{campaigns,contacts,today}.html`, `app/templates/_composer-{script,upload}.html`, `alembic/versions/`, `tests/`, `agent/{accept-5i.sh,mutate-5i.py}` |
+| 5i | **Named lists replace categories** | Part A done 2026-09-04 · deploy pending | 5h, P1b | `app/models/{contact_list,sms_message}.py`, `app/services/{contact_service,dashboard_service,campaign_builder,campaign_service,import_service,report_service,history_service}.py`, `app/routers/{campaigns,contacts,dashboard,imports}.py`, `app/templates/{campaigns,contacts,today}.html`, `app/templates/_composer-{script,upload}.html`, `alembic/versions/`, `tests/`, `agent/{accept-5i.sh,mutate-5i.py}` |
 | P1 | **Prospect pipeline** | Done · deployed 2026-09-01 | 5f | `app/models/{prospect,scrape}.py`, `app/models/__init__.py`, `app/sms/lookup.py`, `app/sources/prospect_base.py`, `app/sources/__init__.py`, `app/services/{prospect_service,prospect_queue,prospect_scoring,lookup_service,scrape_runner,link_service}.py`, `app/routers/prospects.py`, `app/routers/pages.py`, `app/templates/{prospects,base}.html`, `app/core/config.py`, `app/main.py`, `alembic/versions/`, `tests/`, `agent/{accept-P1.sh,mutate-P1.py}` |
 | P1b | **Lookup provider & gate flake** | Done · deployed 2026-09-01 | P1 | `app/sms/providers/telnyx_lookup.py`, `app/sms/lookup.py`, `app/services/lookup_service.py`, `app/core/config.py`, `.env.example`, `docs/API.md`, `CLAUDE.md`, `tests/{test_lookup_provider,test_wholesale_scan,_wholesale_scan}.py`, `tests/fixtures/number_lookup_responses.json`, `tests/{test_campaign_reports,test_whitelabel,test_campaign_preflight,test_capacity_rounding,test_degraded_send_path,test_prospect_review,test_prospect_pipeline}.py`, `agent/{accept-P1b.sh,mutate-P1b.py,accept-P1.sh}` |
 | P2 | **Google Places source** | Specced · parallel-safe with 5i | P1b | `app/sources/google_places.py`, `app/sources/taxonomy.py`, `app/core/config.py`, `agent/mutate-{1,5d,5f,P1}.py`, `tests/` |
@@ -765,5 +765,37 @@ string.
 
 ### The session
 
-`sessions/session-5i.md`, written 2026-09-04, not yet run. Its file set is disjoint from
-P2's, so the two can run in parallel.
+`sessions/session-5i.md`, written 2026-09-04. **Part A ran and passed the same day** —
+`agent/accept-5i.sh` exits 0, the gate is green twice, and `agent/mutate-5i.py` reports
+16 mutations caught on a tree it verified pristine. 577 tests. Its file set is disjoint
+from P2's, so the two could still run in parallel.
+
+Four files outside the spec's list were edited, each forced by a requirement inside it
+and each recorded in `status.md`: `app/routers/imports.py` (A5's import cannot take a
+list name or commit untagged without it), `app/services/campaign_service.py` (the
+`resolve_category` wrapper would otherwise state a second, older version of the rule),
+`app/services/import_service.py` (a docstring naming callers that no longer exist) and
+the Python-side default on `contact_list.created_at` described below.
+
+**Three things the spec did not know, and one it could not have.**
+
+1. **The table's DDL still carries `DEFAULT (CURRENT_TIMESTAMP)`.** Removing
+   `server_default` from the *model* does not remove the old writer — an insert that
+   omits the column still gets a UTC value from SQLite. Dropping a column default there
+   means rebuilding the table, which is escalation item 8, so the model carries a
+   Python-side `default=now_iso` instead and `parse_created_at()` still understands the
+   space-separated spelling for the raw-`INSERT` path that can still reach it.
+2. **A7 as written cannot hold**, because other clauses of the same spec retain six
+   surfaces that name a category — the prospect queue (A8), the taxonomy CRUD it reads,
+   the contacts payload and export (`contact_query_service`, out of the file list), and
+   the two report screens (the file list puts `report_service`/`history_service` in
+   scope "for one reason only"). The sweep subtracts them with the retaining clause
+   written beside each, and a companion test fails when an exemption stops being needed.
+3. **"Point the freshness query at `BILLABLE_STATUSES`" is invisible to an identity
+   assertion** — the two literals are equal and CPython folds them to one object. The
+   test asserts the *binding* instead: change what "texted" means and the freshness
+   figure must follow.
+4. **Relaxing the category rule turned a malformed `list:` selector into a 500.** It
+   used to be refused by that rule; with the rule gone it reaches the resolver, whose
+   `ValueError` the router does not map. Now mapped to a 400 carrying the selector
+   grammar's own sentence.

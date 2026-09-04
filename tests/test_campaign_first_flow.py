@@ -230,21 +230,49 @@ def test_the_three_pre_existing_audience_paths_still_create_campaigns(db, select
         f"the {selector} path resolved to nobody — it is no longer a working path")
 
 
-def test_the_existing_path_still_demands_a_category_or_an_override(db):
-    """The third case is for uploads only, and is not a way round the rule.
+def test_the_ordinary_path_takes_a_list_audience_with_no_category(db):
+    """5i supersedes 5e's rule for this case, deliberately.
 
-    This is the assertion that stops `list_audience` becoming a flag somebody
-    passes to make an inconvenient error go away: the ordinary create path, with
-    an ordinary list audience, still refuses.
+    This test used to assert the opposite: that the ordinary create path with a
+    list audience still refused without a category, so `list_audience` could not
+    become a flag somebody passes to make an inconvenient error go away. That
+    was right while the composer still asked for a category. Session 5i took the
+    category picker off the screen, so a campaign pointed at a list has no
+    category to give and no way to type an override — and a rule nothing can
+    satisfy is not a guard, it is a dead end.
+
+    What did **not** change is asserted next door, in
+    `test_a_hand_written_category_selector_still_demands_a_category`: the rule
+    still holds for the one selector that names a niche instead of an audience.
     """
     _, imported = campaign_builder.create_campaign_from_upload(
         db, _render(db), name=f"{NAME_PREFIX}source for rule check",
         message_template=MESSAGE, content=default_csv(take(2)))
 
+    campaign = CampaignService(db).create_campaign(
+        name=f"{NAME_PREFIX}list audience no category", message_template=MESSAGE,
+        audience=f"list:{imported['list_id']}")
+
+    assert campaign.status == "draft"
+    assert campaign.category_id is None
+    # Both halves. Recording this as a cross-category override would put a
+    # decision nobody made into the audit trail — and since 5i there is no
+    # screen that can make it, so a 1 in that column would be a fiction.
+    assert not campaign.cross_category_override
+
+
+def test_a_hand_written_category_selector_still_demands_a_category(db):
+    """The one case 5i left the module-4 rule standing on.
+
+    No UI path can produce a `category:` selector any more, so a caller writing
+    one is doing something deliberate — and for that selector the audience
+    genuinely does not say which auction the message is about, which is the
+    whole content of the original rule.
+    """
     with pytest.raises(CampaignError, match="no category"):
         CampaignService(db).create_campaign(
-            name=f"{NAME_PREFIX}no category", message_template=MESSAGE,
-            audience=f"list:{imported['list_id']}")
+            name=f"{NAME_PREFIX}hand-written category selector",
+            message_template=MESSAGE, audience="category:food_service")
 
 
 # ─── A2: the category tag is optional ───────────────────────────────────────

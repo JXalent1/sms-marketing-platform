@@ -42,17 +42,18 @@ from app.models.campaign import Campaign
 from app.models.category import Category
 from app.models.short_link import ShortLink
 from app.models.sms_message import (
-    BILLABLE_STATUSES, HELD_BACK_STATUS, SMSMessage,
+    BILLABLE_STATUSES, HELD_BACK_STATUS, SENT_STATUSES, SMSMessage,
 )
 from app.services import billing_service
 
 logger = logging.getLogger("reports")
 
-# What "this message arrived" means on a report. Not BILLABLE_STATUSES, even
-# though the two overlap: a commercial change to what we invoice for must not
-# silently rewrite what the client is told about delivery. `dashboard_service`
-# makes the same separation for the same reason.
-SENT_STATUSES = ("sent", "delivered")
+# `SENT_STATUSES` — what "this message arrived" means on a report — is imported
+# above rather than defined here. It was defined independently here and in
+# `dashboard_service`, and session 5i's per-list freshness query would have made
+# it three. It lives in `app/models/sms_message.py` beside `BILLABLE_STATUSES`,
+# with the reasoning for keeping the two apart. `history_service` imports it
+# from the model too; it used to import this module's copy.
 
 
 def top_up_history(db: Session, campaign_ids: List[int]) -> dict:

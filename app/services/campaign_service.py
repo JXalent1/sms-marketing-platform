@@ -82,17 +82,17 @@ class CampaignService:
     # ─── Creation ───────────────────────────────────────────────────────────
 
     def resolve_category(self, category_id: Optional[int],
-                         cross_category_override: bool,
-                         list_audience: bool = False) -> Optional[Category]:
+                         cross_category_override: bool, list_audience: bool = False,
+                         audience: Optional[str] = None) -> Optional[Category]:
         """The category rule — see `campaign_builder.resolve_category()`.
 
-        Kept as a method because that is where the rule has been enforced since
-        module 4, and because "the rule lives in the service, not the router" is
-        the property a test pins. The rule itself did not move layers; it moved
-        file, and the delegation is what makes that true rather than claimed.
+        Kept as a method because "the rule lives in the service, not the router"
+        is the property a test pins. Every argument is a passthrough: a wrapper
+        whose signature is a subset of the rule it delegates to is a second,
+        quieter version of it, and which one you get depends on the name called.
         """
         return _resolve_category(self.db, category_id, cross_category_override,
-                                 list_audience)
+                                 list_audience, audience=audience)
 
     def create_campaign(self, name: str, message_template: str, audience: str,
                         batch_size: Optional[int] = None,

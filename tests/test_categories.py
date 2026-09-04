@@ -227,7 +227,10 @@ def test_audience_labels_read_like_english(db, audience):
     assert label(db, "category:food_service,equipment") == "Food Service + Equipment & Machinery"
     assert label(db, f"category:equipment&list:{audience['list_id']}") == \
         f"Equipment & Machinery ∩ {LIST_NAME}"
-    assert label(db, "all") == "All contacts"
+    # The pinned entry's one spelling, not a second name for the same audience.
+    # The composer's dropdown and the dashboard's first card read the same
+    # constant; a literal here would be a third.
+    assert label(db, "all") == contact_service.ALL_BIDDERS_LABEL
 
 
 def test_audience_label_never_raises_on_a_bad_selector(db):
@@ -237,14 +240,29 @@ def test_audience_label_never_raises_on_a_bad_selector(db):
     assert contact_service.audience_label(db, "list:not-a-number")
 
 
-def test_list_summaries_include_every_active_category(db):
-    summaries = contact_service.list_summaries(db)
-    by_selector = {s["selector"]: s for s in summaries}
+def test_the_picker_offers_no_category_and_the_resolver_still_counts_them(db):
+    """5i, in one test, because the two halves are only meaningful together.
+
+    This used to assert that `list_summaries()` returned an entry per active
+    category with a live count. The picker stopped offering them in 5i — the
+    client's audience list is the pinned entry and his named lists — and the
+    counts it used to report are asserted here through `audience_count()`
+    instead, which is the path every historical campaign still takes.
+
+    Hiding without removing is the whole ruling, so a test that only checked the
+    hiding would pass on the change that breaks every report older than 5i.
+    """
+    selectors = {s["selector"] for s in contact_service.list_summaries(db)}
+    assert not [s for s in selectors if s.startswith("category:")], (
+        f"the picker is offering categories again: {sorted(selectors)}")
+
     for slug, label, _token, _order in EXPECTED_SEED:
-        assert by_selector[f"category:{slug}"]["label"] == label
-    assert by_selector["category:food_service"]["count"] == 2
-    assert by_selector["category:equipment"]["count"] == 3
-    assert by_selector["category:estates"]["count"] == 0
+        # Still resolvable, still labelled — this is what a report older than 5i
+        # renders from.
+        assert contact_service.audience_label(db, f"category:{slug}") == label
+    assert contact_service.audience_count(db, "category:food_service") == 2
+    assert contact_service.audience_count(db, "category:equipment") == 3
+    assert contact_service.audience_count(db, "category:estates") == 0
 
 
 # ─── CRUD API ───────────────────────────────────────────────────────────────
@@ -307,8 +325,15 @@ def test_deactivation_hides_a_category_without_losing_its_tags(client, db, audie
 
         db.expire_all()
         # Retiring a category from the pickers must not empty a campaign already
-        # pointed at it.
+        # pointed at it. That was the whole of this assertion until 5i, when the
+        # picker stopped offering *any* category — so the second half below is
+        # now true of every category and proves nothing on its own. It stays
+        # because "hiding does not stop resolving" is the property, and the half
+        # that carries it is the first one; `test_the_picker_offers_no_category
+        # _and_the_resolver_still_counts_them` is where the hiding is asserted
+        # against a category that has not been deactivated.
         assert len(contact_service.resolve_audience(db, "category:equipment")) == 3
+        assert contact_service.audience_count(db, "category:equipment") == 3
         assert "category:equipment" not in {
             s["selector"] for s in contact_service.list_summaries(db)}
     finally:

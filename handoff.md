@@ -1,6 +1,6 @@
 # Handoff
 
-_Last updated: 2026-08-26 (session 5g). Sections append; the bottom is current._
+_Last updated: 2026-09-04 (session 5i). Sections append; the bottom is current._
 
 ## What just happened
 
@@ -1035,3 +1035,119 @@ build.
   nothing because the cap was reached currently looks like a run with nothing to
   screen. Noted in `status.md` under "Found while working"; it needs
   `scrape_runner.py` and a migration, both outside this session's file list.
+
+---
+
+# Session 5i handoff — named lists replace categories (2026-09-04)
+
+## Where this leaves things
+
+The audience picker is now the Williamson model: **the pinned
+`⭐ ALL BIDDERS — MAIN LIST` entry, then every named list, newest first.** No
+categories anywhere the client can see — composer, Contacts, Today. Every
+category table, column, index and palette variable is exactly where it was, and
+the prospect review queue still uses them.
+
+`bash agent/accept-5i.sh` exits 0. The gate is green twice. **577 tests.**
+`agent/mutate-5i.py`: 16 mutations, 0 survived, on a tree verified byte-identical
+to the repo before the first patch.
+
+## What landed
+
+- **A1** — `contact_lists.created_at` has one writer, one clock and one spelling,
+  and migration `f4a1c7d90e52` normalises the rows already stored.
+- **A2** — `list_summaries()` is the picker; `SENT_STATUSES` consolidated into
+  `app/models/sms_message.py`.
+- **A3-A6** — composer, Contacts and Today, with the em-dash rule carried over
+  verbatim.
+- **A7** — `tests/test_audience_surfaces.py`, a runtime render sweep.
+- **A8** — the prospect queue, deliberately untouched and now asserted.
+
+## Six things worth knowing before you touch any of it
+
+**1. The table still has `DEFAULT (CURRENT_TIMESTAMP)` on `created_at`.**
+Removing `server_default` from the model does not remove the old writer — SQLite
+still fills an omitted column, in UTC, with a space separator. Dropping a column
+default there means rebuilding the table, which is escalation item 8. What closes
+it is the **Python-side `default=now_iso`** on the column. A raw `INSERT` that
+names no `created_at` can still reach the DDL default, which is why
+`parse_created_at()` keeps understanding the space-separated spelling instead of
+assuming it away. Do not "simplify" either half.
+
+**2. `resolve_audience()`, `_term_ids_query()`, `_term_label()` and
+`audience_count()` keep their `category:` branches, permanently.** Every campaign
+this client has run stores `category:<slug>` in `campaigns.audience`, and
+`audience_label()` renders it in the campaign rail, in history and in every
+per-campaign report. The picker stops *producing* them; the resolver must keep
+*consuming* them. Mutation `A2b` deletes that branch and ten tests go red.
+
+**3. The pinned wording lives in exactly one place.**
+`contact_service.ALL_BIDDERS_LABEL`. It renders in the composer dropdown, on the
+first dashboard card, and through `audience_label()` in the summary panel and
+every report. A literal anywhere else is a second spelling waiting to drift —
+mutation `A2c` proves the test catches it.
+
+**4. The A7 sweep has six exemptions and each one is load-bearing.** They are the
+surfaces other clauses of the spec retain: the prospect queue, the taxonomy CRUD
+it reads, the contacts payload and export, and the two report screens.
+`test_no_exemption_has_gone_stale` fails when an exempted route stops carrying
+the word, so the list cannot rot the way a denylist does. If you make one of
+those surfaces category-free, delete its entry in the same commit.
+
+**5. `campaign_service.py` is at exactly 500 lines.** The next addition forces a
+split. Its docstring already describes the seam 5e used.
+
+**6. `import_service.require_category()` has no caller.** `/api/imports/*` stopped
+calling it in 5i — an import lands in a list the client names, and the name
+carries what the tag used to. The function and its docstring say so; deleting it
+is a separate decision in a file outside 5i's list.
+
+## Verified this session
+
+- `agent/accept-5i.sh` — every criterion, each in its own pytest process.
+- `alembic upgrade head` from a clean database **and against a copy of the real
+  `data/app.db`**: `1 converted from UTC, 1 left alone`;
+  `2026-08-20 00:12:30` → `2026-08-19T20:12:30`. The original was not written.
+- `agent/gate.sh` twice; `./run.sh`-equivalent boot with `/login` 200,
+  `/static/app.css` 200, `/health` healthy.
+- The composer's JavaScript by **execution**, not by reading: every `<script>`
+  block on the changed pages concatenated in include order, `node --check`ed, and
+  swept for identifiers called but never defined. A3 and A5 delete four functions
+  and eight DOM ids; a leftover call site is a `ReferenceError` that kills the
+  screen while every render test still passes.
+
+## One thing that happened to your local database
+
+**Starting the app applied 5i's migration to `data/app.db`.** `app/main.py` runs
+`alembic upgrade head` on import in development — production does not, and
+`deployment/deploy.sh` does it as a deliberate step — so booting a local uvicorn
+to check `/login` converted `Demo list` from `2026-08-20 00:12:30` to
+`2026-08-19T20:12:30`. That is the migration doing exactly what it is for, and it
+is the same result `accept-5i.sh` demonstrates on a copy. Nothing else in that
+database was touched: 9 contacts, 8 messages, 2 campaigns, unchanged.
+
+It also cost an acceptance check its evidence, which is the part worth
+remembering: check 2b showed the conversion on a copy of `data/app.db`, and once
+the app has been started there is nothing left in there to convert — so it
+printed an identical before and after and still reported "ok". It now seeds a
+server-default-spelled row into the copy **and rolls `alembic_version` back to
+`c8a2e5f14b90`**, the revision the live box is on, so what runs is the real
+migration against real rows from the revision production will run it from.
+Seeding alone was not enough, and the check is what said so — `upgrade head` on
+a copy already at head runs nothing.
+
+## Not done
+
+- **Deploy.** Jordan's, as every session since 5b. **A1's migration rewrites data
+  in a live table — `scripts/backup.sh` runs before `alembic upgrade head`.**
+- **Part B of the session spec, and it gates the migration.** Dump every
+  `contact_lists.created_at` on production and confirm each value is either
+  `YYYY-MM-DD HH:MM:SS` or `YYYY-MM-DDTHH:MM:SS.ffffff`. A third spelling means
+  the format-based classification is not 1:1 and the migration is wrong. It
+  leaves an unrecognised value alone and logs it, so a third spelling is
+  survivable — as an un-normalised row sorting by a clock nobody has checked.
+- **A lists management page** — rename, merge, archive, delete. Out of scope and
+  still absent. The client can create a list and pick one; he cannot tidy them.
+- **A "which lists is this person on" column on Contacts.** The right product
+  answer, a new query on a paged screen, and a session of its own.
+- **`docs/API.md`** does not describe any of 5i. Module 8's.

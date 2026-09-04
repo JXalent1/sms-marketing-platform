@@ -143,26 +143,20 @@ def test_preview_writes_nothing(db, prior_state):
     assert (db.query(Contact).count(), db.query(ContactCategory).count()) == before
 
 
-def test_a_category_is_required_of_the_callers_that_need_one(db):
-    """`require_category()` is the rule; who has to obey it moved in 5e A2.
+def test_an_id_naming_no_category_is_an_error_and_not_a_quiet_untagging(db):
+    """The thing that did **not** change as the requirement was dismantled.
 
-    This used to assert that `preview()` and `commit()` themselves refused a None
-    category. They no longer do — a file uploaded as step one of a campaign is
-    targeted by the list it creates, so untagged became a legitimate answer at
-    the service layer and the requirement moved up to the callers for whom it is
-    still wrong.
+    5e A2 made the category optional in the importer; 5i took the last caller
+    that required one — `/api/imports/*` no longer calls `require_category()`,
+    because an import now lands in a list the client names and the name is what
+    carries the meaning the tag used to.
 
-    What is asserted here is therefore the guard itself, plus the thing that did
-    **not** change: an id naming a category that does not exist is still an
-    error, never a quietly untagged import. That distinction is the whole risk in
-    making the parameter optional — a typo'd id must not read as "no category".
-
-    `/api/imports/*` refusing without one is pinned in `test_contacts_api.py`,
-    at the layer where that rule now lives.
+    None of that touches this: an id naming a category that does not exist is
+    still a `LookupError`, never a quietly untagged import. That distinction is
+    the entire risk in an optional parameter — a typo'd id must not read as "no
+    category" — and it is the one assertion in this area that has survived every
+    change to the rule around it.
     """
-    with pytest.raises(ValueError, match="Choose a category"):
-        import_service.require_category(db, None)
-
     with pytest.raises(LookupError):
         import_service.preview(db, _content(), 99999)
     with pytest.raises(LookupError):
@@ -219,9 +213,29 @@ def test_a_second_upload_the_same_day_gets_its_own_list(db, prior_state):
 
 
 def test_a_committed_import_shows_up_in_the_category_count(db, prior_state):
-    summaries = {s["selector"]: s for s in contact_service.list_summaries(db)}
-    assert summaries["category:food_service"]["count"] == 7
-    assert len(contact_service.resolve_audience(db, "category:food_service")) == 7
+    """Counted through the resolver, which is where the count lives after 5i.
+
+    `list_summaries()` stopped offering category entries when the picker did.
+    The tagging itself is unchanged, and `audience_count()` is what every
+    historical campaign and every per-campaign report reads it back through —
+    which makes this one of criterion 4's tests, and criterion 4 runs it on its
+    own.
+
+    So it does its own commit rather than reading the state an earlier test in
+    this file happens to have left. It used to lean on
+    `test_commit_returns_the_same_counts_as_actuals` having run, and in isolation
+    it asserted 7 against an empty category. Committing twice is safe by design:
+    tagging is idempotent, the second run reports the seven as
+    `already_in_category`, and the undo is subtractive — it reverses what *this*
+    batch did and deletes nothing an earlier one created.
+    """
+    result = import_service.commit(db, _content(), prior_state["food"].id)
+    try:
+        assert contact_service.audience_count(db, "category:food_service") == 7
+        assert len(contact_service.resolve_audience(db, "category:food_service")) == 7
+    finally:
+        import_service.undo(db, result["list_id"])
+        db.expire_all()
 
 
 # ─── Undo ───────────────────────────────────────────────────────────────────

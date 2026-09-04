@@ -13,23 +13,38 @@ the one whose output is billed, and a second copy of that logic would eventually
 measure something the send path does not produce. It is also what keeps this
 module free of an import back into `campaign_service`.
 
-Three ways a campaign records who it is for
-───────────────────────────────────────────
-Module 4 shipped two: a real category, or an explicitly typed cross-category
-override. 5e adds the third, and it is not a loosening of the first two.
+How a campaign records who it is for
+────────────────────────────────────
+Module 4 shipped two ways: a real category, or an explicitly typed cross-category
+override. 5e added a third — a CSV uploaded as step one of *this* campaign, where
+the list that upload creates is the campaign's entire audience, so the targeting
+*is* the list. Requiring a category there would either be a lie (the message is
+not going to a niche, it is going to the 412 restaurants in that file) or would
+push every upload through the cross-category override, which is an audit trail
+that means nothing once everyone ticks it.
 
-When a CSV is uploaded as step one of *this* campaign, the list that upload
-creates is the campaign's entire audience. The targeting is the list. Requiring a
-category there would either be a lie (the message is not going to a niche, it is
-going to the 412 restaurants in that file) or would push every upload through the
-cross-category override, which is an audit trail that means nothing once everyone
-ticks it. So the upload path records `category_id` NULL, `cross_category_override`
-0, and `audience = "list:<id>"` — and the audience column is the record of the
-decision, which is what the other two cases were always for.
+**5i finished that argument.** The client's picker no longer offers a category at
+all: it offers the pinned "all bidders" entry and his named lists, newest first.
+So a campaign pointed at a list — or at `all` — has no category to give, and
+there is no longer a UI path that could type an override. `resolve_category()`
+therefore resolves those to `category_id` NULL, `cross_category_override` 0, and
+`audience` as the record of the decision, which is what the other cases were
+always for.
 
-`POST /api/campaigns` is unchanged: an existing list, `all`, and a category
-selector all still require a category or a typed override, because for those the
-audience does not say which auction the message is about.
+What is given up, written down rather than deleted quietly: `resolve_category()`
+existed so that "no category" could not become a value the form submits by
+accident. Under the 5i model "no category" is the normal outcome for every
+campaign the client creates, so on the list and `all` paths that guard now
+protects nothing — there is no accident left for it to catch. Deleting a guard
+silently is how it comes back as a defect; deleting it with the reason beside it
+is a decision.
+
+**A `category:` selector still requires a category or an override.** No UI path
+can produce one, so a caller that hand-writes one is doing something deliberate
+and the rule that used to cover every campaign still covers exactly that case.
+And `cross_category_override` is never written 1 by any path this session leaves
+standing: the column stays, and the escape hatch it recorded no longer exists,
+because there is no longer a rule to escape.
 """
 
 import logging
@@ -51,7 +66,8 @@ from datetime import datetime
 
 logger = logging.getLogger("campaign")
 
-# Every campaign carries the niche it is for, or a recorded decision not to.
+# What a caller who hand-writes a `category:` selector with no category is told.
+# Unreachable from the UI since 5i — see the module docstring.
 NO_CATEGORY_ERROR = (
     "This campaign has no category. Pick the auction it is for — the category is "
     "what keeps a memorabilia buyer from being texted about a walk-in cooler. If "
@@ -127,21 +143,46 @@ def wholesale_estimate(segments: int) -> float:
 
 # ─── The category rule ──────────────────────────────────────────────────────
 
+def audience_names_its_own_target(selector: Optional[str]) -> bool:
+    """True when every term of `selector` is a list or `all`.
+
+    Those are the two things the 5i picker can produce, and for both of them the
+    audience column already says who the campaign is for — a named list, or every
+    bidder. Nothing further is needed to identify it, which is the whole content
+    of the category rule.
+
+    Anything else is False, deliberately, and that includes `source:` as well as
+    `category:`. Neither is reachable from a screen; a caller that hand-writes
+    one is doing something deliberate and keeps the rule as module 4 wrote it.
+    A `category:a&list:12` intersection contains a category term, so it is False
+    too — the intersection is still about a niche.
+    """
+    terms = [t.strip() for t in (selector or "").split("&")]
+    if not terms or any(not t for t in terms):
+        return False
+    return all(t == "all" or t.startswith("list:") for t in terms)
+
+
 def resolve_category(db: Session, category_id: Optional[int],
                      cross_category_override: bool,
-                     list_audience: bool = False) -> Optional[Category]:
+                     list_audience: bool = False,
+                     audience: Optional[str] = None) -> Optional[Category]:
     """The category rule, in one place.
 
-    A campaign gets a real category, an explicitly-typed override, or an audience
-    that is a list uploaded for it. There is no fourth case and no default — the
-    moment "no category" becomes a value the form can submit by accident, the
-    guarantee this module exists for is gone.
+    A campaign resolves with no category when its audience already names who it
+    is for — a `list:` selector or `all`, which since 5i is everything the picker
+    can produce — or when the upload flow says the list it just created *is* the
+    audience, or when somebody typed the override. Otherwise a `category:`
+    selector still requires a category, and that is the only case left in which
+    it does. See the module docstring for what that gives up and why.
 
-    `list_audience` is not a way to skip the rule; it is the third way of
-    satisfying it, and only the upload flow passes it. See the module docstring.
+    `list_audience` is the upload flow's own signal and predates the audience
+    argument: at the moment `create_campaign()` calls this on the upload path the
+    list exists but the selector string has not been assembled yet.
     """
     if category_id is None:
-        if cross_category_override or list_audience:
+        if (cross_category_override or list_audience
+                or audience_names_its_own_target(audience)):
             return None
         raise CampaignError(NO_CATEGORY_ERROR)
 
@@ -227,13 +268,24 @@ def create_campaign(db: Session, render: Callable[..., str], *,
     does not, and a status that means both is a status a top-up cannot act on.
     See decisions/005.
     """
-    category = resolve_category(db, category_id, cross_category_override, list_audience)
+    category = resolve_category(db, category_id, cross_category_override,
+                                list_audience, audience=audience)
     # Before the audience is resolved and long before anything is written. A
     # missing short-link domain is a refusal at compose time, never at send time
     # (5f A3), and a campaign refused for it must leave no rows behind.
     link_target = resolve_link_target(message_template, link_target_url)
 
-    recipients = contact_service.resolve_audience(db, audience)
+    # A malformed selector comes back as the selector grammar's own sentence
+    # rather than as a 500. Until 5i this was unreachable here: every campaign
+    # had to pass the category rule first, and a hand-written `list:abc` was
+    # refused there. Relaxing that rule for list audiences moved a bad selector
+    # one step further down the path — "what else arrives on this path" — and the
+    # answer was `_int_arg()`'s ValueError, which the router turns into
+    # "Could not create campaign" with the actual reason left in the log.
+    try:
+        recipients = contact_service.resolve_audience(db, audience)
+    except ValueError as e:
+        raise CampaignError(str(e)) from e
     if not recipients:
         raise CampaignError(f"No contacts matched audience {audience!r}")
 

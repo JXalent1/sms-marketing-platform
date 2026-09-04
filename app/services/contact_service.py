@@ -21,19 +21,62 @@ Grammar, stated so nothing has to be guessed:
 Deactivating a category does not stop it resolving. Retiring a category from the
 pickers must not silently empty a campaign already pointed at it — `list_summaries()`
 is what hides it, and that is the honest place for the distinction.
+
+Session 5i took that to its conclusion: **the picker no longer offers a category
+at all, and the resolver still consumes every one it ever produced.** Categories
+are hidden, not removed. `campaigns.audience` holds `category:<slug>` on every
+campaign this client has run so far, and `audience_label()` renders those in the
+campaign rail, in history and in every per-campaign report. Deleting the
+resolution path here would turn every report older than 5i into a broken string,
+and it would take the prospecting taxonomy — which is keyed on the same tables —
+with it. Do not "tidy up" the `category:` branches below.
 """
 
 from sqlalchemy.orm import Session
-from sqlalchemy import func, and_
+from sqlalchemy import func
 from app.models.contact import Contact
 from app.models.category import Category, ContactCategory
-from app.models.contact_list import ContactList, ContactListMember
+from app.models.contact_list import ContactList, ContactListMember, parse_created_at
+from app.models.sms_message import SENT_STATUSES, SMSMessage
 from app.sms.phone import normalize, is_valid
-from datetime import datetime
+from datetime import date, datetime
 from typing import List, Optional
 import logging
 
 logger = logging.getLogger("contacts")
+
+# The pinned entry at the top of every audience picker, in one place.
+#
+# It renders in the composer's dropdown, on the dashboard's first list card, and
+# in `audience_label()` — which is what the composer's summary panel and every
+# campaign report read. `send_mode()` in `app/sms/factory.py` is the pattern and
+# the reason: one module owns the client-safe wording so a second surface cannot
+# invent a second spelling of the same thing. A dropdown reading
+# "⭐ ALL BIDDERS — MAIN LIST" beside a summary row reading "All contacts" is two
+# names for one audience, on one screen.
+ALL_BIDDERS_LABEL = "⭐ ALL BIDDERS — MAIN LIST"
+
+
+def days_since(iso: Optional[str], today: date = None) -> Optional[int]:
+    """Whole days between an ISO timestamp and today. None when never.
+
+    None and 0 are opposite facts — "never texted" and "texted this morning" —
+    so this never collapses one into the other. That distinction is the whole
+    point of the em dash on the dashboard's cards.
+
+    Defined here rather than in `dashboard_service` because `list_summaries()`
+    below has to report freshness and `dashboard_service` already imports this
+    module, so the dependency only runs one way. `dashboard_service._days_since`
+    delegates to it: two copies of this is how two screens come to disagree
+    about how old the same send is.
+    """
+    if not iso:
+        return None
+    try:
+        when = date.fromisoformat(str(iso)[:10])
+    except ValueError:
+        return None
+    return max(0, ((today or date.today()) - when).days)
 
 
 # ─── Upsert ─────────────────────────────────────────────────────────────────
@@ -87,7 +130,16 @@ def get_or_create_list(db: Session, name: str, description: str = None,
     row = db.query(ContactList).filter(ContactList.name == name).first()
     if row:
         return row
-    row = ContactList(name=name, description=description, source=source)
+    # `created_at` is written explicitly rather than left to a server default,
+    # and since 5i there is no default to fall back to. This function was the
+    # second writer of that column: it omitted the value, SQLite's
+    # CURRENT_TIMESTAMP filled it in **UTC** with a space separator, and
+    # `import_service.commit()` wrote local isoformat into the same column. The
+    # picker, the dashboard cards and the composer are all sorted on recency
+    # now, so two clocks in one column is an ordering that is silently wrong.
+    # See `app/models/contact_list.py` and migration `f4a1c7d90e52`.
+    row = ContactList(name=name, description=description, source=source,
+                      created_at=datetime.now().isoformat())
     db.add(row)
     db.commit()
     db.refresh(row)
@@ -122,53 +174,108 @@ def add_to_list(db: Session, list_id: int, contact_id: int, commit: bool = True)
     return True
 
 
-def list_summaries(db: Session) -> List[dict]:
-    """Every audience a picker can offer: 'all', each active category, each list.
+def _last_sent_by_list(db: Session) -> dict:
+    """list_id -> the most recent moment a member of it was actually texted.
 
-    Categories come before lists because that is the client's primary axis — he
-    picks tonight's niche, not a historical upload. Each carries a live count so
-    a dropdown never shows a stale number.
+    One grouped join: messages → contacts → memberships. Freshness comes from
+    `sms_messages` and never from a campaign's audience string, which is
+    `dashboard_service`'s own rule and has not changed — a campaign row records
+    who it *meant* to text, and the message table records who was texted. That
+    stays correct when a send was aborted half-way, when a campaign targeted a
+    union, and when somebody edits a saved selector afterwards.
+
+    `SENT_STATUSES` comes from `app/models/sms_message.py`, beside the billable
+    set it must not become. See the comment there.
+
+    `added_at` is deliberately not read. It carries its own UTC/local defect
+    (see `add_to_list`), and nothing about "when was this list last texted"
+    needs to know when a member joined it.
     """
-    rows = (db.query(ContactList.id, ContactList.name, func.count(ContactListMember.id))
-            .outerjoin(ContactListMember, ContactListMember.list_id == ContactList.id)
-            .group_by(ContactList.id, ContactList.name)
-            .order_by(ContactList.name)
+    rows = (db.query(ContactListMember.list_id, func.max(SMSMessage.sent_at))
+            .join(SMSMessage, SMSMessage.contact_id == ContactListMember.contact_id)
+            .filter(SMSMessage.status.in_(SENT_STATUSES),
+                    SMSMessage.sent_at.isnot(None))
+            .group_by(ContactListMember.list_id)
+            .all())
+    return {list_id: last for list_id, last in rows if last}
+
+
+def _last_sent_overall(db: Session) -> Optional[str]:
+    """The most recent moment anybody was texted — the pinned entry's freshness.
+
+    `contact_id` is required for the same reason the per-list query joins
+    memberships: the pinned entry means "every bidder", and a message row with
+    no contact behind it was not a message to one of them. Nothing writes such a
+    row today — all four construction sites pass a contact — and this query is
+    the one that would silently start counting it.
+    """
+    return (db.query(func.max(SMSMessage.sent_at))
+            .filter(SMSMessage.status.in_(SENT_STATUSES),
+                    SMSMessage.contact_id.isnot(None),
+                    SMSMessage.sent_at.isnot(None))
+            .scalar())
+
+
+def list_summaries(db: Session) -> List[dict]:
+    """Every audience a picker can offer: the pinned entry, then lists.
+
+    Session 5i replaced the category-first picker with the flat, recency-sorted
+    list of named lists the client asked for: **the pinned
+    `ALL_BIDDERS_LABEL` entry, then every list, newest first.** No category
+    entries — the picker stops offering them, and nothing else stops resolving
+    them. `resolve_audience()`, `_term_ids_query()`, `_term_label()` and
+    `audience_count()` all keep their `category:` branches, because every
+    campaign in history stores `category:<slug>` and a report that cannot
+    resolve its own audience is a broken string on every screen it appears on.
+
+    Ordered by `parse_created_at()`, never by the raw string. The column had two
+    writers with two spellings and a lexicographic comparison across them is
+    wrong in the direction nobody checks — see `app/models/contact_list.py`.
+
+    Each entry carries `selector`, `label`, `count`, `kind`, `last_sent_at` and
+    `days_since_sent`. The count is **active** contacts, matching what a send
+    would actually reach and matching `audience_count()` on the same selector;
+    a list whose members have all been deactivated reports 0 rather than a
+    number no campaign could ever hit.
+    """
+    rows = (db.query(ContactList.id, ContactList.name, ContactList.created_at,
+                     func.count(Contact.id))
+            .outerjoin(ContactListMember,
+                       ContactListMember.list_id == ContactList.id)
+            # Outer-joined and filtered in the ON clause, not in WHERE: a list
+            # with no members at all still belongs in the picker, reading 0.
+            # "Yacht buyers: 0" is information; a missing row is confusing.
+            .outerjoin(Contact, (Contact.id == ContactListMember.contact_id)
+                                & (Contact.is_active == 1))
+            .group_by(ContactList.id, ContactList.name, ContactList.created_at)
             .all())
 
-    # Active contacts only, so the count matches what a send would actually
-    # reach. The outer join keeps an empty category in the list rather than
-    # dropping it — "Estates: 0" is information; a missing row is confusing.
-    category_rows = (
-        db.query(Category.slug, Category.label, func.count(Contact.id))
-        .outerjoin(ContactCategory, ContactCategory.category_id == Category.id)
-        .outerjoin(Contact, and_(Contact.id == ContactCategory.contact_id,
-                                 Contact.is_active == 1))
-        .filter(Category.is_active == 1)
-        .group_by(Category.id, Category.slug, Category.label)
-        .order_by(Category.sort_order, Category.label)
-        .all()
-    )
-
     total_active = db.query(Contact).filter(Contact.is_active == 1).count()
+    last_sent = _last_sent_by_list(db)
+    overall = _last_sent_overall(db)
+    today = date.today()
 
     audiences = [{
         "selector": "all",
-        "label": "All contacts",
+        "label": ALL_BIDDERS_LABEL,
         "count": total_active,
         "kind": "all",
+        "last_sent_at": overall,
+        "days_since_sent": days_since(overall, today),
     }]
-    audiences += [{
-        "selector": f"category:{slug}",
-        "label": label,
-        "count": count,
-        "kind": "category",
-    } for slug, label, count in category_rows]
     audiences += [{
         "selector": f"list:{list_id}",
         "label": name,
         "count": count,
         "kind": "list",
-    } for list_id, name, count in rows]
+        "last_sent_at": last_sent.get(list_id),
+        "days_since_sent": days_since(last_sent.get(list_id), today),
+    } for list_id, name, _, count in sorted(
+        # Id descending as the tiebreaker, so "newest first" is a total order.
+        # Two lists created in the same second — a script, a fast double
+        # upload — would otherwise fall back on whatever order the ungrouped
+        # query happened to return, which is not something to depend on.
+        rows, key=lambda r: (parse_created_at(r[2]), r[0]), reverse=True)]
     return audiences
 
 
@@ -261,7 +368,12 @@ def resolve_audience(db: Session, selector: str) -> List[Contact]:
 def _term_label(db: Session, term: str) -> str:
     term = term.strip()
     if term == "all":
-        return "All contacts"
+        # The picker's own wording for this selector, not a second name for it.
+        # The composer's summary panel reads `audience_label()` while the
+        # dropdown beside it reads `list_summaries()`; "All contacts" here and
+        # the pinned label there would be one audience wearing two names on one
+        # screen.
+        return ALL_BIDDERS_LABEL
     if term.startswith("list:"):
         try:
             row = db.get(ContactList, _int_arg(term))

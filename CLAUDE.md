@@ -49,7 +49,7 @@ These are the commands acceptance criteria reference. Run them and show the outp
   `ModuleNotFoundError: slowapi` and reports **"test suite is red"** — a true statement
   about the wrong interpreter, and a convincing false alarm. Either activate `.venv`
   or run `PATH="$PWD/.venv/bin:$PATH" bash agent/gate.sh`.
-- **Tests:** `python -m pytest tests/ -q` — must exit 0. **544 passing as of session P1b.**
+- **Tests:** `python -m pytest tests/ -q` — must exit 0. **577 passing as of session 5i.**
   A lower count means you are on a stale branch, not that tests vanished.
 - **Migrations:** `alembic upgrade head` — must succeed from a clean DB.
 - **Run it:** `./run.sh` then `curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/login` → `200`
@@ -453,6 +453,49 @@ change to a live table.
   matched a Brevard County phone number: a naked number tested with `in` against
   prose matches things that are not numbers of that kind. Assert against the
   parsed field, or anchor the figure the way it would actually be rendered.
+- **Removing a `server_default` from the model does not remove the default from
+  the table.** 5i took `server_default=func.now()` off `ContactList.created_at`
+  to end a two-clock column — and `f69dc078ee13` had created that column with
+  `DEFAULT (CURRENT_TIMESTAMP)` in the DDL, which is still there and still UTC.
+  An insert that omits the column keeps getting the old writer's value; the
+  model change only stops SQLAlchemy *declaring* it. Dropping a column default
+  in SQLite means rebuilding the table, which is escalation item 8, so the fix
+  is a **Python-side `default=`** — which is also the better guard, because
+  "every insert site passes it explicitly" is a rule on one path and this column
+  has had two writers already. And the reader must keep understanding the old
+  spelling: a raw `INSERT` can still reach the DDL default.
+- **A test that mutates a fixture makes its neighbours prove nothing, and the
+  direction that bites is the quiet one.** `accept-5e.sh` established running
+  each criterion in isolation, which catches a test that needs its neighbours.
+  5i found the mirror image: the ordering test ran *after* the migration test in
+  its own file, read a row that test had deliberately converted, and so passed
+  under the exact mutation it was written to catch — a string comparison gives
+  the right answer once both values are spelled the same way. Only the mutation
+  harness saw it. If a test depends on specific fixture *values*, set them in
+  the test, not in the fixture.
+- **Identity cannot distinguish two constants with the same members.** 5i's spec
+  asked for a mutation pointing the freshness query at `BILLABLE_STATUSES`, and
+  `SENT_STATUSES is not BILLABLE_STATUSES` is False — CPython folds equal
+  literal tuples in one module to one object, so that assertion fails for a
+  reason that has nothing to do with this codebase. Assert the **binding**
+  instead: change what one constant means and require the figure to follow.
+  Two sets that are equal today are still two rules, and the test has to say
+  which one a query reads.
+- **Relaxing a guard moves bad input one step further down the path.**
+  `POST /api/campaigns` with `audience="list:not-a-number"` used to be refused by
+  the category rule — wrong sentence, right status. 5i relaxed that rule for list
+  audiences, and the same request then reached `_int_arg()`, whose `ValueError`
+  the router does not map: a **500 reading "Could not create campaign"** with the
+  real reason in a log the client cannot read. Same shape as widening a matcher's
+  call sites (`decisions/003`): when you remove a check, ask what it was
+  incidentally catching, not only what it was for.
+- **An exemption list is a denylist, and denylists rot.** 5i's render sweep has
+  to exempt the surfaces the same session deliberately retains. An entry outlives
+  its reason silently — the route is renamed, the surface is cleaned up
+  elsewhere, and the hole stays open. Every exemption is therefore asserted to be
+  *still needed*: the test fails when an exempted route stops carrying the thing
+  it was exempted for. And prove the sweep fires at all, against a case whose
+  answer you know, before quoting it as evidence.
 
 ## Where things live
 

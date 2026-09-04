@@ -36,9 +36,8 @@ from sqlalchemy.orm import Session
 from app.models.campaign import Campaign
 from app.models.category import Category
 from app.models.contact import Contact
-from app.models.sms_message import HELD_BACK_STATUS, SMSMessage
+from app.models.sms_message import HELD_BACK_STATUS, SENT_STATUSES, SMSMessage
 from app.services import link_service
-from app.services.report_service import SENT_STATUSES
 from app.sms.phone import scrub_provider_text
 
 logger = logging.getLogger("reports")

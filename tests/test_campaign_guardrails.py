@@ -82,52 +82,140 @@ def _create(db, seeded, name, body, **kwargs):
 
 # ─── The category requirement ───────────────────────────────────────────────
 
-def test_campaign_without_a_category_is_rejected(client, seeded):
+def test_a_list_audience_needs_no_category(client, seeded):
+    """5i criterion 5, first half. This assertion used to be its inverse.
+
+    Until 5i this exact request was a 400 naming the category and the override,
+    and that was right while the composer had a category picker in front of it.
+    The picker is gone, so a campaign pointed at one of his lists has nothing to
+    put in that field and no way to type an override — the request the composer
+    now sends is exactly this one, and refusing it would refuse every campaign.
+
+    Through the endpoint rather than through `resolve_category()`, deliberately:
+    the requirement is about what the client can create, and a property proved of
+    the helper is not proved of the route that calls it.
+    """
+    response = client.post("/api/campaigns", json={
+        "name": f"{CAMPAIGN_PREFIX}list audience",
+        "message_template": "Sale Thursday. Reply STOP to opt out.",
+        "audience": seeded["audience"],
+    })
+    assert response.status_code == 200, response.text
+    created = response.json()["campaign"]
+
+    db = SessionLocal()
+    try:
+        row = db.get(Campaign, created["id"])
+        assert row.category_id is None
+        # Not recorded as an override either. An override is evidence that a
+        # human decided something, and nobody decided anything here.
+        assert not row.cross_category_override
+    finally:
+        db.close()
+
+
+def test_the_all_audience_needs_no_category(client, seeded):
+    """5i criterion 5, second half — the pinned entry in the picker."""
+    response = client.post("/api/campaigns", json={
+        "name": f"{CAMPAIGN_PREFIX}all audience",
+        "message_template": "Sale Thursday. Reply STOP to opt out.",
+        "audience": "all",
+    })
+    assert response.status_code == 200, response.text
+
+    db = SessionLocal()
+    try:
+        row = db.get(Campaign, response.json()["campaign"]["id"])
+        assert row.category_id is None
+        assert not row.cross_category_override
+    finally:
+        db.close()
+
+
+def test_a_malformed_list_selector_is_refused_with_its_own_sentence(client, seeded):
+    """What else arrives on the path 5i widened.
+
+    Until 5i a hand-written `list:abc` never reached the resolver: the category
+    rule refused it first, with the wrong message but the right status. Relaxing
+    that rule for list audiences moved a bad selector one step further down, onto
+    `_int_arg()`'s ValueError — which the router does not map, so it became a 500
+    reading "Could not create campaign" with the real reason left in a log the
+    client cannot read. A refusal that names no cause reads as a broken tool.
+    """
+    response = client.post("/api/campaigns", json={
+        "name": f"{CAMPAIGN_PREFIX}malformed selector",
+        "message_template": "Sale Thursday. Reply STOP to opt out.",
+        "audience": "list:not-a-number",
+    })
+    assert response.status_code == 400, response.text
+    detail = response.json()["detail"]
+    assert "numeric id" in detail, detail
+    assert "list:not-a-number" in detail, detail
+
+
+def test_a_category_selector_with_no_category_is_still_rejected(client, seeded):
+    """5i criterion 5, third half — the case the rule still covers.
+
+    No screen can produce a `category:` selector, so a caller writing one is
+    doing something deliberate, and for that selector the audience genuinely does
+    not say which auction the message is about. The refusal still has to say what
+    to do about it rather than only that something is wrong.
+    """
     response = client.post("/api/campaigns", json={
         "name": f"{CAMPAIGN_PREFIX}no category",
         "message_template": "Sale Thursday. Reply STOP to opt out.",
-        "audience": seeded["audience"],
+        "audience": "category:food_service",
     })
     assert response.status_code == 400, response.text
     detail = response.json()["detail"]
     assert "category" in detail.lower(), detail
-    # It has to say what to do about it, not just that something is wrong.
     assert "override" in detail.lower(), detail
 
 
-def test_campaign_with_a_category_is_accepted_and_records_it(client, seeded):
-    response = client.post("/api/campaigns", json={
-        "name": f"{CAMPAIGN_PREFIX}categorised",
-        "message_template": "Fryer sale Thursday. Reply STOP to opt out.",
-        "audience": seeded["audience"],
-        "category_id": seeded["category_id"],
-    })
-    assert response.status_code == 200, response.text
-    campaign = response.json()["campaign"]
-    assert campaign["category_id"] == seeded["category_id"]
-    assert campaign["category_label"]
-    assert campaign["cross_category_override"] is False
+def test_the_category_columns_still_record_what_a_caller_supplies(client, seeded):
+    """The columns still work; it is the payload that stopped carrying them.
 
+    5i took `category_id`, `category_label`, `category_color_token` and
+    `cross_category_override` out of the campaign payload — the category is not a
+    client-facing concept any more. Nothing came out of the schema, and this is
+    what says so: both values are still stored, and the override still leaves the
+    mark it existed to leave. It is unreachable from a screen after 5i — the
+    checkbox is gone, and `tests/test_audience_surfaces.py` proves no rendered
+    body carries it — so a deliberate API call is the only caller left, which is
+    the only kind the override was ever evidence about.
 
-def test_cross_category_override_is_accepted_and_recorded(client, seeded):
-    """The escape hatch works, and leaves a mark saying a human used it."""
-    response = client.post("/api/campaigns", json={
-        "name": f"{CAMPAIGN_PREFIX}override",
-        "message_template": "We are closed Monday. Reply STOP to opt out.",
-        "audience": seeded["audience"],
-        "cross_category_override": True,
-    })
-    assert response.status_code == 200, response.text
-    campaign = response.json()["campaign"]
-    assert campaign["category_id"] is None
-    assert campaign["cross_category_override"] is True
-
-    # Persisted, not just echoed — the audit trail has to survive the response.
+    Through the service rather than the endpoint, and that is the file's own
+    budget rule rather than a preference: `POST /api/campaigns` is capped at
+    5/minute per IP and the whole suite shares one window from one address. The
+    three creates that must go over HTTP are the criterion-5 ones above, because
+    what they assert is what the client can create.
+    """
     db = SessionLocal()
     try:
-        assert db.get(Campaign, campaign["id"]).cross_category_override == 1
+        service = CampaignService(db)
+        tagged = service.create_campaign(
+            name=f"{CAMPAIGN_PREFIX}categorised",
+            message_template="Fryer sale Thursday. Reply STOP to opt out.",
+            audience=seeded["audience"], category_id=seeded["category_id"])
+        assert tagged.category_id == seeded["category_id"]
+        assert not tagged.cross_category_override
+
+        overridden = service.create_campaign(
+            name=f"{CAMPAIGN_PREFIX}override",
+            message_template="We are closed Monday. Reply STOP to opt out.",
+            audience=seeded["audience"], cross_category_override=True)
+        assert overridden.category_id is None
+        assert overridden.cross_category_override == 1
     finally:
         db.close()
+
+    # And the payload the composer's rail reads carries none of it.
+    listed = client.get("/api/campaigns?limit=8").json()["campaigns"]
+    assert listed, "no campaigns came back, so the assertion below scans nothing"
+    for row in listed:
+        for field in ("category_id", "category_label", "category_color_token",
+                      "cross_category_override"):
+            assert field not in row, f"{field} is back in the campaign payload"
 
 
 def test_unknown_category_is_rejected(client, seeded):
@@ -141,13 +229,25 @@ def test_unknown_category_is_rejected(client, seeded):
 
 
 def test_the_rule_lives_in_the_service_not_the_router():
-    """A script or a future screen cannot route around it."""
+    """A script or a future screen cannot route around it.
+
+    The audience argument is passed through the service wrapper as well as the
+    builder function, because a wrapper whose signature is a subset of the rule
+    it delegates to is a second, quieter version of that rule — which one you get
+    would then depend on which name you called.
+    """
     db = SessionLocal()
     try:
+        service = CampaignService(db)
         with pytest.raises(CampaignError):
-            CampaignService(db).resolve_category(None, cross_category_override=False)
-        assert CampaignService(db).resolve_category(
-            None, cross_category_override=True) is None
+            service.resolve_category(None, cross_category_override=False)
+        assert service.resolve_category(None, cross_category_override=True) is None
+        # 5i, through the wrapper: the audience can satisfy the rule on its own.
+        assert service.resolve_category(
+            None, cross_category_override=False, audience="all") is None
+        with pytest.raises(CampaignError):
+            service.resolve_category(None, cross_category_override=False,
+                                     audience="category:food_service")
     finally:
         db.close()
 

@@ -3051,3 +3051,326 @@ first patch.
   like a run that had nothing to screen. The prospects are correctly shown as
   unscreened and the log names the cause, but the job row does not.
   `scrape_runner.py` and a migration are outside this session's file list.
+
+---
+
+## Module 5i Part A — named lists replace categories (appended by session 5i, 2026-09-04)
+
+Jordan's dad asked where the list for a yacht auction goes. None of the five
+categories fit and a sixth was not available — the palette is validated at four
+hues plus neutral and is full. So the picker becomes what the Williamson build
+always had: **one flat dropdown of past lists, newest first, with
+`⭐ ALL BIDDERS — MAIN LIST` pinned at the top.**
+
+`bash agent/accept-5i.sh` is the stop condition; criteria 1-10 pass locally.
+
+**577 tests** (544 + 33 new). `bash agent/gate.sh` passes, twice.
+
+**Categories are hidden, not removed.** No table, column or index was dropped or
+renamed. `categories`, `contact_categories`, `contact_lists.category_id`,
+`campaigns.category_id`, `campaigns.cross_category_override` and `--s1`..`--s4`
+are all exactly as they were, and the prospect screens still use them.
+
+### A1 — one writer on `contact_lists.created_at`, and one thing the spec did not know
+
+The defect was as specced: `contact_service.get_or_create_list()` omitted the
+column and got SQLite's `CURRENT_TIMESTAMP` (**UTC**, `2026-08-20 00:12:30`),
+`import_service.commit()` wrote `datetime.now().isoformat()` (**local**,
+`2026-08-27T10:46:45.685160`), and both rows are in the local database.
+
+Three parts, and the third is not in the session spec.
+
+1. **The server default is off the model** and both insert paths write the value
+   explicitly, from `datetime.now().isoformat()`.
+2. **Migration `f4a1c7d90e52`** normalises what is stored. It classifies by
+   *shape* — `SERVER_DEFAULT_SHAPE.fullmatch()`, not "does it contain a T" —
+   because the classification decides whether a row is **rewritten**, and a test
+   for the absence of something says yes to a bare date and to a truncated
+   write. Those are left alone and logged. Run against a copy of the real
+   `data/app.db`: `1 converted from UTC, 1 left alone`, and
+   `2026-08-20 00:12:30` became `2026-08-19T20:12:30`.
+3. **The table's own DDL still says `DEFAULT (CURRENT_TIMESTAMP)`.**
+   `f69dc078ee13:85` created the column that way and removing a column default
+   in SQLite means rebuilding the table — escalation item 8. So removing
+   `server_default` from the *model* does not remove the old writer; it only
+   stops SQLAlchemy declaring it. An insert that omitted the column would still
+   have got a UTC value from the database.
+   <br>The fix is a Python-side `default=now_iso` on the column. That makes "one
+   writer" a property of the model rather than a convention every future insert
+   site has to remember — which is the "guard with one call site" shape, and
+   this column has had two writers already. `parse_created_at()` still
+   understands the space-separated spelling on purpose: a raw `INSERT` naming no
+   `created_at` can still reach the DDL default, and a reader that assumed the
+   spelling away would be wrong on exactly the row that matters.
+
+**Ordering is by `parse_created_at()`, never by the string.** A space (0x20)
+sorts before a `T` (0x54), so under a string comparison a server-defaulted row
+always loses to a same-day isoformat row however much later it was written.
+`accept-5i.sh` check 1b prints both orders on the two live spellings side by
+side, so the disagreement is on the transcript rather than asserted out of sight.
+
+### A2 — the picker
+
+`list_summaries()` returns the pinned entry (`selector: "all"`, label from the
+one constant) and then every list newest first. No category entries. Each entry
+gained `last_sent_at` and `days_since_sent`, so the dashboard's cards and the
+composer's dropdown are one query and cannot report different numbers for the
+same list.
+
+Three decisions worth knowing about:
+
+- **`ALL_BIDDERS_LABEL` is also what `_term_label()` returns for `all`.** A3
+  makes the composer's summary panel read `audience_label()`, so a dropdown
+  saying `⭐ ALL BIDDERS — MAIN LIST` beside a panel saying "All contacts" would
+  be one audience wearing two names on one screen. One rule, two moments, one
+  sentence-maker.
+- **The list count is now *active* contacts**, not membership rows. It has to
+  match `audience_count()` on the same selector, or the picker promises people
+  no campaign could reach.
+- **`SENT_STATUSES` moved to `app/models/sms_message.py`**, beside
+  `BILLABLE_STATUSES`, carrying `dashboard_service`'s comment about why the two
+  must not be bound together. It was defined independently in `dashboard_service`
+  and `report_service`; the freshness query would have made it three.
+  `test_the_four_modules_read_one_sent_status_set` asserts identity across the
+  four readers rather than the tuple's contents.
+
+**The tuple contents could not be asserted the way the spec's mutation implies.**
+"Point the freshness query at `BILLABLE_STATUSES`" is invisible to an `is not`
+assertion: the two literals are equal, and CPython folds equal literal tuples in
+one module to one object, so `SENT_STATUSES is not BILLABLE_STATUSES` fails for a
+reason that has nothing to do with this codebase. What can be told apart is the
+*binding* — `test_freshness_is_bound_to_the_sent_set_and_not_to_the_billable_one`
+changes what "texted" means and requires the freshness figure to follow, and
+separately asserts `contact_service` does not hold the billable set at all.
+
+### A3-A6 — the screens
+
+The composer loses the category fieldset, the cross-category checkbox, the
+chip-rendering JS and the upload tab's optional tag; the audience `<select>` is
+the whole of the "existing audience" tab. The summary panel's `Category` row
+became **Audience**, filled from the selected option's `data-label` — not from
+its visible text, because the pinned label *contains* an em dash and splitting on
+one would truncate exactly the label the row exists to show.
+
+The Contacts page loses the filter tabs, the per-row chips, the bulk tagging
+controls and the add-form's category select; the import block asks for a **list
+name** instead of a category.
+
+The dashboard's `category_cards()` became `list_cards()` — the pinned card, then
+the five most recent lists, no swatch, same grid, same threshold, and the em-dash
+rule verbatim. `last_send_outcomes()` moved to list membership with it, because
+`dashboard()` hands the same cards to both. The hero's chip is gone, its tile
+reads "List last texted", and its fallback caption is "not a saved list" rather
+than a blank under an em dash.
+
+`/api/campaigns` stopped carrying `category_id`, `category_label`,
+`category_color_token` and `cross_category_override`. The columns are untouched
+and `test_the_category_columns_still_record_what_a_caller_supplies` says so.
+
+### A7 — the render scan, and the part of it that could not be built as specced
+
+`tests/test_audience_surfaces.py` renders every client-facing GET route from the
+app's own route table (reusing `test_whitelabel._get_routes()`) and asserts no
+body contains `categor`.
+
+**A7 as literally written cannot hold, and the reason is other clauses of the
+same spec.** Six surfaces still carry the word on purpose:
+
+| surface | what keeps it |
+|---|---|
+| `app.routers.prospects` | A8 — the review queue keeps its category |
+| `/prospects` (the page) | A8; served by `pages.page`, so not subtractable by module |
+| `app.routers.categories` | the taxonomy CRUD the promote dropdown reads |
+| `/api/contacts`, `/api/contacts/export.csv` | per-row chips and the export column, in `contact_query_service`, which is outside the file list |
+| `app.routers.reports` | the `category_label` key, in `report_service`/`history_service`, which the file list puts in scope "for one reason only" |
+| `/history`, `/history/{campaign_id}` | the two report templates read that key; not in the file list |
+
+So the sweep subtracts them, each with the clause that retains it written beside
+it — `test_whitelabel.py`'s own `EXEMPT_PATHS` is the precedent. What remains is
+exactly the audience surface: `/campaigns`, `/contacts`, `/`, `/dashboard`,
+`/api/lists`, `/api/campaigns/audiences`, `/api/campaigns`, `/api/dashboard`, and
+`test_the_sweep_covers_the_audience_surface` names them so the exemptions cannot
+quietly eat the sweep.
+
+Two guards on the guard, both from this project's own history with measurement
+scripts: `test_the_sweep_actually_fires` points the same matcher at
+`/api/categories`, whose body is entirely about categories, and
+`test_no_exemption_has_gone_stale` fails when an exempted route stops carrying
+the word — which is the moment the entry should be deleted rather than the moment
+somebody notices.
+
+### A8 — the prospect queue, deliberately untouched
+
+`/prospects` still renders its category chip and still refuses to promote without
+one. Criterion 7 asserts both, so the next session cannot remove them by
+accident. `/api/categories`, `/api/contacts/categories` and the two bulk routes
+are retained with no caller in the UI.
+
+### Deviations from the file list, and why
+
+Four files outside `sessions/session-5i.md`'s list were edited. Decision 006
+endorsed exactly this shape — "a stale sentence about who receives a text is not
+a documentation problem" — and each is the minimum the spec's own requirements
+force.
+
+- **`app/routers/imports.py`.** A5 requires the Contacts import to take a list
+  name and commit with `category_id=None`. The route called
+  `import_service.require_category()`, which refuses `None`, and had no
+  `list_name` form field. Without this edit A5 is not a UI change, it is a broken
+  import. `import_service.commit()` already accepted `list_name`.
+- **`app/services/campaign_service.py`.** `CampaignService.resolve_category()`
+  is the wrapper `test_campaign_guardrails` pins as "the rule lives in the
+  service". A wrapper whose signature is a subset of the rule it delegates to is
+  a second, quieter version of that rule — which one you get depends on which
+  name you called. Three lines.
+- **`app/services/import_service.py`** — docstring only. `require_category()`
+  named `/api/imports/preview` and `/commit` as its callers and they are no
+  longer.
+- **`app/models/contact_list.py`** is in the list; the Python-side `default` on
+  it is the part A1 did not specify. See A1 above.
+
+### What the review found (worked in session, no spawned reviewers)
+
+The mutation harness earned its keep again: **16 mutations, one survived the
+first run, and it was the one the spec singled out.**
+
+**`A1b`, ordering by the raw string, survived — and the reason is the exact
+contamination `accept-5e.sh` was built to find.** The ordering test read the two
+fixture rows, but `test_the_migration_converts_a_space_row_and_leaves_a_t_row
+_alone` runs earlier **in the same file** and rewrites one of them — that is its
+job. So by the time the ordering test ran, both values were isoformat, where a
+string comparison happens to give the right answer. The test passed under the
+mutation it was written to catch. Both tests now restore the two spellings
+themselves rather than trusting the fixture.
+
+**Relaxing the category rule moved a malformed selector one step down the path,
+onto an unmapped exception.** Before 5i, `POST /api/campaigns` with
+`audience="list:not-a-number"` was refused by the category rule — the wrong
+sentence, but a 400. With the rule relaxed for list audiences it reaches
+`contact_service._int_arg()`, whose `ValueError` the router does not map, so it
+became **a 500 reading "Could not create campaign"** with the real reason
+("needs a numeric id") left in a log the client cannot read. That is the
+"refusing without explaining reads as a broken tool" defect, arriving through a
+door this session opened. `create_campaign()` now maps it to a `CampaignError`
+carrying the selector grammar's own sentence, and mutation `A4c` puts the 500
+back. Found by asking what *else* arrives on the widened path, which is the
+lens `decisions/003` established.
+
+Two smaller things from the same pass:
+
+- **`_last_sent_overall()` had no `contact_id` filter** where the per-list query
+  joins memberships. Nothing writes a message row with no contact today — all
+  four construction sites pass one — but the pinned card's freshness is the one
+  query that would silently start counting one.
+- **The recency sort had no tiebreaker.** Two lists created in the same second
+  fell back on whatever order the ungrouped query returned. Id descending makes
+  "newest first" a total order.
+
+Worked directly against the review's lenses:
+
+1. **The set before the guard.** `list_cards()` slices to five *after* sorting
+   the whole list set, so "the five most recent" is five one-off uploads from
+   last week if that is what he made — which is the right answer for a card grid
+   whose question is "when did I last text these people". The composer's picker
+   is deliberately **not** capped: it is a dropdown, and every list he has used
+   belongs in it. The cap is named `RECENT_LIST_CARDS` and lives on the dashboard
+   side only.
+2. **Two moments, one sentence-maker.** Proved by mutation `A2c`, which renames
+   the constant and hard-codes the old string in `_term_label()`. Two tests go
+   red. A test comparing three literals that happen to match would not have.
+3. **A property proved of a helper is not proved of its caller.** The ordering
+   and picker-shape assertions go through `GET /api/campaigns/audiences`, and
+   criterion 5 goes through `POST /api/campaigns`. Mutation `A1b` fails on the
+   endpoint.
+4. **What else arrives on this path.** The freshness join runs over
+   `contact_list_members` and **does not read `added_at`** — checked, and stated
+   in `_last_sent_by_list()`'s docstring. That column has its own UTC/local
+   defect and nothing in 5i touches it.
+5. **What the fallback answers.** A list with no members reads 0 and is still
+   offered; a list whose members were all deactivated reads 0 and agrees with
+   `audience_count()`; a database with no lists shows the pinned card alone. All
+   three are tested.
+6. **The scan's own first version.** `test_the_sweep_actually_fires` runs the
+   matcher against a body whose answer is known before the sweep is quoted as
+   evidence.
+
+**The composer's JavaScript was checked by execution, not by reading.** A3 and
+A5 delete four functions and eight DOM ids across four templates, and a leftover
+call to one of them is a `ReferenceError` that kills the whole screen while every
+render test still passes — the HTML is fine and the failure is at execution.
+Every `<script>` block on the changed pages was concatenated in include order,
+run through `node --check`, and swept for identifiers called but never defined.
+Clean: no `loadCategories`, `selectCategory` or `chipClass` survives a call site,
+and every id the composer partials read is declared in `campaigns.html`.
+
+Also checked and clean: `app/sms/` still imports nothing from the DB layer; no
+table, column or index was dropped or renamed; the suite is green twice; every
+new test passes on its own; and the mutation run is 15 caught, 0 survived, on a
+tree verified byte-identical to the repo before the first patch.
+
+### Deploy — read this first
+
+**A1's migration rewrites data in a live table.** `scripts/backup.sh` runs before
+`alembic upgrade head`, not after.
+
+And **Part B of the session spec runs before the migration is trusted on
+production**: dump every `contact_lists.created_at` there and confirm each value
+is either `YYYY-MM-DD HH:MM:SS` or `YYYY-MM-DDTHH:MM:SS.ffffff`. A third spelling
+means the classification is not 1:1 and the migration is wrong — stop and
+escalate rather than converting. The migration leaves an unrecognised value alone
+and logs it, so a third spelling is survivable, but it is survivable as an
+un-normalised row that will sort by a clock nobody has checked.
+
+### Found while working
+
+- **`data/app.db` was migrated by starting the app, and that changed the
+  developer's database.** `app/main.py` runs `alembic upgrade head` on import in
+  development (production does not — `deployment/deploy.sh` does it as a
+  deliberate step), so booting a local uvicorn to run CLAUDE.md's "Run it" check
+  applied `f4a1c7d90e52` in place: `Demo list` went from `2026-08-20 00:12:30` to
+  `2026-08-19T20:12:30`. That is the migration doing exactly what it is for and
+  the result is correct, but it was not a deliberate act and it is worth knowing
+  before anyone reads that database expecting the old value.
+  <br>It also silently drained an acceptance check. `accept-5i.sh` check 2b
+  demonstrates the conversion on a **copy** of `data/app.db` — and once the app
+  has been started, there is nothing left in there to convert, so the check
+  printed an identical before and after while still reporting "ok". A check whose
+  evidence evaporates the first time somebody starts the server is a green light
+  wired to nothing. It now puts the copy back into the state production is in
+  before migrating it — a row carrying the exact server-default spelling, and
+  `alembic_version` rolled back to `c8a2e5f14b90`, the revision the live box is
+  on — and asserts that specific row converts to the same instant on the local
+  clock. Seeding the row alone was not enough and the check said so: an `upgrade
+  head` on a copy already stamped `f4a1c7d90e52` runs nothing at all.
+- **`contact_lists.created_at` still has `DEFAULT (CURRENT_TIMESTAMP)` in the
+  table.** Closed at the ORM layer (see A1) and left in the DDL, because removing
+  it means rebuilding the table and that is escalation item 8. A raw `INSERT`
+  that names no `created_at` still gets a UTC, space-separated value. Worth a
+  line in whichever session next has cause to rebuild that table.
+- **`app/services/campaign_service.py` is at exactly 500 lines.** The 5i
+  passthrough had to be written into the space the old docstring occupied. The
+  next addition to that file forces a split, and its own docstring already
+  describes the seam that was used last time.
+- **`import_service.require_category()` now has no caller.** It is a correct
+  function stating a rule nothing enforces any more; its docstring says so. It is
+  in a file outside 5i's list, so deleting it is a separate decision.
+- **`pages.PAGE_CONTEXT["contacts"]` still computes `category_tabs` on every
+  Contacts page load**, and after A5 nothing renders them. One wasted grouped
+  query per page view. `pages.py` is in nobody's file list.
+- **A per-contact "which lists is this person on" column is still absent** from
+  the Contacts page. It is the right product answer, it is a new query on a paged
+  screen, and `sessions/session-5i.md` puts it explicitly out of scope. Noted in
+  `contacts.html`'s own header comment too, so the next person to open that file
+  finds it.
+- **`test_whitelabel.py:104` reads `"id"` off a `/api/lists` entry**, and those
+  entries have never had one — they carry `selector`. So `PATH_VALUES["list_id"]`
+  has always been the `999999` fallback. Harmless today, because no GET route has
+  a `{list_id}` parameter and the coverage test only fires on GET routes; it
+  would matter the day one is added. Pre-existing, and `test_whitelabel.py` is
+  not in 5i's list. `tests/test_audience_surfaces.py` computes it from the
+  selector.
+- **`docs/API.md` does not describe any of 5i.** `/api/campaigns` lost four
+  fields, `/api/dashboard` renamed `categories` to `lists` and `next_up.category`
+  to `next_up.list`, `/api/campaigns/audiences` and `/api/lists` changed shape,
+  and `/api/imports/commit` gained `list_name` and stopped requiring
+  `category_id`. Docs are module 8's.

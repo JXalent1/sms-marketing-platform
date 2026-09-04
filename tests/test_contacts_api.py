@@ -243,56 +243,90 @@ def test_export_streams_the_selection_and_names_no_carrier(client, seeded):
     assert "twilio" not in body.lower()
 
 
-# ─── The retired uncategorised import ───────────────────────────────────────
+# ─── The retired import endpoints ───────────────────────────────────────────
 
-def test_uncategorised_import_is_rejected_and_names_its_replacement(client):
-    """The one guardrail module 2 exists to create must not have a side door."""
+def test_the_retired_import_is_rejected_and_names_its_replacement(client):
+    """"Gone" without "go here instead" is how an integration is rebuilt wrong.
+
+    The sentence used to say "every import is tagged with a category". It says
+    the list now, because after 5i that is both what is true and what a client
+    can act on — and because a refusal the client reads is a client-facing
+    string, which is the surface `tests/test_audience_surfaces.py` sweeps.
+    """
     for path in ("/api/contacts/import", "/api/contacts/import/preview"):
         response = client.post(path, files={"file": ("list.csv", b"phone\n9545551234\n",
                                                      "text/csv")})
         assert response.status_code == 400, path
         detail = response.json()["detail"]
         assert "/api/imports/" in detail, detail
-        assert "category" in detail.lower(), detail
+        assert "list" in detail.lower(), detail
+        assert "categor" not in detail.lower(), detail
 
 
-def test_the_category_first_import_still_requires_a_category(client):
-    """The replacement is not a rename: it refuses an upload with no category.
+def test_the_import_takes_a_list_name_and_no_category(client):
+    """5i A5. The requirement moved from the tag to the name.
 
-    5e A2 made the category optional in `import_service`, because a file uploaded
-    as step one of a campaign is targeted by the list it creates. It did **not**
-    make it optional here. This is the standalone Contacts-screen import: it
-    produces contacts and no campaign, so an untagged one is the untagged blob
-    the category work exists to prevent.
+    This test used to assert the opposite — that `/api/imports/*` refused an
+    upload with no `category_id`, on the grounds that a standalone import
+    produces contacts and no campaign, so an untagged one is a pile nobody can
+    safely text. 5i replaced the tag with the thing that was carrying the
+    meaning: the import lands in a list the **client names**, and that list is
+    what a campaign points at. An import with a name is not untagged.
 
-    Both endpoints, and both in the same test, because the preview is where he
-    decides and the commit is what writes — a requirement enforced on only the
-    first is a requirement a script routes around.
-
-    The refusal is a 400 carrying the sentence, not FastAPI's 422 for a missing
-    form field. That is the change 5e made and it is an improvement: the rule now
-    lives in the service, where a caller that is not HTTP meets it too.
+    Both endpoints, because the preview is where he decides and the commit is
+    what writes, and a rule enforced on only the first is a rule a script routes
+    around. Here both must simply *work*.
     """
-    for path in ("/api/imports/preview", "/api/imports/commit"):
-        response = client.post(path, files={"file": ("list.csv",
-                                                     b"phone\n9545551234\n", "text/csv")})
-        assert response.status_code == 400, path
-        assert "Choose a category" in response.json()["detail"], path
+    csv = b"phone\n9545551234\n"
+    preview = client.post("/api/imports/preview",
+                          files={"file": ("list.csv", csv, "text/csv")})
+    assert preview.status_code == 200, preview.text
+    assert preview.json()["valid_phones"] == 1
+
+    name = "contacts-api 5i named import"
+    commit = client.post("/api/imports/commit",
+                         files={"file": ("list.csv", csv, "text/csv")},
+                         data={"list_name": name})
+    assert commit.status_code == 200, commit.text
+    body = commit.json()
+    assert body["list_name"] == name
+
+    # The list it created is immediately offerable as an audience, which is the
+    # only reason the name matters. Cleaned up: this module's neighbours assert
+    # exact counts against one shared database.
+    selectors = {s["selector"] for s in
+                 client.get("/api/lists").json()["lists"]}
+    assert f"list:{body['list_id']}" in selectors
+
+    undone = client.post(f"/api/imports/{body['list_id']}/undo")
+    assert undone.status_code == 200, undone.text
 
 
 # ─── The page ───────────────────────────────────────────────────────────────
 
-def test_contacts_page_renders_its_tabs_server_side(client):
+def test_the_contacts_page_names_no_category_and_offers_a_named_import(client):
+    """What 5i took off this screen, and what it put there instead.
+
+    The tab row, the per-row chips and the bulk tagging controls are gone; the
+    import asks for a list name. Asserted on the rendered page rather than on the
+    template source, because the tabs were server-rendered on the first paint and
+    a grep would not have been able to tell the difference.
+    """
     html = client.get("/contacts").text
     db = SessionLocal()
     try:
         labels = [row.label for row in db.query(Category).filter(Category.is_active == 1)]
     finally:
         db.close()
+    assert labels, "no active categories, so the assertion below scans nothing"
     for label in labels:
         # Escaped: "Equipment & Machinery" reaches the page as
         # "Equipment &amp; Machinery", which is Jinja doing its job.
-        assert html_module.escape(label) in html
+        assert html_module.escape(label) not in html, label
+
+    assert 'id="importListName"' in html
+    assert "Import a CSV into a new list" in html
+
     # No line-type column: we hold no line-type data and will not imply we do.
     assert "Landline" not in html
     assert "VoIP" not in html

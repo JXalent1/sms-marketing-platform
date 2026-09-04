@@ -55,9 +55,10 @@
 
         {# ── Audience source ──────────────────────────────────────────────
            Upload is first and is the default because that is how the tool is
-           actually used: a fresh list per auction. The existing paths are not
-           demoted to a workaround — they are the other tab, and they behave
-           exactly as they did, category requirement included. #}
+           actually used: a fresh list per auction. The other tab is the flat,
+           recency-sorted list of everything he has used before, pinned entry
+           first — the two things he actually does, and 5i left the labels
+           alone because they were already the right two. #}
         <div role="tablist" aria-label="Audience source"
              class="inline-flex rounded-lg border border-line-strong bg-page p-0.5">
           <button type="button" role="tab" id="modeUploadTab" aria-selected="true"
@@ -74,31 +75,17 @@
 
         {# ── Upload ─────────────────────────────────────────────────────── #}
         <div id="uploadPane" class="space-y-4">
-          <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            <div>
-              <label for="uploadFile" class="block text-[13px] font-medium text-ink-2">CSV file</label>
-              <input type="file" id="uploadFile" accept=".csv"
-                     class="mt-1.5 block w-full rounded-lg border border-line-strong bg-page px-3 py-2 text-[13px] text-ink-2
-                            file:mr-3 file:rounded-md file:border-0 file:bg-surface-2 file:px-3 file:py-1.5
-                            file:text-[12px] file:font-medium file:text-ink">
-            </div>
-            <div>
-              {# Optional, and it says so in the label rather than in a warning
-                 underneath. Untagged is a first-class outcome: the list this
-                 upload creates is the campaign's whole audience, so the category
-                 is a tag for later rollups, not the targeting. #}
-              <label for="uploadCategory" class="block text-[13px] font-medium text-ink-2">
-                Tag with a category <span class="font-normal text-ink-3">(optional)</span>
-              </label>
-              <select id="uploadCategory"
-                      class="mt-1.5 block w-full rounded-lg border border-line-strong bg-page px-3 py-2.5 text-[14px] text-ink
-                             focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand">
-                <option value="">No category</option>
-              </select>
-              <p class="mt-1 text-[11px] text-ink-3">
-                Only for comparing niches later. It does not change who gets this message.
-              </p>
-            </div>
+          <div>
+            <label for="uploadFile" class="block text-[13px] font-medium text-ink-2">CSV file</label>
+            <input type="file" id="uploadFile" accept=".csv"
+                   class="mt-1.5 block w-full rounded-lg border border-line-strong bg-page px-3 py-2 text-[13px] text-ink-2
+                          file:mr-3 file:rounded-md file:border-0 file:bg-surface-2 file:px-3 file:py-1.5
+                          file:text-[12px] file:font-medium file:text-ink">
+            <p class="mt-1 text-[11px] text-ink-3">
+              The file becomes a list under this campaign's name, and it is this
+              campaign's whole audience. It joins the dropdown next door, so the
+              next sale can be sent to the same people without uploading again.
+            </p>
           </div>
 
           <button type="button" id="uploadPreviewBtn"
@@ -110,29 +97,12 @@
         </div>
 
         {# ── Existing audience ──────────────────────────────────────────── #}
+        {# One control, deliberately. Every list he has used before, newest
+           first, with the main list pinned at the top — the picker is the whole
+           of this tab since 5i. The order is recency because that is how he
+           thinks about it ("the one from Tuesday"), and the labels are the
+           campaign names the lists were created under. #}
         <div id="existingPane" class="hidden space-y-5">
-          <fieldset>
-            <legend class="text-[13px] font-medium text-ink-2">
-              Category <span class="text-crit" aria-hidden="true">*</span>
-              <span class="sr-only">(required)</span>
-            </legend>
-            <div id="categoryChoices" role="radiogroup" aria-label="Category"
-                 class="mt-2 flex flex-wrap gap-2">
-              <span class="text-[13px] text-ink-3">Loading…</span>
-            </div>
-            <p id="categoryError" class="mt-2 hidden text-[12px] text-crit"></p>
-
-            {# The escape hatch, and it looks like one. Never pre-ticked: a default
-               here would turn "a human decided this goes to everyone" into "the
-               form submitted with a box already checked". #}
-            <label class="mt-3 flex items-start gap-2 text-[12px] text-ink-3">
-              <input type="checkbox" id="crossCategory"
-                     class="mt-0.5 h-3.5 w-3.5 rounded border-line-strong bg-page text-brand focus:ring-brand">
-              <span>This message is not for one auction. Send it across every category —
-                    recorded on the campaign as a deliberate override.</span>
-            </label>
-          </fieldset>
-
           <div>
             <label for="audience" class="block text-[13px] font-medium text-ink-2">Audience</label>
             <select id="audience"
@@ -140,6 +110,7 @@
                            focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand">
               <option value="">Loading…</option>
             </select>
+            <p class="mt-1 text-[11px] text-ink-3">Most recent first.</p>
           </div>
         </div>
 
@@ -151,7 +122,7 @@
         </div>
 
         <p class="rounded-lg bg-surface-2 px-3 py-2.5 text-[12px] leading-relaxed text-ink-2">
-          Anyone in more than one of your categories is texted <strong class="font-semibold text-ink">once</strong>,
+          Anyone on more than one of your lists is texted <strong class="font-semibold text-ink">once</strong>,
           people who have opted out are never included, and anyone texted inside the
           hold-back window is held back automatically — you will see all three numbers
           below before you commit to anything.
@@ -294,7 +265,7 @@
       </div>
       <ul id="preflightList" class="divide-y divide-line">
         <li class="px-5 py-4 text-[13px] text-ink-3">
-          Pick a category, write the message, then run the checks.
+          Pick an audience, write the message, then run the checks.
         </li>
       </ul>
     </section>
@@ -338,8 +309,14 @@
     <section class="rounded-xl border border-line bg-surface">
       <h2 class="border-b border-line px-5 py-3 text-[13px] font-semibold text-ink">This send</h2>
       <dl class="divide-y divide-line text-[13px]">
+        {# The resolved audience, in the picker's own words — not a row that
+           reads "—" on every campaign now that there is no category to put in
+           it. The wording comes from `audience_label()` server-side and from
+           the selected option client-side, and both read the one pinned
+           constant, so "⭐ ALL BIDDERS — MAIN LIST" here and in the dropdown
+           above cannot drift apart. #}
         <div class="flex items-center justify-between gap-3 px-5 py-2.5">
-          <dt class="text-ink-3">Category</dt><dd class="font-medium text-ink" id="sumCategory">—</dd>
+          <dt class="text-ink-3">Audience</dt><dd class="font-medium text-ink" id="sumAudience">—</dd>
         </div>
         <div class="flex items-center justify-between gap-3 px-5 py-2.5">
           <dt class="text-ink-3">Recipients</dt><dd class="font-medium tabular-nums text-ink" id="sumRecipients">0</dd>

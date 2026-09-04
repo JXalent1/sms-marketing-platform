@@ -73,11 +73,19 @@ def _chunked(items: List, size: int = _CHUNK) -> Iterable[List]:
 def require_category(db: Session, category_id: Optional[int]) -> Category:
     """Resolve a category that must exist. For callers where untagged is wrong.
 
-    `/api/imports/preview` and `/commit` are those callers: a standalone import
-    with no category produces exactly the untagged blob the category work exists
-    to prevent. Kept here rather than in the router so a script cannot route
-    around it by not being HTTP — the same argument that puts the campaign's
-    category rule in the service.
+    **Nothing calls this any more.** `/api/imports/preview` and `/commit` were
+    the callers, on the grounds that a standalone import with no category
+    produced the untagged blob the category work existed to prevent. Session 5i
+    replaced the tag with the thing that was actually carrying that meaning: an
+    import lands in a **list the client names**, and the list is what a campaign
+    points at. An import with a name is not untagged.
+
+    Left in place rather than deleted because deleting it is a decision in a file
+    outside 5i's list, and because the rule it states is still the right one for
+    any future caller that genuinely needs a category of its own. It is stated
+    here rather than in a router so such a caller cannot route around it by not
+    being HTTP — the same argument that puts the campaign's category rule in the
+    service. `status.md` carries this under "Found while working".
     """
     if category_id is None:
         raise ValueError(

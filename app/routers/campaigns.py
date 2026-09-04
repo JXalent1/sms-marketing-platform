@@ -437,22 +437,20 @@ def _campaign_dict(db: Session, c: Campaign, top_ups: Optional[list] = None) -> 
     Adding it back is caught by tests/test_whitelabel.py, not by the gate — the
     gate greps for the carrier's name and this leak never contained one.
 
-    A campaign predating module 4 has no category and gets nulls here. The UI
-    shows "—" for those; it does not guess, because a guessed category is
-    indistinguishable from one a human chose and the column exists to record the
-    choice.
+    Session 5i took the four category fields out of this payload — `category_id`,
+    `category_label`, `category_color_token` and `cross_category_override`. The
+    columns all stay on the model and every historical value is intact; what
+    changed is that this is a client-facing payload and the category is no longer
+    a client-facing concept. The composer's campaign rail was their only reader
+    and it now prints `audience_label`, which says the same thing in the words
+    the picker used. `tests/test_audience_surfaces.py` is what keeps them out.
     """
-    category = db.get(Category, c.category_id) if c.category_id else None
     return {
         "id": c.id,
         "name": c.name,
         "message_template": c.message_template,
         "audience": c.audience,
         "audience_label": c.audience_label,
-        "category_id": c.category_id,
-        "category_label": category.label if category else None,
-        "category_color_token": category.color_token if category else None,
-        "cross_category_override": bool(c.cross_category_override),
         "status": c.status,
         "total_recipients": c.total_recipients,
         "sent_count": c.sent_count,
