@@ -946,3 +946,57 @@ Detail for each is in `status.md` under "Found while working".
    Pre-existing; harmless until a GET route takes a `{list_id}`.
 7. **A per-contact "which lists is this person on" column** on Contacts, explicitly out of
    5i's scope and still the right product answer.
+
+---
+
+## Prospecting, decided 2026-09-04
+
+**`decisions/009` reverses the seashell exclusion.** Shell wholesalers, importers and
+distributors are **buyers, and the priority group** — not sellers. The plan of record had
+inferred "seller" from the word "wholesaler" without asking the client; a wholesaler is a
+merchant who buys inventory at margin, so a discounted lot is exactly what they bid on. As
+specced, P2 would have found Atlantic Coral Enterprise and discarded it.
+
+The niche is **three industries sharing a material**, and they do not share a radius:
+
+1. Wholesalers, importers, distributors — **priority**, national
+2. Businesses that use shells as material (decor and furniture makers, mosaic and surface
+   fabricators, craft manufacturers, sign and wall installers) — national
+3. Shell aggregate and landscape supply (crushed shell by the cubic yard) — **regional,
+   150 miles at most**; freight dominates the price, so "can they collect it" binds harder
+   here than for a walk-in cooler
+
+Retail shell and beach shops are demoted to a low-priority fourth group.
+
+**Two consequences for P2, both written into the spec:**
+
+- **Radius becomes a property of the search-term group**, with the category value as
+  fallback. One category cannot carry two national groups and one regional one.
+- **`PROSPECT_CATEGORY_RADIUS_MILES` has no `marine` and no seashell entry**, so both fall
+  back to the deliberately-conservative `PROSPECT_DEFAULT_RADIUS_MILES = 150`. The two
+  groups that most need to be national would quietly run as 150-mile searches.
+
+### Volume, stated plainly
+
+Jordan's target is 2,000–3,000 new textable numbers as a test. **Seashells cannot supply
+that and should not be asked to.** The priority group is 50–200 businesses nationally; the
+whole seashell niche is 400–900 mobiles at a storefront-retail mobile rate.
+
+**Memorabilia carries the volume, and it is already national:** 9,755 pawn shops and 3,256
+sports card stores in the US, plus coin and comic dealers. Marine is national too and its
+radius entry is missing. The three national groups together clear 15,000 businesses, which
+at the plan's 25–35% mobile rate is 3,700–5,200 numbers — the 2–3k test comes out of that
+on the first run.
+
+Regional groups — food service, equipment, estates, general — stay regional. Those lots are
+collected in person, so a buyer 1,000 miles away never bids and costs a segment on every
+send forever.
+
+**Cost of a 15,000-business run:** roughly $37.50 of line-type screening, and about nothing
+for Places in the first month (first 1,000 requests free). That fits under
+`PROSPECT_LOOKUP_MONTHLY_CAP = 50.0` but only just — one re-run trips it, and the guard
+refuses cleanly rather than overspending.
+
+**Blocker, Jordan's:** a Google Places API key with **Enterprise tier**. The phone number
+only comes back at that tier. P2 can be *built* without it — the spec forbids real API
+calls in the session — so the key gates the first live run, not the work.

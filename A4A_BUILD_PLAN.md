@@ -100,55 +100,84 @@ this month, and that timing beats volume.
 
 ---
 
-## Seashells — a named niche, added 2026-09-01
+## Seashells — a named niche, added 2026-09-01, rewritten 2026-09-04
 
 The client asked for this specifically: seashell businesses perform unusually well for him.
 
-### The inversion to be careful about
+**Rewritten after `decisions/009`.** The first version of this section had the niche wrong
+in a way that would have made P2 discard its best prospects. What it said, and why it was
+wrong, is kept below the taxonomy — the reasoning is the useful part.
 
-"People who sell seashells" reads like a seller, and this plan's one rule is buyers only.
-It isn't. **A shell shop buys inventory to stock its shelves** — it bids at his auction.
-Same shape as resale shops under Estates, and the same shape that made me wrongly list
-estate liquidators as buyers in the first draft.
+### The three groups
 
-The genuine sellers here are **shell wholesalers and importers**, who are more likely to
-consign surplus stock to him than bid on it. Excluded, and named in the exclusion list.
+**Priority is the first.** These are three different industries that happen to share a
+material, and treating them as one group is what produced the original error.
 
-### Buyer types
+| Group | What they are | Why they bid | Radius |
+|---|---|---|---|
+| **Wholesalers, importers, distributors** — *priority* | The trade itself. Containers in, sold on by the pound and the case: Atlantic Coral Enterprise, US Shell, Worldwide Wildlife Products, California Seashell, Blue Seas Trading | A discounted lot is inventory at margin. This is their whole business | **National** |
+| **Businesses that use shells as material** | Decor and furniture makers, mosaic and surface fabricators, craft manufacturers, sign and wall installers, coastal interior designers | Raw input for what they build — the tables and the wall designs | **National** |
+| **Shell aggregate and landscape supply** | Crushed and washed shell by the cubic yard: driveways, paths, hardscape. Landscape supply yards, hardscape contractors, decorative concrete | Bulk material for jobs | **Regional, 150 miles at most** |
+| Retail shell and beach shops | Tourist-facing shops stocking shells to sell on | Inventory for the shelf | National, low priority |
 
-| Buyer | Why they bid |
-|---|---|
-| Shell and beach shops | inventory to resell — the core of this niche |
-| Coastal souvenir and gift shops | shells as stock, especially Gulf-coast towns |
-| Beach / nautical decor retailers | decor lots |
-| Interior designers and stagers doing coastal work | already in Estates; shells overlap |
-| Aquarium and reef shops | shells, coral, specimens |
-| Jewellery makers and craft suppliers | raw material by weight |
-| Collectors — conchologists | specimen shells, the high-value end |
+**The third group must not run national.** Crushed shell is sold by the cubic yard, it is
+heavy, and freight dominates its price — nobody buys a yard of it from a thousand miles
+away. The "can they collect it" rule binds harder here than it does for a walk-in cooler,
+not less.
 
-### Geography: national, with a dense Florida cluster
+**Retail shops are demoted, not removed.** They were this section's entire model of the
+niche and the client did not name them. `PROSPECT_TERM_FLAG_SHARE` will retire them on
+their own evidence if they produce the wrong side of the room.
 
-Shells ship cheaply, so the collector market is national like memorabilia. But Florida is
-the centre of it — Sanibel, Captiva and the Gulf coast — so a local sweep and a national
-sweep will both pay, and they are different search runs with different radii.
+### The inversion this section originally got backwards
+
+The first version read:
+
+> "People who sell seashells" reads like a seller, and this plan's one rule is buyers only.
+> It isn't. **A shell shop buys inventory to stock its shelves.** … The genuine sellers here
+> are **shell wholesalers and importers**, who are more likely to consign surplus stock to
+> him than bid on it. Excluded.
+
+Half right and half backwards. It caught that a retail shop is a buyer and then invented a
+seller to sit behind it, from the word "wholesaler" rather than from anything the client
+said.
+
+**A wholesaler is a merchant.** They buy cheap and resell at margin, so when a container of
+shells goes under the hammer they are the most likely paddle in the room. The section
+collapsed *"sells seashells for a living"* into *"sells **to** the auction house"*, and
+those are different claims. Being a possible consignor does not disqualify anyone from
+being a buyer — a trader is on both sides on different days.
+
+**The general form, and it is worth carrying past seashells:** "do they sell this thing?"
+is the wrong question. **"Would they raise a paddle for a lot of it?"** is the question.
+For a trader in the goods being auctioned, the answer is usually yes. This is the estate
+liquidator error — listed as a buyer, corrected to a seller — arriving from the opposite
+direction, which is why the rationale-per-term rule exists: a claim somebody can disagree
+with is a claim somebody can correct.
+
+### What still stands
+
+The exclusion list is unchanged apart from one line. Other auction houses, estate-sale
+companies, estate liquidators, appraisers, consignment galleries and "we buy houses"
+operators are still never prospected. Only "shell wholesalers and importers" comes out.
+
+Geography is national with a dense Florida cluster for the first two groups — Sanibel,
+Captiva and the Gulf coast are the centre of the trade, so a local sweep and a national
+sweep both pay and they are different runs.
 
 ### Sources beyond Google Places
 
-Places will find shell shops, souvenir and decor retailers. Two source types will find the
-higher-intent end and neither is a Places query:
+Unchanged and still the higher-intent end, still P3 rather than P2:
 
-- **Shell club and conchological society directories**, and **shell show exhibitor
-  lists.** Public, targeted, and a membership list is a list of people who buy specimen
-  shells on purpose. The highest-intent seashell source available.
-- **Marketplace sellers** on eBay and Etsy listing shells. These are literally "people who
-  sell seashells" — they buy inventory to resell, and they are not in Places. A separate
-  source type; note it for P3+ rather than bending Places to reach it.
+- **Shell club and conchological society directories**, and **shell show exhibitor lists.**
+  A membership list is a list of people who buy specimen shells on purpose.
+- **Marketplace sellers** on eBay and Etsy listing shells — they buy inventory to resell,
+  and they are not in Places.
 
-### Where it lives in the product
+### Volume, stated plainly
 
-**Not a new category.** The palette is validated at four hues plus neutral and is already
-full, and since 5e the campaign-first flow means a niche does not need a category to be
-textable — upload the list, name the campaign "Seashell Auction 9/14", send.
-
-Seashells is a **search-term group in the P2 taxonomy**, with its own buyer rationale per
-term, promoted into General or left untagged as the operator prefers.
+The priority group is small: on the order of 50–200 businesses nationally. It is the
+highest-intent group in the plan and it is **not** where a 2,000–3,000 number list comes
+from. Memorabilia carries that — 9,755 pawn shops and 3,256 sports card stores nationally,
+both already national in the taxonomy. Seashells is the niche the client says converts;
+memorabilia is the niche that supplies the volume. Run both.

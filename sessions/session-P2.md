@@ -49,15 +49,33 @@ distinction is worth more than any other targeting choice here — it is the dif
 between a 30% and a 70% mobile rate, and every landline costs $0.0025 to discover and
 returns nothing.
 
-Seed groups from the plan of record: food service, equipment, estates, memorabilia,
+~~Seed groups from the plan of record: food service, equipment, estates, memorabilia,
 general, marine, **and the seashell group** — shell and beach shops, coastal souvenir and
 gift shops, nautical decor retailers, aquarium and reef shops, jewellery and craft
-suppliers.
+suppliers.~~
+
+**Superseded by `decisions/009`, 2026-09-04.** Seed groups are food service, equipment,
+estates, memorabilia, general, marine, and **three** seashell groups, which are three
+different industries sharing a material:
+
+1. **Shell wholesalers, importers and distributors — the priority group.** National.
+2. **Businesses that use shells as material** — decor and furniture makers, mosaic and
+   surface fabricators, craft manufacturers, sign and wall installers, coastal interior
+   designers. National.
+3. **Shell aggregate and landscape supply** — crushed and washed shell by the cubic yard,
+   landscape supply yards, hardscape contractors, decorative concrete. **Regional, 150
+   miles at most** — freight dominates the price of a cubic yard of shell, so the "can they
+   collect it" rule binds harder here than for a walk-in cooler.
+
+Retail shell and beach shops stay as a fourth, low-priority group. They were the original
+model of this niche and the client did not name them.
 
 **The exclusion list is part of the taxonomy, not a filter bolted on:** other auction
 houses, estate-sale companies, estate liquidators, appraisers, consignment galleries,
-"we buy houses" operators, shell wholesalers and importers. Match on business name, and
-make the list one shared definition — `CLAUDE.md` records what happens when the same
+"we buy houses" operators, ~~shell wholesalers and importers~~ — **`decisions/009` removed
+that last entry and only that one: a wholesaler is a merchant who buys inventory at margin,
+and the exclusion would have discarded this niche's best prospects.** Match on business
+name, and make the list one shared definition — `CLAUDE.md` records what happens when the same
 reserved set gets copied into three layers.
 
 ## A2. The source
@@ -67,10 +85,18 @@ touches the database and never decides what is textable.
 
 - **Enterprise tier is required** — the phone number only comes back at that tier.
 - Text Search with pagination; up to 20 places per request, three pages per query.
-- Per-category radius from config: food service / equipment / general 150 miles,
-  estates 100, memorabilia and marine national. **Seashells runs twice** — a dense
-  Florida sweep and a national sweep, different runs with different radii, because the
-  trade centres on the Gulf coast but collectors are everywhere.
+- ~~Per-category radius from config~~ — **`decisions/009`: radius becomes a property of
+  the search-term group, with the category value as its fallback.** One category now
+  carries two national term groups and one regional one, so a per-category value cannot
+  express it. Category defaults stand: food service / equipment / general 150 miles,
+  estates 100, memorabilia and marine national.
+- **`PROSPECT_CATEGORY_RADIUS_MILES` has no `marine` entry and no seashell entry**, so both
+  fall back to `PROSPECT_DEFAULT_RADIUS_MILES = 150` — the conservative default, chosen
+  deliberately. Both need explicit values, or the two groups that most need to be national
+  quietly run as 150-mile searches.
+- **The seashell groups run three sweeps, not two**: national for groups 1 and 2, a dense
+  Florida sweep for the same two because the trade centres on the Gulf coast, and a
+  regional-only sweep for group 3.
 
 ## A3. Spend control
 
@@ -112,7 +138,13 @@ worse than no guarantee, because it is quoted as though it were true everywhere.
 5. Every prospect carries its search term and that term's buyer rationale, and the review
    queue renders both.
 6. Every excluded business type is rejected by name before it becomes a prospect — one
-   test per exclusion, including shell wholesalers.
+   test per exclusion. ~~including shell wholesalers~~ **`decisions/009`: instead, a test
+   that a shell wholesaler, importer or distributor is *accepted* — the reversal needs a
+   guard in the direction it was wrong, or the next session re-adds the exclusion from the
+   plan's old wording.**
+6b. The radius applied to each seashell group is asserted individually: national, national,
+   regional. A single per-category value passing all three is the defect this criterion
+   exists to catch.
 7. A place already a Contact, already rejected, or already looked up is skipped before any
    spend.
 8. All four earlier harnesses verify their scratch trees and print `SCRATCH VERIFIED
