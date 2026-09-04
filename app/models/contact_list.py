@@ -112,12 +112,41 @@ class ContactList(Base):
         Integer, ForeignKey("categories.id", ondelete="SET NULL"), nullable=True
     )
 
+    # Hidden from the picker, still resolving for history — the same ruling
+    # categories got in 5i, and for the same reason. An archived list is absent
+    # from `list_summaries()`, so it leaves the composer's dropdown, `/api/lists`
+    # and the dashboard cards; `resolve_audience()`, `_term_ids_query()`,
+    # `_term_label()` and `audience_count()` all keep resolving it, so a campaign
+    # that targeted list 20 still renders that list's name in history and in its
+    # report instead of the raw string `list:20`.
+    #
+    # A Python-side default and no server default. `created_at` two fields up is
+    # the cautionary tale: its `DEFAULT (CURRENT_TIMESTAMP)` is still in the
+    # table's DDL because removing a column default in SQLite means rebuilding
+    # the table, and 5i had to close that second writer at the ORM layer instead.
+    # This column starts with one writer. `is_archived()` in
+    # `contact_service` still reads NULL as "not archived", because a raw INSERT
+    # naming no `archived` can still produce one.
+    archived = Column(Integer, nullable=True, default=0)
+
 
 class ContactListMember(Base):
     __tablename__ = "contact_list_members"
     __table_args__ = (
         UniqueConstraint("list_id", "contact_id", name="uq_list_contact"),
         Index("idx_member_list", "list_id"),
+        # The freshness join's key, and the reason `uq_list_contact` above is
+        # not enough: a composite index only serves a lookup on its **leading**
+        # column, and that one leads with `list_id`. So "every membership row
+        # for contact 4,113" had no index at all until session 5j, and
+        # `_last_sent_by_list()` joined 15,500 of these against 30,000 messages
+        # in 10 minutes 2 seconds on production.
+        #
+        # Both sides of the join key are indexed rather than only the side the
+        # planner happens to pick: at suite scale SQLite searches this table, at
+        # production scale it searches `sms_messages`. See migration
+        # `a3f1e08c5d47`.
+        Index("idx_member_contact", "contact_id"),
     )
 
     id = Column(Integer, primary_key=True, index=True)

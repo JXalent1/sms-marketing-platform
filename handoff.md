@@ -1151,3 +1151,116 @@ a copy already at head runs nothing.
 - **A "which lists is this person on" column on Contacts.** The right product
   answer, a new query on a paged screen, and a session of its own.
 - **`docs/API.md`** does not describe any of 5i. Module 8's.
+
+---
+
+# Session 5j handoff — the index migration, the cost guard, list archive/rename (2026-09-04)
+
+## Where this leaves things
+
+Part A is complete and unshipped. `bash agent/accept-5j.sh` exits 0 with every
+criterion printed, `bash agent/gate.sh` is green twice at **613 tests**, and
+`agent/mutate-5j.py` reports **19 mutations, 0 survived** on a scratch tree it
+verified byte-identical to the repo first. Full detail is the 5j section at the
+end of `status.md`.
+
+The deploy is Jordan's, and it is the one this session exists to make possible:
+`deployment/deploy.sh` aborts without restarting when a migration fails, and
+production's schema carries two indexes that no migration describes.
+
+## What landed
+
+**Two migrations, deliberately separate.**
+
+- `a3f1e08c5d47` — creates `idx_sms_contact` and `idx_member_contact` **if
+  absent**, then drops `ix_sms_messages_contact_id` and `ix_clm_contact_id` **if
+  present**. Create before drop, per table: both orders reach the same schema and
+  only one of them leaves an instant with the join unindexed.
+- `b52d9c1f4e08` — `contact_lists.archived`, additive, nullable, backfilled to 0,
+  no server default.
+
+A reviewer can revert either without the other. `downgrade()` on the first does
+**not** recreate the hand-made names.
+
+**The cost guard.** `tests/test_query_cost.py` plus `tests/_query_plan.py`: the
+first check in this repo about what a query costs rather than what it returns.
+
+**Archive, rename, delete.** `app/services/list_admin.py` (new — the 500-line
+rule forced a split), `PATCH /api/lists/{id}`, `GET /api/lists/manage`, a
+`DELETE` that refuses a referenced list with 409, and A5's panel beside the
+audience picker in `_composer-lists.html`.
+
+## Four things worth knowing before you touch any of it
+
+1. **The spec's cost assertion was wrong and the shipped one differs.** "No full
+   scan of `sms_messages` or `contact_list_members`" is *green* on the 10-minute
+   plan (SQLite searches `sms_messages` through `idx_sms_status`, and four
+   distinct statuses means each lookup walks a quarter of the table) and *red* on
+   the plan that fixed production (which scans `contact_list_members`). The guard
+   asserts on the **join key** instead, plus a schema assertion that both sides
+   carry an index leading on `contact_id`. Criterion 8 prints the spec's rule
+   evaluated on the outage plan so the reasoning is on the transcript. **If you
+   disagree with the departure, this is the thing to rule on** — it is written up
+   at the top of the 5j "A2" block in `status.md`.
+
+2. **`campaigns.audience_label` is a stored render, not a live lookup.** The rail,
+   history and every report read that column, written once by `campaign_builder`.
+   `list_admin.rename()` recomputes it for every campaign whose selector names the
+   list, **from `audience_label()`** — never by substituting the new name into the
+   old string, because a compound selector's label carries another term. Do not
+   "optimise" that into a string replace, and do not freeze the label at send time:
+   renaming a list is *meant* to change what old reports say.
+
+3. **Archived is one predicate, `contact_service.is_archived()`, and one read,
+   `_list_rows()`.** The picker says "archived" by absence; A5's panel says it with
+   a badge. `resolve_audience()`, `_term_ids_query()`, `_term_label()` and
+   `audience_count()` never look at the flag — that is what keeps a campaign that
+   targeted list 20 rendering its name instead of the string `list:20`.
+
+4. **The composer now escapes attributes with `attr()`, not `esc()`.** `esc()`
+   does not escape the double quote that ends an attribute, and 5j is what made a
+   list label a string the client types. `tests/test_composer_markup.py` sweeps
+   for the shape. `base.html` is untouched; other templates using `esc()` in
+   attribute position have not been audited.
+
+## Not done, and deliberately
+
+- **Merging two lists.** Out of scope in the spec and a different problem —
+  membership provenance (`created_contact`, `created_tag`) makes a merge
+  irreversible in a way an archive is not.
+- **The `categories` column in `/api/contacts/export.csv`** — residual 1 in
+  `modules.md`, still the first item of whichever session touches
+  `contact_query_service.py`.
+- **A CSV uploaded under an archived list's name still writes into that list and
+  it stays hidden.** A behaviour decision, not an oversight; both answers are
+  defensible and one of them matters to anyone with a recurring import. One line
+  in `contact_service.get_or_create_list()` when it is ruled on. See "Found while
+  working" in `status.md`.
+- **No delete button in A5's panel.** Archive is what "take it out of my dropdown"
+  means; `DELETE` is API-only and refuses anything a campaign referenced.
+
+## Verified this session
+
+`accept-5j.sh` ACCEPT PASS · gate green twice (613 passed) · 19/19 mutations
+caught on a pristine-verified tree · migrations exercised on a fresh clone, on
+production's shape twice through, and down-and-up again · `./run.sh` with
+`/login` 200, `/static/app.css` 200, `/health` `sending_ok: true` · the whole
+rename/collision/delete-refusal/archive/unarchive flow driven by hand against the
+running box and the state restored · composer JavaScript checked by execution
+(`node --check`, no undefined identifier, no undeclared DOM id).
+
+## Part B — Jordan's, after the deploy
+
+```
+ssh -i ~/.ssh/a4a_deploy appuser@67.205.180.62 'cd /home/appuser/app && ./venv/bin/python -c "
+import sqlite3
+c = sqlite3.connect(\"data/app.db\")
+for t in (\"sms_messages\", \"contact_list_members\"):
+    print(t, [r[1] for r in c.execute(\"PRAGMA index_list(%s)\" % t)])
+"'
+```
+
+Expect `idx_sms_contact` and `idx_member_contact` present, and
+`ix_sms_messages_contact_id` and `ix_clm_contact_id` gone. **Four indexes where
+there should be two means the migration created rather than converged**, and the
+duplicates cost write time on every send.

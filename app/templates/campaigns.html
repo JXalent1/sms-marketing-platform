@@ -104,7 +104,17 @@
            campaign names the lists were created under. #}
         <div id="existingPane" class="hidden space-y-5">
           <div>
-            <label for="audience" class="block text-[13px] font-medium text-ink-2">Audience</label>
+            <div class="flex items-end justify-between gap-3">
+              <label for="audience" class="block text-[13px] font-medium text-ink-2">Audience</label>
+              {# A5. The panel lives beside the picker because the picker is what
+                 it fixes: every test upload became a permanent entry here and
+                 there was no way to rename or hide one. Not a nav entry and not
+                 a new screen — the affordance the dropdown was missing. #}
+              <button type="button" id="listPanelBtn" aria-expanded="false" aria-controls="listPanel"
+                      class="rounded-md border border-line-strong bg-page px-2.5 py-1 text-[11px] font-medium text-ink hover:bg-surface-2">
+                Manage lists
+              </button>
+            </div>
             <select id="audience"
                     class="mt-1.5 block w-full rounded-lg border border-line-strong bg-page px-3 py-2.5 text-[14px] text-ink
                            focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand">
@@ -112,6 +122,11 @@
             </select>
             <p class="mt-1 text-[11px] text-ink-3">Most recent first.</p>
           </div>
+
+          {# Filled by _composer-lists.html from /api/lists/manage — the same read
+             the dropdown above is built from, so the two cannot disagree about a
+             count. Archived lists appear here and only here. #}
+          <div id="listPanel" class="hidden rounded-lg border border-line bg-page"></div>
         </div>
 
         <div class="sm:max-w-[180px]">
@@ -384,4 +399,6 @@
 {% include "_composer-script.html" %}
 {% include "_composer-upload.html" %}
 {% include "_composer-link.html" %}
+{# Last, because it calls `loadAudiences` and `el` from the first partial. #}
+{% include "_composer-lists.html" %}
 {% endblock %}

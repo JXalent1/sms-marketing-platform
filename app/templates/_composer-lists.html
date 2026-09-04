@@ -1,0 +1,124 @@
+{# A5 — rename, archive and unarchive a list, where he picks an audience.
+
+   Not a new page and not a nav entry. The composer's dropdown is the whole of
+   the "use an existing audience" tab since 5i, so every test upload became a
+   permanent entry in it and there was no way for the client to tidy that up —
+   ten one- and two-member lists were deleted by hand on the live box on
+   2026-09-04. This is the affordance the picker was missing, and it belongs
+   beside the picker.
+
+   The numbers come from /api/lists/manage, which is built from the same read
+   `list_summaries()` serves the dropdown from, so a row here and an option
+   there cannot report different counts for the same list.
+
+   Archived rows are the only difference between the two payloads. The picker
+   states "archived" by absence; this panel states it with a badge and an
+   Unarchive button — one predicate behind both, `contact_service.is_archived()`.
+
+   A .html partial rather than a file under app/static/, like every other
+   composer partial: Tailwind's content scan is `./app/templates/**/*.html`, so
+   the class strings built in JS below are compiled into app.css. #}
+<script>
+// Rows are read back after every write rather than patched in place: the panel
+// shows counts and freshness that only the server can compute, and a row edited
+// locally would drift from the dropdown next to it — which is the one thing
+// this panel exists not to do.
+async function loadListPanel() {
+    const panel = el('listPanel');
+    const data = await api('/api/lists/manage');
+    const rows = data.lists || [];
+    if (!rows.length) {
+        panel.innerHTML = '<p class="px-4 py-3 text-[12px] text-ink-3">'
+            + 'No lists yet. Upload one in the tab next door and it appears here.</p>';
+        return;
+    }
+    panel.innerHTML = rows.map(listRow).join('');
+}
+
+function listRow(row) {
+    const freshness = row.days_since_sent === null || row.days_since_sent === undefined
+        ? 'never texted'
+        : (row.days_since_sent === 0 ? 'texted today'
+           : `texted ${row.days_since_sent} day${row.days_since_sent === 1 ? '' : 's'} ago`);
+    return `
+    <div class="flex flex-wrap items-center gap-2 border-b border-line px-4 py-3 last:border-b-0"
+         data-list-row="${row.id}">
+      <input type="text" value="${attr(row.label)}" data-list-name="${row.id}"
+             aria-label="List name"
+             class="min-w-0 flex-1 rounded-lg border border-line-strong bg-page px-2.5 py-1.5 text-[13px] text-ink
+                    focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand">
+      <span class="shrink-0 text-[11px] tabular-nums text-ink-3">
+        ${row.count.toLocaleString()} contacts · ${freshness}
+      </span>
+      ${row.archived ? '<span class="shrink-0 rounded bg-surface-2 px-1.5 py-0.5 text-[11px] font-medium text-ink-2">Archived</span>' : ''}
+      <button type="button" onclick="renameList(${row.id})"
+              class="shrink-0 rounded-md border border-line-strong bg-page px-2.5 py-1 text-[11px] font-medium text-ink hover:bg-surface-2">
+        Save name
+      </button>
+      <button type="button" onclick="setListArchived(${row.id}, ${row.archived ? 'false' : 'true'})"
+              class="shrink-0 rounded-md border border-line-strong bg-page px-2.5 py-1 text-[11px] font-medium text-ink hover:bg-surface-2">
+        ${row.archived ? 'Unarchive' : 'Archive'}
+      </button>
+    </div>`;
+}
+
+async function renameList(id) {
+    const field = document.querySelector(`[data-list-name="${id}"]`);
+    const name = (field?.value || '').trim();
+    if (!name) { showToast('A list needs a name', 'error'); return; }
+
+    const data = await api(`/api/lists/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name }),
+    });
+    // The server's sentence, not one invented here. A name collision comes back
+    // naming the list that already has it, and that wording has to be the same
+    // wording the API returns to anything else that ever calls this.
+    if (!data.success) { showToast(data.detail || 'Could not rename the list', 'error'); return; }
+    showToast(data.campaigns_relabelled
+        ? `Renamed — ${data.campaigns_relabelled} campaign${data.campaigns_relabelled === 1 ? '' : 's'} relabelled`
+        : 'Renamed');
+    await refreshListsEverywhere();
+}
+
+async function setListArchived(id, archived) {
+    const data = await api(`/api/lists/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ archived }),
+    });
+    if (!data.success) { showToast(data.detail || 'Could not update the list', 'error'); return; }
+    showToast(archived
+        ? 'Archived — it is out of the picker, and every report keeps its name'
+        : 'Back in the picker');
+    await refreshListsEverywhere();
+}
+
+// The panel and the dropdown are two views of one set, so they are reloaded
+// together. Refreshing only the panel is how the client archives a list and
+// then picks it from a dropdown that has not caught up.
+async function refreshListsEverywhere() {
+    await loadListPanel();
+    await loadAudiences();
+}
+
+el('listPanelBtn').addEventListener('click', () => {
+    const panel = el('listPanel');
+    const opening = panel.classList.contains('hidden');
+    panel.classList.toggle('hidden');
+    el('listPanelBtn').setAttribute('aria-expanded', opening ? 'true' : 'false');
+    if (opening) loadListPanel();
+});
+
+// The panel sits inside <form id="composer">, so Enter in a rename field would
+// otherwise submit the form and create the campaign. Enter saves the name it is
+// typed in, which is what the key means here.
+el('listPanel').addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter') return;
+    const id = e.target?.dataset?.listName;
+    if (!id) return;
+    e.preventDefault();
+    renameList(parseInt(id, 10));
+});
+</script>

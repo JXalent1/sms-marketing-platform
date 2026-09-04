@@ -152,4 +152,15 @@ class SMSMessage(Base):
         Index("idx_sms_campaign", "campaign_id"),
         Index("idx_sms_status", "status"),
         Index("idx_sms_sent_at", "sent_at"),
+        # The freshness join's key. `contact_service._last_sent_by_list()` joins
+        # this table to `contact_list_members` on `contact_id`, and until
+        # session 5j neither side was indexed on it: 30,000 messages against
+        # 15,500 memberships took **10 minutes 2 seconds** on production and
+        # under a millisecond on the suite's twelve rows.
+        #
+        # Declared here as well as in migration `a3f1e08c5d47` because the
+        # models are the schema's other half — `test_migrations_match_the_models`
+        # compares the two, and an index that exists in only one of them is a
+        # drift that surfaces the next time somebody autogenerates a revision.
+        Index("idx_sms_contact", "contact_id"),
     )

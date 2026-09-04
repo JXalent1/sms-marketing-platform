@@ -31,6 +31,17 @@ const STATUS_STYLES = {
 };
 
 const el = (id) => document.getElementById(id);
+
+// `esc()` in base.html escapes < > and &, which is exactly right for text
+// between tags and **not enough inside a quoted attribute**: a value containing
+// a double quote closes the attribute early, and the rest of it is parsed as
+// markup. Use this one whenever an API value lands inside `attr="…"`.
+//
+// Not hypothetical since 5j. List labels are campaign names and CSV-derived
+// names, and A5's panel now lets the client type one himself — a list named
+// `Bob"s buyers` would have escaped `data-label="…"` below and the rename
+// field's own `value="…"`.
+const attr = (value) => esc(value).replace(/"/g, '&quot;');
 const money = (value) => (value === null || value === undefined)
     ? '—'
     : value.toLocaleString('en-US', { style: 'currency', currency: 'USD' });
@@ -56,15 +67,24 @@ let composerMode = 'upload';
 async function loadAudiences() {
     const data = await api('/api/campaigns/audiences');
     const select = el('audience');
+    // What he had picked, so a reload does not move it. This ran once on page
+    // load until 5j; A5's panel now reloads the dropdown after every rename and
+    // archive, and without this, tidying up an unrelated list would silently
+    // change the audience of the campaign he is composing.
+    const chosen = select.value;
     if (!data.audiences?.length) {
         select.innerHTML = '<option value="">No contacts yet</option>';
         paintAudienceSummary();
         return;
     }
     select.innerHTML = data.audiences
-        .map(a => `<option value="${esc(a.selector)}" data-label="${esc(a.label)}">`
+        .map(a => `<option value="${attr(a.selector)}" data-label="${attr(a.label)}">`
                 + `${esc(a.label)} — ${a.count.toLocaleString()} contacts</option>`)
         .join('');
+    // Only when it survived. An archived list is gone from this payload on
+    // purpose, and the browser then falls back to the first option — which is
+    // the honest outcome, and the summary panel below follows it.
+    if (chosen && data.audiences.some(a => a.selector === chosen)) select.value = chosen;
     paintAudienceSummary();
     refreshPreview();
 }

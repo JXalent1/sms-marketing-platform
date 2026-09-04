@@ -177,7 +177,23 @@ def add_to_list(db: Session, list_id: int, contact_id: int, commit: bool = True)
 def _last_sent_by_list(db: Session) -> dict:
     """list_id -> the most recent moment a member of it was actually texted.
 
-    One grouped join: messages → contacts → memberships. Freshness comes from
+    **One grouped join over two tables: `contact_list_members` to
+    `sms_messages`, on `contact_id`.** There is no `Contact` in it. Until 5j
+    this docstring said "messages → contacts → memberships", and a docstring
+    describing a join that is not the join is how the next person reasons about
+    the wrong index — which is what happened. Neither side of the real join key
+    was indexed, so this took **10 minutes 2 seconds** on production (~30,000
+    messages, ~15,500 memberships) and under a millisecond on the suite's twelve
+    rows. Both sides now carry one: `idx_sms_contact` and `idx_member_contact`,
+    migration `a3f1e08c5d47`, with `tests/test_query_cost.py` asserting on the
+    plan SQLite chooses for the statement this function actually issues.
+
+    It is synchronous inside an `async def` route, so while it runs it holds the
+    event loop — and `run_due_campaigns` is on that loop. A reporting query
+    delayed the send path by 24 and 38 seconds during the incident. Ask what
+    else is on the loop before adding a second join to this screen.
+
+    Freshness comes from
     `sms_messages` and never from a campaign's audience string, which is
     `dashboard_service`'s own rule and has not changed — a campaign row records
     who it *meant* to text, and the message table records who was texted. That
@@ -216,6 +232,76 @@ def _last_sent_overall(db: Session) -> Optional[str]:
             .scalar())
 
 
+def is_archived(value) -> bool:
+    """The one definition of "archived", read by every surface that cares.
+
+    Two surfaces describe this state and they must not be able to disagree: the
+    picker says it by **absence** (`list_summaries()` below drops the row) and
+    A5's panel says it with a badge and an Unarchive button. One predicate,
+    called by both, rather than a `== 1` here and an `is not None` there.
+
+    NULL reads as "not archived" on purpose. `contact_lists.archived` is
+    backfilled to 0 by migration `b52d9c1f4e08` and the model writes 0, so a
+    NULL should not exist — but a raw `INSERT` naming no `archived` still
+    produces one, the same way a raw INSERT can still reach `created_at`'s DDL
+    default. A list nobody archived must never vanish from the picker because a
+    column was left unset.
+    """
+    return bool(value)
+
+
+def _list_rows(db: Session, today: date = None) -> List[dict]:
+    """Every list, newest first, with the numbers the picker shows.
+
+    One read with two readers: `list_summaries()` below drops the archived rows
+    and prepends the pinned entry, and `list_admin.admin_summaries()` keeps them
+    and marks them. Built once so the panel and the dropdown cannot report
+    different counts or different freshness for the same list — the same reason
+    `dashboard_service.list_cards()` is built from `list_summaries()` rather
+    than from a second query.
+
+    The archived rows are read and then filtered in Python rather than excluded
+    in SQL. That is deliberate: it is what makes `is_archived()` the single
+    definition both readers apply, and the cost is nil — this client has eleven
+    lists, and the expensive half of the screen is `_last_sent_by_list()`, which
+    groups over every membership row regardless of which lists survive.
+    """
+    rows = (db.query(ContactList.id, ContactList.name, ContactList.created_at,
+                     ContactList.archived, func.count(Contact.id))
+            .outerjoin(ContactListMember,
+                       ContactListMember.list_id == ContactList.id)
+            # Outer-joined and filtered in the ON clause, not in WHERE: a list
+            # with no members at all still belongs in the picker, reading 0.
+            # "Yacht buyers: 0" is information; a missing row is confusing.
+            .outerjoin(Contact, (Contact.id == ContactListMember.contact_id)
+                                & (Contact.is_active == 1))
+            .group_by(ContactList.id, ContactList.name, ContactList.created_at,
+                      ContactList.archived)
+            .all())
+
+    last_sent = _last_sent_by_list(db)
+    # One `today` for the whole payload, passed in by the caller where there is
+    # one. Two `date.today()` calls in a request that straddles midnight give
+    # the pinned entry and a list card freshness figures a day apart, which is
+    # the same class of thing as two clocks in one column.
+    today = today or date.today()
+    return [{
+        "id": list_id,
+        "selector": f"list:{list_id}",
+        "label": name,
+        "count": count,
+        "kind": "list",
+        "archived": is_archived(archived),
+        "last_sent_at": last_sent.get(list_id),
+        "days_since_sent": days_since(last_sent.get(list_id), today),
+    } for list_id, name, _created, archived, count in sorted(
+        # Id descending as the tiebreaker, so "newest first" is a total order.
+        # Two lists created in the same second — a script, a fast double
+        # upload — would otherwise fall back on whatever order the ungrouped
+        # query happened to return, which is not something to depend on.
+        rows, key=lambda r: (parse_created_at(r[2]), r[0]), reverse=True)]
+
+
 def list_summaries(db: Session) -> List[dict]:
     """Every audience a picker can offer: the pinned entry, then lists.
 
@@ -237,21 +323,15 @@ def list_summaries(db: Session) -> List[dict]:
     would actually reach and matching `audience_count()` on the same selector;
     a list whose members have all been deactivated reports 0 rather than a
     number no campaign could ever hit.
-    """
-    rows = (db.query(ContactList.id, ContactList.name, ContactList.created_at,
-                     func.count(Contact.id))
-            .outerjoin(ContactListMember,
-                       ContactListMember.list_id == ContactList.id)
-            # Outer-joined and filtered in the ON clause, not in WHERE: a list
-            # with no members at all still belongs in the picker, reading 0.
-            # "Yacht buyers: 0" is information; a missing row is confusing.
-            .outerjoin(Contact, (Contact.id == ContactListMember.contact_id)
-                                & (Contact.is_active == 1))
-            .group_by(ContactList.id, ContactList.name, ContactList.created_at)
-            .all())
 
+    **An archived list is not here** — session 5j, and the same ruling
+    categories got: hidden from the picker, still resolving for history. The
+    resolver above never reads the flag, so a campaign that targeted an archived
+    list still returns its contacts and still renders its name. This function is
+    the honest place for the distinction, exactly as it is for a retired
+    category. `list_admin.admin_summaries()` is the read that keeps them.
+    """
     total_active = db.query(Contact).filter(Contact.is_active == 1).count()
-    last_sent = _last_sent_by_list(db)
     overall = _last_sent_overall(db)
     today = date.today()
 
@@ -263,19 +343,12 @@ def list_summaries(db: Session) -> List[dict]:
         "last_sent_at": overall,
         "days_since_sent": days_since(overall, today),
     }]
-    audiences += [{
-        "selector": f"list:{list_id}",
-        "label": name,
-        "count": count,
-        "kind": "list",
-        "last_sent_at": last_sent.get(list_id),
-        "days_since_sent": days_since(last_sent.get(list_id), today),
-    } for list_id, name, _, count in sorted(
-        # Id descending as the tiebreaker, so "newest first" is a total order.
-        # Two lists created in the same second — a script, a fast double
-        # upload — would otherwise fall back on whatever order the ungrouped
-        # query happened to return, which is not something to depend on.
-        rows, key=lambda r: (parse_created_at(r[2]), r[0]), reverse=True)]
+    # The archived rows are dropped here and nowhere else. `id` and `archived`
+    # go with them: this payload answers "what may he pick", and a picker entry
+    # carrying a flag that is False on every row it can ever contain invites a
+    # second surface to start reading it.
+    audiences += [{k: v for k, v in row.items() if k not in ("id", "archived")}
+                  for row in _list_rows(db, today) if not row["archived"]]
     return audiences
 
 

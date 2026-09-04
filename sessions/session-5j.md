@@ -96,8 +96,19 @@ This project has no check that a query is affordable. The gate does not time any
 the mutation harness proves behaviour and is silent about how long the behaviour takes.
 That is why a ten-minute query shipped green.
 
-Add an `EXPLAIN QUERY PLAN` assertion over the freshness join: **no full scan of
-`sms_messages` or `contact_list_members`.** Requirements on how it is built:
+~~Add an `EXPLAIN QUERY PLAN` assertion over the freshness join: **no full scan of
+`sms_messages` or `contact_list_members`.**~~
+
+**Superseded by `decisions/008`, 2026-09-04.** That assertion is wrong in both
+directions, measured before it was rejected. The outage plan reaches `sms_messages`
+through `idx_sms_status` and carries no `SCAN sms_messages` line at all, so the first half
+is **green on the ten-minute plan**; and the plan that fixed production still scans
+`contact_list_members` outright, so the second half is **red on the repaired schema**. One
+clause always green, one always red, neither separating the two plans. The property is
+that the join reaches its tables through an index **on `contact_id`**, plus a schema
+assertion that both sides carry one leading on that column. `tests/test_query_cost.py`.
+
+The requirements below stand as written:
 
 - **Explain the statement the service actually issues.** Do not hand-write a copy of the
   query in the test. 5f's lesson — a property proved of a helper is not proved of its only

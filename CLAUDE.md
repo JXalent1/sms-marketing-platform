@@ -49,7 +49,7 @@ These are the commands acceptance criteria reference. Run them and show the outp
   `ModuleNotFoundError: slowapi` and reports **"test suite is red"** — a true statement
   about the wrong interpreter, and a convincing false alarm. Either activate `.venv`
   or run `PATH="$PWD/.venv/bin:$PATH" bash agent/gate.sh`.
-- **Tests:** `python -m pytest tests/ -q` — must exit 0. **577 passing as of session 5i.**
+- **Tests:** `python -m pytest tests/ -q` — must exit 0. **613 passing as of session 5j.**
   A lower count means you are on a stale branch, not that tests vanished.
 - **Migrations:** `alembic upgrade head` — must succeed from a clean DB.
 - **Run it:** `./run.sh` then `curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/login` → `200`
@@ -557,6 +557,89 @@ change to a live table.
   index only serves a lookup on its leading column. And **a screen that polls
   turns one slow query into a queue** — the log showed twenty-odd
   `GET /api/campaigns?limit=8` stacked behind one blocked request.
+
+- **"No full scan" is the wrong question to ask a query plan; "what is the index
+  keyed on" is the right one.** 5j was told to assert that the freshness join
+  full-scans neither table. Measured against real plans first, that rule is wrong
+  in **both** directions. The 10-minute plan reads `SEARCH sms_messages USING
+  INDEX idx_sms_status (status=?)` — SQLite *is* using an index, on a column with
+  four distinct values, so every lookup walks a quarter of the table and there is
+  no `SCAN sms_messages` line to catch. And the plan that ended the outage still
+  scans `contact_list_members` outright, so the other half of the rule is red on
+  the schema that fixed production. What separates the two plans is the column the
+  index is keyed on. `tests/test_query_cost.py` asserts a `SEARCH … (contact_id=?)`
+  on the join key, plus a schema assertion that **both** sides carry an index
+  whose leading column is `contact_id` — both, because which side the planner
+  picks is a statistics decision that flips with row counts (at suite scale it
+  searches the memberships, at production scale the messages), so an index on
+  today's favoured side alone is one `ANALYZE` from being the wrong one.
+  <br>Two things generalize. **Run the proposed assertion against the plan you
+  are trying to catch before you write it into a spec or a test** — this is "a
+  rationale and its mechanism have to be checked against each other", applied to
+  a query plan. And **a check about cost must name the mechanism, not the
+  symptom**: "scan" is a symptom that the fast plan also shows and the slow plan
+  does not.
+- **A cached render is a second writer of a name.** `campaigns.audience_label` is
+  written once by `campaign_builder` and read back by the rail, by history and by
+  every report — so 5j's rename, which correctly changed `contact_lists.name` and
+  which `_term_label()` resolves live, would still have left three screens quoting
+  the name the client had just replaced. The spec said "a rename lands everywhere"
+  on the strength of the live lookup and did not know about the column. Renaming
+  invalidates that cache, so the rename recomputes it **from `audience_label()`**,
+  never by substituting the new name into the old string — a compound selector's
+  label has another term in it. When you change the source of a denormalised
+  value, ask who stored a copy, and rebuild the copy with the same function that
+  built it the first time.
+- **`esc()` is not enough inside a quoted attribute.** `base.html`'s helper goes
+  through `textContent`/`innerHTML`, which escapes `<`, `>` and `&` and **not the
+  double quote that ends an attribute**. `data-label="${esc(a.label)}"` had been
+  in the composer since 5i; it only became reachable when 5j gave the client a box
+  to type list names into. Text position and attribute position are different
+  escapes, and a helper named `esc` invites the assumption that there is one.
+  `attr()` in `_composer-script.html` adds `&quot;`, and
+  `tests/test_composer_markup.py` sweeps for the shape rather than trusting the
+  next author to remember.
+
+- **`SEARCH` is not a synonym for fast, and the absence of a `SCAN` line proves
+  nothing.** 5j's cost guard was specified as "no full scan of `sms_messages` or
+  `contact_list_members`". The 10m02s plan reads `SCAN contact_list_members USING
+  COVERING INDEX …` / `SEARCH sms_messages USING INDEX idx_sms_status (status=?)`
+  — so "no full scan of `sms_messages`" is **green on the ten-minute plan**,
+  because `status` has four distinct values and walking a quarter of the table
+  through an index is still called a SEARCH. And the plan that *fixed* production
+  still scans `contact_list_members` outright, because one pass over the smaller
+  table is the correct shape for that join — so the other half is **red on the
+  repaired schema**. A plan assertion reads the **column an index is keyed on**,
+  never the verb in front of it. `decisions/008`, `tests/test_query_cost.py`.
+  <br>**And index both sides of a join key, not the side today's statistics
+  favour.** Which table SQLite searches flips between suite scale and production
+  scale; an index on only one side is one `ANALYZE` away from being the wrong
+  one, and a plan check alone cannot see the absence of the other. The schema
+  assertion is the half that can. *Leading* column, too: `contact_list_members`
+  looked indexed and was not, because its unique `(list_id, contact_id)` index
+  leads with `list_id`.
+- **A spec clause that names a mechanism is a guess wearing a spec's authority.**
+  Two clauses have now been superseded in two consecutive sessions —
+  `decisions/007` ("subtract the prospect routes by module") and `decisions/008`
+  ("assert no full scan") — and both failed the same way: they described *how* to
+  check instead of *what* must be true, from a mental model that had not been run
+  against the code. State the property; require the session to prove its chosen
+  mechanism against a case whose answer is known, before the check is quoted as
+  evidence. When a rejected mechanism is instructive, keep it as an executable
+  failing example rather than a comment — `test_the_guard_goes_red_on_the_schema_
+  it_exists_to_reject` runs the rejected rule against the outage plan and asserts
+  it passes.
+- **A text escaper is not an attribute escaper.** `esc()` in `base.html` goes
+  through `textContent`/`innerHTML`, which covers `<`, `>` and `&` and **not the
+  double quote that ends an attribute** — so `value="${esc(name)}"` with a name
+  containing `"` closes the attribute and everything after it parses as markup.
+  It became reachable the moment 5j let the client type a list name; `attr()`
+  adds `&quot;` and `tests/test_composer_markup.py` sweeps for the shape. Note
+  what the sweep covers: **the composer templates only.** The same shape survives
+  in `blocklist.html`, `contact-history.html` and `settings.html`, and the first
+  of those interpolates `blocked_numbers.notes`, which is **carrier free text
+  written by the delivery webhook** — input from outside the system entirely.
+  A guard with one call site is a guard on one path, again.
 
 ## Where things live
 

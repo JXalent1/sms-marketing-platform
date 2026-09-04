@@ -37,10 +37,11 @@ client sending real campaigns.
 | 5g | **Blocklist correctness** | Part A done 2026-08-26 · deploy pending | 5d | `app/sms/compliance.py`, `app/sms/phone.py`, `app/sms/providers/telnyx.py`, `app/routers/webhooks/telnyx.py`, `app/routers/webhooks/twilio.py`, `app/routers/webhooks/common.py`, `app/routers/pages.py`, `app/models/sms_message.py`, `app/models/blocked_number.py`, `app/services/blocklist_service.py`, `app/services/dashboard_service.py`, `app/services/monitoring_service.py`, `alembic/versions/`, `tests/` |
 | 5h | **Held-back rows & the capacity floor** | Part A done 2026-08-30 · deploy pending | 5e | `app/models/sms_message.py`, `app/services/campaign_builder.py`, `app/services/campaign_service.py`, `app/services/campaign_release.py`, `app/services/campaign_topup.py`, `app/routers/campaign_uploads.py`, `app/templates/_composer-upload.html`, `alembic/versions/`, `tests/` |
 | 5i | **Named lists replace categories** | Part A done 2026-09-04 · deploy pending | 5h, P1b | `app/models/{contact_list,sms_message}.py`, `app/services/{contact_service,dashboard_service,campaign_builder,campaign_service,import_service,report_service,history_service}.py`, `app/routers/{campaigns,contacts,dashboard,imports}.py`, `app/templates/{campaigns,contacts,today}.html`, `app/templates/_composer-{script,upload}.html`, `alembic/versions/`, `tests/`, `agent/{accept-5i.sh,mutate-5i.py}` |
-| 5j | **Index migration, cost guard & list archive/rename** | Specced · next | 5i | `app/models/{contact_list,sms_message}.py`, `app/services/{contact_service,dashboard_service}.py`, `app/routers/contacts.py`, `app/templates/{campaigns}.html`, `app/templates/_composer-{lists,script}.html`, `alembic/versions/`, `tests/`, `agent/{accept-5j.sh,mutate-5j.py}` |
+| 5j | **Index migration, cost guard & list archive/rename** | **Part A done 2026-09-04** · accept + gate + mutation green · **deploy pending** | 5i | `app/models/{contact_list,sms_message}.py`, `app/services/{contact_service,dashboard_service}.py`, `app/routers/contacts.py`, `app/services/list_admin.py` (new), `app/templates/{campaigns}.html`, `app/templates/_composer-{lists,script}.html`, `alembic/versions/`, `tests/`, `agent/{accept-5j.sh,mutate-5j.py}` |
+| 5k | **Close the attribute-escaping class** | Specced · small, run before or beside P2 | 5j | `app/templates/{base,_composer-script,blocklist,contact-history,settings}.html`, `tests/test_attribute_escaping.py`, `agent/accept-5k.sh` |
 | P1 | **Prospect pipeline** | Done · deployed 2026-09-01 | 5f | `app/models/{prospect,scrape}.py`, `app/models/__init__.py`, `app/sms/lookup.py`, `app/sources/prospect_base.py`, `app/sources/__init__.py`, `app/services/{prospect_service,prospect_queue,prospect_scoring,lookup_service,scrape_runner,link_service}.py`, `app/routers/prospects.py`, `app/routers/pages.py`, `app/templates/{prospects,base}.html`, `app/core/config.py`, `app/main.py`, `alembic/versions/`, `tests/`, `agent/{accept-P1.sh,mutate-P1.py}` |
 | P1b | **Lookup provider & gate flake** | Done · deployed 2026-09-01 | P1 | `app/sms/providers/telnyx_lookup.py`, `app/sms/lookup.py`, `app/services/lookup_service.py`, `app/core/config.py`, `.env.example`, `docs/API.md`, `CLAUDE.md`, `tests/{test_lookup_provider,test_wholesale_scan,_wholesale_scan}.py`, `tests/fixtures/number_lookup_responses.json`, `tests/{test_campaign_reports,test_whitelabel,test_campaign_preflight,test_capacity_rounding,test_degraded_send_path,test_prospect_review,test_prospect_pipeline}.py`, `agent/{accept-P1b.sh,mutate-P1b.py,accept-P1.sh}` |
-| P2 | **Google Places source** | Specced · after 5j | P1b | `app/sources/google_places.py`, `app/sources/taxonomy.py`, `app/core/config.py`, `agent/mutate-{1,5d,5f,P1}.py`, `tests/` |
+| P2 | **Google Places source** | Specced · next | P1b | `app/sources/google_places.py`, `app/sources/taxonomy.py`, `app/core/config.py`, `agent/mutate-{1,5d,5f,P1}.py`, `tests/` |
 | P3 | **Registries, marketplaces & enrichment** | After P2 | P1 | `app/sources/dbpr.py`, `app/sources/sunbiz.py`, `tests/` |
 
 **That's the launch — six sessions, but only four waves. See "Parallel plan" below.**
@@ -804,7 +805,9 @@ the Python-side default on `contact_list.created_at` described below.
 
 ### 5j — the index migration, the archive/rename controls
 
-**Specced 2026-09-04: `sessions/session-5j.md`. Not yet run. It is the next session, ahead of P2.**
+**Ran 2026-09-04. `agent/accept-5j.sh` exits 0 with every criterion printed, the gate
+is green twice at 613 tests, and `agent/mutate-5j.py` reports 19 mutations caught / 0
+survived on a scratch tree verified pristine. Detail in `status.md`.**
 
 Two things forced it into existence on deploy day, and they belong together because both
 are about the list picker being the product now rather than a corner of it.
@@ -835,9 +838,80 @@ Nineteen of the twenty-one lists were never used by a campaign, so there is no c
 name for most of them to inherit. The client has to name them himself; this is the tool
 that lets him.
 
+**What the session found that the spec did not know**
+
+1. **The cost assertion the spec named is wrong in both directions.** "No full scan of
+   `sms_messages` or `contact_list_members`" is *green* on the 10-minute plan — SQLite
+   searches `sms_messages` through `idx_sms_status`, and `status` has four distinct
+   values, so an index lookup walks a quarter of the table — and *red* on the plan that
+   ended the outage, which scans `contact_list_members` outright. The guard asserts on
+   the **join key** instead: the plan reaches a table through an index keyed on
+   `contact_id`, and *both* sides carry one whose leading column is `contact_id`. Both
+   sides, because which one SQLite searches flips between suite scale and production
+   scale. Criterion 8 prints the spec's rule evaluated on the outage plan so the reason
+   is on the transcript. **This departs from a clause of the spec and wants a ruling.**
+2. **`campaigns.audience_label` is a stored snapshot, so a rename does not "land
+   everywhere" on its own.** `_term_label()` does look the name up live, but the rail,
+   history and the report all read the column `campaign_builder` wrote once at creation.
+   The rename treats it as a cache of `audience_label()` and recomputes it for every
+   campaign whose selector names the list.
+3. **`esc()` was being used in attribute position**, and A5's rename box is what makes a
+   list label a string the client types. A local `attr()` helper now escapes the quote,
+   with a shape test over the composer templates.
+4. **`app/services/list_admin.py` is new and outside the file list.**
+   `contact_service.py` was at 482 lines and the 500-line rule is hard, so the
+   administration verbs split out along the natural seam.
+
+### 5j — Part A done 2026-09-04
+
+`agent/accept-5j.sh` exits 0 on all ten criteria, gate green twice at **613 tests**,
+19 mutations caught / 0 survived on a verified-pristine tree, migrations exercised fresh /
+production-shape / down-and-up, and the rename, collision, 409 refusal, archive and
+unarchive driven by hand against a running box with the state restored afterwards.
+`_last_sent_by_list()` at production row counts: **0.019s**, from 10m02s. The whole Today
+screen is 0.049s. **Deploy is pending.**
+
+**One spec clause was superseded — `decisions/008`.** A2 told the guard to assert "no full
+scan of `sms_messages` or `contact_list_members`". Measured before it was written, that is
+wrong in both directions: the outage plan reaches `sms_messages` through `idx_sms_status`
+and has no `SCAN sms_messages` line, so the first half is green on the ten-minute plan;
+and the repaired plan still scans `contact_list_members`, so the second half is red on the
+schema that fixed production. The guard asserts on the join key instead, plus a schema
+assertion that both sides carry an index leading on `contact_id`. The rejected rule is
+kept as an executable failing example. Struck through in the spec in place.
+
+That is **two superseded clauses in two sessions, both specifying a mechanism where the
+spec should have stated a property** — 007 and 008. Folded into `CLAUDE.md`.
+
+**Two things the spec did not know.** `campaigns.audience_label` is a stored render, so a
+rename would have left the rail, history and reports quoting the old name;
+`list_admin.rename()` recomputes it from `audience_label()` rather than by substituting
+into the old string, because a campaign's label may name a second term. And `esc()` does
+not escape the quote that ends an attribute — see residual 1.
+
+**Two departures from the file list**, both recorded: `app/services/list_admin.py` is new
+(`contact_service.py` was at 482 lines and the 500-line rule is hard; it is now 494), and
+`sms_messages` gains an index, which escalation item 8 names. The index was correct to
+proceed on — A1 names that index, that table and the reason explicitly, which is what
+makes it authorized rather than assumed, it is additive, and criterion 3 exercises the
+downgrade.
+
 ### Residuals, in the order they should be picked up
 
 Detail for each is in `status.md` under "Found while working".
+
+0. **`esc()` in attribute position survives in three templates outside the composer, and
+   one of them is fed by the carrier.** 5j added `attr()` and a shape test, both scoped to
+   the composer templates, because the others are outside its file list. The remaining
+   sites are `blocklist.html:116` (`title="${esc(n.notes)}"`), `contact-history.html:86`
+   (`title="${esc(m.message)}"`) and `settings.html:145` (`data-mode="${esc(d.send_mode)}"`).
+   **`blocked_numbers.notes` is carrier free text written by the delivery webhook at
+   thousands of rows a campaign** — input from outside the system, and the reason this is
+   residual zero rather than residual seven. The fix is small: move `attr()` from
+   `_composer-script.html` to `base.html` beside `esc()`, use it at the three sites, and
+   widen `test_composer_markup.py`'s sweep from the composer list to every template.
+   `settings.html` renders an internal enum and is the least of the three; the other two
+   are not. **Specced as 5k — `sessions/session-5k.md`, 107 lines.**
 
 1. **`/api/contacts/export.csv` still carries a `categories` column** — the one remaining
    surface the client actually sees, because he opens the file. `contact_query_service.py`
@@ -845,7 +919,13 @@ Detail for each is in `status.md` under "Found while working".
    session next touches that file; it should not wait for module 8.
 2. **`app/services/campaign_service.py` is at exactly 500 lines.** The next addition to it
    forces a split before anything else can land there. Its own docstring describes the seam
-   used last time.
+   used last time. Untouched by 5j.
+2b. **A CSV uploaded under the name of an archived list writes into that list, and it
+   stays hidden from the picker.** `get_or_create_list()` matches on name and knows nothing
+   about `archived`. The send works and A5's panel offers Unarchive on the same screen, so
+   there is a remedy — but "does writing into a list un-archive it?" is a behaviour
+   decision, not an oversight, and 5j left it alone. One line in `contact_service` when it
+   is ruled on.
 3. **`docs/API.md` describes none of 5i** — `/api/campaigns` lost four fields,
    `/api/dashboard` renamed `categories` to `lists` and `next_up.category` to
    `next_up.list`, `/api/campaigns/audiences` and `/api/lists` changed shape, and

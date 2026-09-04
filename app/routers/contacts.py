@@ -22,9 +22,9 @@ from typing import List, Optional
 from app.core.database import get_db
 from app.core.auth import require_auth
 from app.models.category import Category
-from app.models.contact_list import ContactList, ContactListMember
 from app.services import (
     blocklist_service, category_service, contact_service, contact_query_service,
+    list_admin,
 )
 from app.sms.phone import is_valid, normalize
 import logging
@@ -228,26 +228,75 @@ async def import_csv_retired(user: str = Depends(require_auth)):
 lists_router = APIRouter(prefix="/api/lists", tags=["lists"])
 
 
+class UpdateListRequest(BaseModel):
+    """A rename, an archive, or both. Every field optional — a PATCH that names
+    nothing is a no-op, not an error."""
+    name: Optional[str] = None
+    archived: Optional[bool] = None
+
+
 @lists_router.get("")
 async def get_lists(db: Session = Depends(get_db), user: str = Depends(require_auth)):
+    """What the client may pick. Archived lists are absent — see A5's panel."""
     return {"lists": contact_service.list_summaries(db)}
+
+
+# Registered before `/{list_id}` for the reason `RESERVED_SLUGS` exists: a
+# literal path segment and a parameter share one namespace, and the literal has
+# to win. No GET takes a `{list_id}` today, so nothing collides yet; the day one
+# is added, this ordering is what stops "manage" being read as a list id.
+@lists_router.get("/manage")
+async def manage_lists(db: Session = Depends(get_db), user: str = Depends(require_auth)):
+    """Every list, archived ones included and marked — A5's panel.
+
+    Its own route rather than a flag on `/api/lists`, because that payload is
+    defined as "what he may pick" and a picker that grew an `archived` field
+    would eventually render one.
+    """
+    return {"lists": list_admin.admin_summaries(db)}
+
+
+@lists_router.patch("/{list_id}")
+async def update_list(list_id: int, payload: UpdateListRequest,
+                      db: Session = Depends(get_db), user: str = Depends(require_auth)):
+    """Rename a list, archive it, or unarchive it.
+
+    **A rename changes what old reports say, and that is the point.** The bad
+    names are the problem being solved — "General Merchandise — 2026-08-21
+    upload" was never a name anyone chose — so renaming a list a campaign
+    already used updates that campaign's label on the rail, in history and in
+    its report. Nothing here freezes a label at send time, and nothing later
+    should: see `list_admin.rename()`.
+
+    A collision on the unique name comes back as a 400 naming the name that is
+    taken. An `IntegrityError` reaching the client as a 500 would be a refusal
+    that explains nothing, on the one screen whose job is to let him tidy up.
+    """
+    # The rename runs first because it is the half that can be refused — a
+    # missing list, a blank name, a name another list holds. Archiving cannot
+    # fail once the list has been found, so this order is what stops a PATCH
+    # carrying both fields from applying one of them and rejecting the other.
+    result = {"success": True, "id": list_id}
+    try:
+        if payload.name is not None:
+            result = list_admin.rename(db, list_id, payload.name)
+        if payload.archived is not None:
+            result = list_admin.set_archived(db, list_id, payload.archived)
+    except list_admin.ListAdminError as e:
+        raise HTTPException(status_code=e.status_code, detail=str(e))
+    return result
 
 
 @lists_router.delete("/{list_id}")
 async def delete_list(list_id: int, db: Session = Depends(get_db),
                       user: str = Depends(require_auth)):
-    """Delete a list. Contacts themselves are never deleted — only membership.
+    """Delete a list nothing referenced. Contacts are never deleted — only membership.
 
-    A list is a view onto the audience; dropping one must not destroy contact
-    history, opt-out state, or message records.
+    Refused with a 409 when any campaign's audience selector names the list,
+    because deleting it degrades that campaign's report label to the raw string
+    `list:20`. Archiving is what "take it out of my dropdown" means.
     """
-    row = db.get(ContactList, list_id)
-    if not row:
-        raise HTTPException(status_code=404, detail="List not found")
-
-    removed = db.query(ContactListMember).filter(
-        ContactListMember.list_id == list_id
-    ).delete()
-    db.delete(row)
-    db.commit()
-    return {"success": True, "memberships_removed": removed}
+    try:
+        return list_admin.delete(db, list_id)
+    except list_admin.ListAdminError as e:
+        raise HTTPException(status_code=e.status_code, detail=str(e))
