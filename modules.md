@@ -37,7 +37,7 @@ client sending real campaigns.
 | 5g | **Blocklist correctness** | Part A done 2026-08-26 · deploy pending | 5d | `app/sms/compliance.py`, `app/sms/phone.py`, `app/sms/providers/telnyx.py`, `app/routers/webhooks/telnyx.py`, `app/routers/webhooks/twilio.py`, `app/routers/webhooks/common.py`, `app/routers/pages.py`, `app/models/sms_message.py`, `app/models/blocked_number.py`, `app/services/blocklist_service.py`, `app/services/dashboard_service.py`, `app/services/monitoring_service.py`, `alembic/versions/`, `tests/` |
 | 5h | **Held-back rows & the capacity floor** | Part A done 2026-08-30 · deploy pending | 5e | `app/models/sms_message.py`, `app/services/campaign_builder.py`, `app/services/campaign_service.py`, `app/services/campaign_release.py`, `app/services/campaign_topup.py`, `app/routers/campaign_uploads.py`, `app/templates/_composer-upload.html`, `alembic/versions/`, `tests/` |
 | 5i | **Named lists replace categories** | Part A done 2026-09-04 · deploy pending | 5h, P1b | `app/models/{contact_list,sms_message}.py`, `app/services/{contact_service,dashboard_service,campaign_builder,campaign_service,import_service,report_service,history_service}.py`, `app/routers/{campaigns,contacts,dashboard,imports}.py`, `app/templates/{campaigns,contacts,today}.html`, `app/templates/_composer-{script,upload}.html`, `alembic/versions/`, `tests/`, `agent/{accept-5i.sh,mutate-5i.py}` |
-| 5j | **Index migration, cost guard & list archive/rename** | **Part A done 2026-09-04** · accept + gate + mutation green · **deploy pending** | 5i | `app/models/{contact_list,sms_message}.py`, `app/services/{contact_service,dashboard_service}.py`, `app/routers/contacts.py`, `app/services/list_admin.py` (new), `app/templates/{campaigns}.html`, `app/templates/_composer-{lists,script}.html`, `alembic/versions/`, `tests/`, `agent/{accept-5j.sh,mutate-5j.py}` |
+| 5j | **Index migration, cost guard & list archive/rename** | **Part A done 2026-09-04** · accept + gate + mutation green · **deployed 2026-09-04** | 5i | `app/models/{contact_list,sms_message}.py`, `app/services/{contact_service,dashboard_service}.py`, `app/routers/contacts.py`, `app/services/list_admin.py` (new), `app/templates/{campaigns}.html`, `app/templates/_composer-{lists,script}.html`, `alembic/versions/`, `tests/`, `agent/{accept-5j.sh,mutate-5j.py}` |
 | 5k | **Close the attribute-escaping class** | Specced · small, run before or beside P2 | 5j | `app/templates/{base,_composer-script,blocklist,contact-history,settings}.html`, `tests/test_attribute_escaping.py`, `agent/accept-5k.sh` |
 | P1 | **Prospect pipeline** | Done · deployed 2026-09-01 | 5f | `app/models/{prospect,scrape}.py`, `app/models/__init__.py`, `app/sms/lookup.py`, `app/sources/prospect_base.py`, `app/sources/__init__.py`, `app/services/{prospect_service,prospect_queue,prospect_scoring,lookup_service,scrape_runner,link_service}.py`, `app/routers/prospects.py`, `app/routers/pages.py`, `app/templates/{prospects,base}.html`, `app/core/config.py`, `app/main.py`, `alembic/versions/`, `tests/`, `agent/{accept-P1.sh,mutate-P1.py}` |
 | P1b | **Lookup provider & gate flake** | Done · deployed 2026-09-01 | P1 | `app/sms/providers/telnyx_lookup.py`, `app/sms/lookup.py`, `app/services/lookup_service.py`, `app/core/config.py`, `.env.example`, `docs/API.md`, `CLAUDE.md`, `tests/{test_lookup_provider,test_wholesale_scan,_wholesale_scan}.py`, `tests/fixtures/number_lookup_responses.json`, `tests/{test_campaign_reports,test_whitelabel,test_campaign_preflight,test_capacity_rounding,test_degraded_send_path,test_prospect_review,test_prospect_pipeline}.py`, `agent/{accept-P1b.sh,mutate-P1b.py,accept-P1.sh}` |
@@ -869,7 +869,14 @@ that lets him.
 production-shape / down-and-up, and the rename, collision, 409 refusal, archive and
 unarchive driven by hand against a running box with the state restored afterwards.
 `_last_sent_by_list()` at production row counts: **0.019s**, from 10m02s. The whole Today
-screen is 0.049s. **Deploy is pending.**
+screen is 0.049s.
+
+**Deployed 2026-09-04.** Both revisions applied on the live box and Part B confirms the
+index migration **converged rather than accumulated**: `sms_messages` carries
+`idx_sms_contact` and no `ix_sms_messages_contact_id`; `contact_list_members` carries
+`idx_member_contact` and no `ix_clm_contact_id`. The composer, the picker and the new
+Manage lists panel verified by hand against production — panel opens, rows carry an
+editable name, contact count, freshness, Save name and Archive; no console errors.
 
 **One spec clause was superseded — `decisions/008`.** A2 told the guard to assert "no full
 scan of `sms_messages` or `contact_list_members`". Measured before it was written, that is
