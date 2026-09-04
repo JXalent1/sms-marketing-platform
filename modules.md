@@ -39,7 +39,7 @@ client sending real campaigns.
 | 5i | **Named lists replace categories** | Part A done 2026-09-04 · deploy pending | 5h, P1b | `app/models/{contact_list,sms_message}.py`, `app/services/{contact_service,dashboard_service,campaign_builder,campaign_service,import_service,report_service,history_service}.py`, `app/routers/{campaigns,contacts,dashboard,imports}.py`, `app/templates/{campaigns,contacts,today}.html`, `app/templates/_composer-{script,upload}.html`, `alembic/versions/`, `tests/`, `agent/{accept-5i.sh,mutate-5i.py}` |
 | P1 | **Prospect pipeline** | Done · deployed 2026-09-01 | 5f | `app/models/{prospect,scrape}.py`, `app/models/__init__.py`, `app/sms/lookup.py`, `app/sources/prospect_base.py`, `app/sources/__init__.py`, `app/services/{prospect_service,prospect_queue,prospect_scoring,lookup_service,scrape_runner,link_service}.py`, `app/routers/prospects.py`, `app/routers/pages.py`, `app/templates/{prospects,base}.html`, `app/core/config.py`, `app/main.py`, `alembic/versions/`, `tests/`, `agent/{accept-P1.sh,mutate-P1.py}` |
 | P1b | **Lookup provider & gate flake** | Done · deployed 2026-09-01 | P1 | `app/sms/providers/telnyx_lookup.py`, `app/sms/lookup.py`, `app/services/lookup_service.py`, `app/core/config.py`, `.env.example`, `docs/API.md`, `CLAUDE.md`, `tests/{test_lookup_provider,test_wholesale_scan,_wholesale_scan}.py`, `tests/fixtures/number_lookup_responses.json`, `tests/{test_campaign_reports,test_whitelabel,test_campaign_preflight,test_capacity_rounding,test_degraded_send_path,test_prospect_review,test_prospect_pipeline}.py`, `agent/{accept-P1b.sh,mutate-P1b.py,accept-P1.sh}` |
-| P2 | **Google Places source** | Specced · parallel-safe with 5i | P1b | `app/sources/google_places.py`, `app/sources/taxonomy.py`, `app/core/config.py`, `agent/mutate-{1,5d,5f,P1}.py`, `tests/` |
+| P2 | **Google Places source** | Specced · next | P1b | `app/sources/google_places.py`, `app/sources/taxonomy.py`, `app/core/config.py`, `agent/mutate-{1,5d,5f,P1}.py`, `tests/` |
 | P3 | **Registries, marketplaces & enrichment** | After P2 | P1 | `app/sources/dbpr.py`, `app/sources/sunbiz.py`, `tests/` |
 
 **That's the launch — six sessions, but only four waves. See "Parallel plan" below.**
@@ -785,7 +785,8 @@ the Python-side default on `contact_list.created_at` described below.
    means rebuilding the table, which is escalation item 8, so the model carries a
    Python-side `default=now_iso` instead and `parse_created_at()` still understands the
    space-separated spelling for the raw-`INSERT` path that can still reach it.
-2. **A7 as written cannot hold**, because other clauses of the same spec retain six
+2. **A7 as written cannot hold** — ruled on in `decisions/007` and struck through in the
+   spec in place — because other clauses of the same spec retain six
    surfaces that name a category — the prospect queue (A8), the taxonomy CRUD it reads,
    the contacts payload and export (`contact_query_service`, out of the file list), and
    the two report screens (the file list puts `report_service`/`history_service` in
@@ -799,3 +800,28 @@ the Python-side default on `contact_list.created_at` described below.
    used to be refused by that rule; with the rule gone it reaches the resolver, whose
    `ValueError` the router does not map. Now mapped to a 400 carrying the selector
    grammar's own sentence.
+
+### Residuals, in the order they should be picked up
+
+Detail for each is in `status.md` under "Found while working".
+
+1. **`/api/contacts/export.csv` still carries a `categories` column** — the one remaining
+   surface the client actually sees, because he opens the file. `contact_query_service.py`
+   was outside 5i's list and the sweep exempts it for that reason. First item of whichever
+   session next touches that file; it should not wait for module 8.
+2. **`app/services/campaign_service.py` is at exactly 500 lines.** The next addition to it
+   forces a split before anything else can land there. Its own docstring describes the seam
+   used last time.
+3. **`docs/API.md` describes none of 5i** — `/api/campaigns` lost four fields,
+   `/api/dashboard` renamed `categories` to `lists` and `next_up.category` to
+   `next_up.list`, `/api/campaigns/audiences` and `/api/lists` changed shape, and
+   `/api/imports/commit` gained `list_name` and stopped requiring `category_id`.
+4. **`pages.PAGE_CONTEXT["contacts"]` still computes `category_tabs`** on every Contacts
+   page load, and after A5 nothing renders them.
+5. **`import_service.require_category()` has no caller** — a correct function stating a
+   rule nothing enforces any more.
+6. **`test_whitelabel.py:104` reads `"id"` off a `/api/lists` entry**, which those entries
+   have never had, so `PATH_VALUES["list_id"]` has always been the `999999` fallback.
+   Pre-existing; harmless until a GET route takes a `{list_id}`.
+7. **A per-contact "which lists is this person on" column** on Contacts, explicitly out of
+   5i's scope and still the right product answer.

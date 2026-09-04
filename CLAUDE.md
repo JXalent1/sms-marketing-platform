@@ -497,6 +497,42 @@ change to a live table.
   it was exempted for. And prove the sweep fires at all, against a case whose
   answer you know, before quoting it as evidence.
 
+- **Removing a `server_default` from the model does not remove `DEFAULT` from the
+  table.** `contact_lists.created_at` was created by migration `f69dc078ee13` as
+  `DEFAULT (CURRENT_TIMESTAMP)`, and 5i's whole point was to give that column one
+  writer keeping one clock. Dropping the model's `server_default` closes the ORM
+  path and nothing else: a raw `INSERT` naming no `created_at` still gets a UTC,
+  space-separated value from SQLite, and removing a column default there means
+  rebuilding the table — escalation item 8. So the model carries a Python-side
+  default and `parse_created_at()` still understands the old spelling on purpose.
+  The general form: an ORM declaration is one of two writers of a column default,
+  and the one you cannot see from Python is the one that survives your edit. When
+  you close a second writer, check the DDL, not just the model.
+- **Starting the app in development migrates the developer's database, and a check
+  whose evidence lives in that database evaporates.** `app/main.py` runs `alembic
+  upgrade head` on import outside production (production does not — `deploy.sh`
+  does it as a deliberate step, so two workers cannot race). Booting a local
+  uvicorn for the "Run it" check above therefore applied 5i's migration in place
+  and converted the one row that acceptance check 2b existed to convert. The check
+  then printed an identical before and after and still reported **ok** — a green
+  light wired to nothing, for the third time in this project. A check that
+  demonstrates a migration must **put its copy into the state production is in**
+  first: seed the row with the pre-migration spelling *and* roll `alembic_version`
+  back to the revision the live box is on, because `upgrade head` against a copy
+  already stamped at head runs nothing at all and looks calm doing it.
+- **"Subtract by module, not by path" fails when one handler serves many screens.**
+  5i A7 specified that its category sweep exclude the prospect surface by module,
+  on the `RESERVED_SLUGS` principle that a shape test must subtract one shared
+  definition rather than drifting copies. `/prospects` is served by `pages.page`,
+  the shared handler behind six screens, so the module that owns the route is
+  `app.routers.pages` — and subtracting it would have removed the two screens the
+  sweep existed to cover. A route's owning module is a fact about which file the
+  handler lives in, not about which screen it serves. When a sweep needs
+  exceptions, name them, attach the clause that retains each, and add a staleness
+  test that fails when one stops being needed; that closes the rot a denylist is
+  feared for without pretending the exceptions are structural.
+  `tests/test_audience_surfaces.py` and `decisions/007`.
+
 ## Where things live
 
 - `A4A_BUILD_PLAN.md` — the full project plan and reasoning

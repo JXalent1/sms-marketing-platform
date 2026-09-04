@@ -256,8 +256,18 @@ the rendered bodies.
 - Discover client-facing GET routes from the app's own route table. `test_whitelabel.py`
   already has `_get_routes()` (line 119) and a `>= 15` sanity floor on it — reuse that,
   do not write a second discoverer, and do not pin a list of paths.
-- Subtract the routes owned by **`app.routers.prospects`** — by module, not by path
-  string. The prospect review queue keeps its category, and A8 says why.
+- ~~Subtract the routes owned by **`app.routers.prospects`** — by module, not by path
+  string. The prospect review queue keeps its category, and A8 says why.~~
+  <br>**Superseded by `decisions/007`, 2026-09-04.** This cannot be done: `/prospects` is
+  served by `pages.page`, the shared handler behind six screens, so subtracting its module
+  would take the Contacts and Today screens out with it — and five further surfaces keep
+  the word under other clauses of this same spec. The mechanism is a named exemption list,
+  each entry carrying the clause that retains it, plus a staleness check that fails when an
+  entry stops being needed, a named-coverage check so the exemptions cannot eat the sweep,
+  and a positive control run before the sweep is quoted as evidence.
+  `tests/test_audience_surfaces.py`. The half of the original instruction that stands is
+  the rest of this section: discovery from the app's own route table, never a pinned list
+  of paths.
 - Assert that no remaining rendered body contains `category` or `categories`,
   case-insensitively.
 
