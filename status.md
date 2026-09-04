@@ -3374,3 +3374,77 @@ un-normalised row that will sort by a clock nobody has checked.
   to `next_up.list`, `/api/campaigns/audiences` and `/api/lists` changed shape,
   and `/api/imports/commit` gained `list_name` and stopped requiring
   `category_id`. Docs are module 8's.
+
+---
+
+## Incident — 5i deployed, composer unusable for 25 minutes, 2026-09-04
+
+**Resolved by two indexes created by hand on production. No rollback, no data loss.**
+
+### What happened
+
+5i deployed clean at 16:23 — migration ran (`0 converted from UTC, 21 left alone`,
+exactly as Part B predicted), health check green. A click-through of the live composer
+found the audience dropdown and the Recent campaigns rail both stuck on `Loading…` and
+never resolving. No JavaScript errors; every request eventually returned 200.
+
+`contact_service.list_summaries()` timed on the box: **10 minutes 2 seconds.**
+
+### Why
+
+`_last_sent_by_list()` joins `contact_list_members` to `sms_messages` on `contact_id`,
+and **neither side was indexed on that column**:
+
+- `contact_list_members` has `idx_member_list` on `list_id` alone. Its unique
+  `(list_id, contact_id)` index has `list_id` leading, so it cannot serve a lookup
+  by `contact_id`.
+- `sms_messages` had `idx_sms_campaign`, `idx_sms_status`, `idx_sms_sent_at` — nothing
+  on `contact_id`.
+
+~30,000 message rows scanned against ~15,500 membership rows on one vCPU.
+
+### The part that mattered more than the dropdown
+
+`list_summaries()` is a **synchronous** query inside an `async def` route, so it held the
+event loop while it ran — and `run_due_campaigns` is on that loop. The journal shows
+`Run time of job "run_due_campaigns" was missed by 0:00:24` and `0:00:38` during the
+window. **A reporting screen delayed the send path.** Both ticks recovered; a full
+ten-minute block could have skipped one outright.
+
+The composer's Recent campaigns rail also polls, so roughly twenty
+`GET /api/campaigns?limit=8` stacked up behind one blocked request.
+
+### The fix
+
+Backup, then two additive indexes and an `ANALYZE`, applied directly to production:
+
+```sql
+CREATE INDEX IF NOT EXISTS ix_sms_messages_contact_id ON sms_messages(contact_id);
+CREATE INDEX IF NOT EXISTS ix_clm_contact_id ON contact_list_members(contact_id);
+ANALYZE;
+```
+
+**10m02s → 0.95s**, most of which is interpreter start-up. Composer verified by hand
+afterwards: pinned entry renders `⭐ ALL BIDDERS — MAIN LIST — 9,747 contacts`, "Most
+recent first." beneath it, no category fieldset, no cross-category checkbox, Recent
+campaigns populated, summary panel showing the audience.
+
+**Production's schema now leads the migration history by two indexes.** 5j must add them
+as a real migration written to tolerate their already existing — `op.create_index` will
+raise on the live box otherwise, and the deploy aborts on a failed migration.
+
+### Why nothing caught it
+
+The test database has twelve rows where production has forty-five thousand across that
+join. The gate has no timing check. The mutation harness proves behaviour and is silent
+about cost. And the session spec's review lenses — mine — asked whether
+`list_summaries()` returned the *right* set and never asked what it cost. Folded into
+`CLAUDE.md`.
+
+### Also confirmed working
+
+The campaign rail's subtitle reads `Estates`, `Memorabilia` for pre-5i campaigns. That is
+`audience_label()` resolving a historical `category:<slug>` selector to the category's
+**label** — clause 2 of the retention decision doing exactly its job. The word "category"
+appears nowhere, which is why the A7 sweep passes over `/api/campaigns` while that text
+is on screen.

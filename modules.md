@@ -801,6 +801,39 @@ the Python-side default on `contact_list.created_at` described below.
    `ValueError` the router does not map. Now mapped to a 400 carrying the selector
    grammar's own sentence.
 
+### 5j — the index migration, the archive/rename controls
+
+**Written up but not yet specced. It is the next session, ahead of P2.**
+
+Two things forced it into existence on deploy day, and they belong together because both
+are about the list picker being the product now rather than a corner of it.
+
+**1. Production's schema leads the migration history by two indexes.** The 5i freshness
+join took 10m02s on production and 0.95s after `ix_sms_messages_contact_id` and
+`ix_clm_contact_id` were created by hand — see the incident entry at the end of
+`status.md`. Those indexes exist on the live box and in no migration. 5j carries them,
+**written to tolerate their already existing**: a bare `op.create_index()` raises on the
+live database and `deploy.sh` aborts the deploy on a failed migration, which would mean
+the fix for the outage is the thing that cannot ship.
+
+It also needs the regression guard that would have caught this: an `EXPLAIN QUERY PLAN`
+assertion that the freshness join is index-backed, so an unindexed join fails the suite
+rather than the client. The gate has no timing check and the mutation harness is silent
+about cost — this is the first check in the project that is about what a query costs.
+
+**2. Nothing in the product can rename or hide a list.** Every test upload becomes a
+permanent dropdown entry. That was invisible while categories were the primary axis and
+is now the picker itself — ten pieces of debris were cleared by hand on 2026-09-04 and
+there is no way for the client to do the same. `DELETE /api/lists/{id}` exists, has no
+caller, and hard-deletes, which is the wrong tool: deleting a list a campaign referenced
+degrades that campaign's report label to the raw `list:20`. The right shape is an
+`archived` flag with the same ruling categories got — **hidden from the picker, still
+resolving for history** — plus a rename, both reachable from where he picks an audience.
+
+Nineteen of the twenty-one lists were never used by a campaign, so there is no campaign
+name for most of them to inherit. The client has to name them himself; this is the tool
+that lets him.
+
 ### Residuals, in the order they should be picked up
 
 Detail for each is in `status.md` under "Found while working".

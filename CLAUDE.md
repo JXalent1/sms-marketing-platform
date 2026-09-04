@@ -533,6 +533,31 @@ change to a live table.
   feared for without pretending the exceptions are structural.
   `tests/test_audience_surfaces.py` and `decisions/007`.
 
+- **A query that feeds a screen has a cost, and the test database cannot show it
+  to you.** 5i's freshness join — `contact_list_members` to `sms_messages` on
+  `contact_id` — took **10 minutes 2 seconds** on production and under a
+  millisecond in the suite. Neither side of that join was indexed on
+  `contact_id`: `contact_list_members` carries `idx_member_list` on `list_id`
+  alone, and its unique `(list_id, contact_id)` index has `list_id` leading, so
+  it cannot serve a lookup by `contact_id`; `sms_messages` had indexes on
+  `campaign_id`, `status` and `sent_at` and none on `contact_id`. Thirty thousand
+  messages scanned against fifteen thousand memberships, one vCPU. The suite had
+  twelve rows and every test passed in milliseconds.
+  <br>**The cost was not local to the screen it was on.** `list_summaries()` is a
+  synchronous query inside an `async def` route, so while it ran it held the
+  event loop — and `run_due_campaigns` runs on that loop. The log shows the
+  scheduler missing its tick by 24 and 38 seconds while someone had the composer
+  open. A reporting query delayed the send path. Ask what else lives on the loop
+  before you put a join on a page that polls.
+  <br>Three things generalize. **Time every new query against production-scale
+  row counts**, not the fixture — the gate has no timing check and neither the
+  review lenses nor the mutation harness can see cost, because mutation testing
+  proves behaviour and says nothing about how long the behaviour takes. **Check
+  that both sides of a join key are indexed**, and remember that a composite
+  index only serves a lookup on its leading column. And **a screen that polls
+  turns one slow query into a queue** — the log showed twenty-odd
+  `GET /api/campaigns?limit=8` stacked behind one blocked request.
+
 ## Where things live
 
 - `A4A_BUILD_PLAN.md` — the full project plan and reasoning
