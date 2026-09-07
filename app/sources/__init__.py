@@ -25,11 +25,16 @@ SOURCES = {
     # ExampleAPIContactSource.name: ExampleAPIContactSource,   # needs constructor args
 }
 
-# Discovery sources. Empty on purpose: P1 built the machinery and explicitly
-# shipped no source implementation. Google Places is P2 and the licence
-# registries are P3, and each one is a class plus a taxonomy — nothing else here
-# has to change to take one.
-PROSPECT_SOURCES = {}
+# Discovery sources. P1 built the machinery and shipped none; P2 added the
+# first, and it was a class plus a taxonomy exactly as the seam promised —
+# nothing in the pipeline changed to take it. The licence registries are P3.
+#
+# Imported lazily by name rather than at module import: `google_places` reaches
+# for `httpx` when it builds a client, and neither this registry nor anything
+# that merely lists the sources should pay for that.
+PROSPECT_SOURCES = {
+    "google_places": "app.sources.google_places:GooglePlacesSource",
+}
 
 
 def get_source(name: str) -> ContactSource:
@@ -42,8 +47,10 @@ def get_prospect_source(name: str) -> ProspectSource:
     if name not in PROSPECT_SOURCES:
         raise ValueError(
             f"Unknown prospect source '{name}'. Registered: "
-            f"{', '.join(PROSPECT_SOURCES) or 'none yet — see P2'}")
-    return PROSPECT_SOURCES[name]()
+            f"{', '.join(PROSPECT_SOURCES) or 'none'}")
+    module_path, class_name = PROSPECT_SOURCES[name].split(":")
+    module = __import__(module_path, fromlist=[class_name])
+    return getattr(module, class_name)()
 
 
 __all__ = ["ContactSource", "ContactRecord", "IngestResult", "SOURCES",

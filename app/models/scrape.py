@@ -93,13 +93,48 @@ class ScrapeJob(Base):
     # somebody has already said no to is a term that should be retired, and that
     # is invisible if suppression is silent.
     records_suppressed = Column(Integer, nullable=False, default=0)
+    # Businesses the never-prospect list stopped by name — another auction
+    # house, an estate liquidator, an appraiser. Counted apart from every other
+    # kind of nothing because the remedy is different: a term whose output is
+    # mostly competitors is a term to retire, and that is invisible if it is
+    # folded into `records_invalid`.
+    records_excluded = Column(Integer, nullable=True, default=0)
+    # Numbers the client already has as contacts. Also its own counter, and for
+    # the opposite reason: a high count here is a search working correctly on a
+    # niche already covered, not a search finding rubbish.
+    records_known = Column(Integer, nullable=True, default=0)
     # No usable phone, or no buyer rationale. Both are the source's bug.
     records_invalid = Column(Integer, nullable=False, default=0)
 
     # ─── What it cost ───────────────────────────────────────────────────────
+    # **Two meters, and they are independent, because they are two bills.**
+    # `lookups_*` and `cost` are the carrier line-type spend. `api_*` is the
+    # discovery API's, which is charged per *request* rather than per number —
+    # one request returns up to twenty businesses. Summing them into one column
+    # would be the overloaded-value mistake this file's neighbours keep paying
+    # for: the two have different units, different ceilings and different
+    # remedies when one runs out.
     lookups_performed = Column(Integer, nullable=False, default=0)
     lookups_cached = Column(Integer, nullable=False, default=0)
     cost = Column(String(20), nullable=True)          # Decimal as text. Ours.
+
+    api_requests = Column(Integer, nullable=True, default=0)
+    # Requests the monthly cap refused. A column rather than only a log line,
+    # for `cleanup_ran`'s reason: "the cap stopped this run early" has to be
+    # something you can query for, not something you establish by reading a
+    # journal nobody reads. A job with records and a non-zero count here is a
+    # search that is incomplete rather than exhausted.
+    api_requests_skipped = Column(Integer, nullable=True, default=0)
+    api_cost = Column(String(20), nullable=True)      # Decimal as text. Ours.
+    #
+    # The four counters above this line are `nullable=True` with a Python-side
+    # default while the four older ones are `nullable=False`, and the difference
+    # is the table's history rather than a distinction in meaning. They were
+    # added to an existing table by `e7c05b3a1d94`, and making a new SQLite
+    # column NOT NULL means either a server default — the second writer 5i spent
+    # a migration removing — or a table rebuild, which is escalation item 8.
+    # Every reader therefore treats NULL as 0, because a raw INSERT naming none
+    # of them can still produce one.
 
     cleanup_ran = Column(Integer, nullable=False, default=0)
     error = Column(Text, nullable=True)

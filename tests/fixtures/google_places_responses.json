@@ -1,0 +1,326 @@
+{
+  "_README": [
+    "Google Places API (New) Text Search responses, written to the documented",
+    "`places:searchText` schema. **Not recorded from a live call** \u2014 session P2",
+    "was forbidden from making one, and saying 'recorded' about a file that was",
+    "typed would be the kind of claim this project keeps finding underneath a",
+    "green check. Every field name, nesting and spelling here is the published",
+    "shape; what is invented is the data.",
+    "",
+    "Every number is in the 555 reserved range (+1 555-555-12xx / 13xx, a block",
+    "no other test module uses) and every business is fictional, so nothing here",
+    "identifies a person or a company.",
+    "",
+    "`nationalPhoneNumber` and `internationalPhoneNumber` are Enterprise-SKU",
+    "fields. `enterprise_tier_missing` is what the same query returns on a key",
+    "without that tier: it parses cleanly and carries no way to contact anybody.",
+    "",
+    "No test in this repo calls the real API."
+  ],
+  "shell_wholesale_page_1": {
+    "places": [
+      {
+        "id": "A4A_TEST_0001",
+        "displayName": {
+          "text": "Gulf Coral Trading Co",
+          "languageCode": "en"
+        },
+        "formattedAddress": "1 Shell Row, Sanibel, FL 33957, USA",
+        "location": {
+          "latitude": 26.4462,
+          "longitude": -82.0895
+        },
+        "types": [
+          "wholesaler",
+          "store",
+          "establishment"
+        ],
+        "primaryType": "wholesaler",
+        "googleMapsUri": "https://maps.google.com/?cid=A4A_TEST_0001",
+        "nationalPhoneNumber": "(555) 555-1200",
+        "internationalPhoneNumber": "+1 555-555-1200"
+      },
+      {
+        "id": "A4A_TEST_0002",
+        "displayName": {
+          "text": "Seashell Importers of Pine Island",
+          "languageCode": "en"
+        },
+        "formattedAddress": "22 Dock St, Bokeelia, FL 33922, USA",
+        "location": {
+          "latitude": 26.7009,
+          "longitude": -82.1454
+        },
+        "types": [
+          "wholesaler",
+          "importer",
+          "establishment"
+        ],
+        "primaryType": "wholesaler",
+        "googleMapsUri": "https://maps.google.com/?cid=A4A_TEST_0002",
+        "nationalPhoneNumber": "(555) 555-1201",
+        "internationalPhoneNumber": "+1 555-555-1201"
+      },
+      {
+        "id": "A4A_TEST_0003",
+        "displayName": {
+          "text": "Bayfront Shell Distributors",
+          "languageCode": "en"
+        },
+        "formattedAddress": "400 Harbor Dr, Houston, TX 77002, USA",
+        "location": {
+          "latitude": 29.7604,
+          "longitude": -95.3698
+        },
+        "types": [
+          "wholesaler",
+          "store",
+          "establishment"
+        ],
+        "primaryType": "wholesaler",
+        "googleMapsUri": "https://maps.google.com/?cid=A4A_TEST_0003",
+        "nationalPhoneNumber": "(555) 555-1202",
+        "internationalPhoneNumber": "+1 555-555-1202"
+      },
+      {
+        "id": "A4A_TEST_0004",
+        "displayName": {
+          "text": "Tidewater Auction House",
+          "languageCode": "en"
+        },
+        "formattedAddress": "9 Market St, Fort Myers, FL 33901, USA",
+        "location": {
+          "latitude": 26.6406,
+          "longitude": -81.8723
+        },
+        "types": [
+          "store",
+          "establishment"
+        ],
+        "primaryType": "store",
+        "googleMapsUri": "https://maps.google.com/?cid=A4A_TEST_0004",
+        "nationalPhoneNumber": "(555) 555-1203",
+        "internationalPhoneNumber": "+1 555-555-1203"
+      },
+      {
+        "id": "A4A_TEST_0005",
+        "displayName": {
+          "text": "Sanibel Estate Liquidators LLC",
+          "languageCode": "en"
+        },
+        "formattedAddress": "3 Palm Ave, Sanibel, FL 33957, USA",
+        "location": {
+          "latitude": 26.44,
+          "longitude": -82.08
+        },
+        "types": [
+          "store",
+          "establishment"
+        ],
+        "primaryType": "store",
+        "googleMapsUri": "https://maps.google.com/?cid=A4A_TEST_0005",
+        "nationalPhoneNumber": "(555) 555-1204",
+        "internationalPhoneNumber": "+1 555-555-1204"
+      }
+    ],
+    "nextPageToken": "A4A_TEST_PAGE_TOKEN_2"
+  },
+  "shell_wholesale_page_2": {
+    "places": [
+      {
+        "id": "A4A_TEST_0006",
+        "displayName": {
+          "text": "Harborlight Shell & Coral Supply",
+          "languageCode": "en"
+        },
+        "formattedAddress": "77 Bay Rd, Naples, FL 34102, USA",
+        "location": {
+          "latitude": 26.142,
+          "longitude": -81.7948
+        },
+        "types": [
+          "wholesaler",
+          "establishment"
+        ],
+        "primaryType": "wholesaler",
+        "googleMapsUri": "https://maps.google.com/?cid=A4A_TEST_0006",
+        "nationalPhoneNumber": "(555) 555-1205",
+        "internationalPhoneNumber": "+1 555-555-1205"
+      },
+      {
+        "id": "A4A_TEST_0007",
+        "displayName": {
+          "text": "Beacon Hill Appraisers",
+          "languageCode": "en"
+        },
+        "formattedAddress": "12 Charles St, Boston, MA 02114, USA",
+        "location": {
+          "latitude": 42.3601,
+          "longitude": -71.0589
+        },
+        "types": [
+          "establishment"
+        ],
+        "primaryType": "establishment",
+        "googleMapsUri": "https://maps.google.com/?cid=A4A_TEST_0007",
+        "nationalPhoneNumber": "(555) 555-1206",
+        "internationalPhoneNumber": "+1 555-555-1206"
+      },
+      {
+        "id": "A4A_TEST_0008",
+        "displayName": {
+          "text": "Coastline Consignment Gallery",
+          "languageCode": "en"
+        },
+        "formattedAddress": "5 Ocean Blvd, Delray Beach, FL 33483, USA",
+        "location": {
+          "latitude": 26.4615,
+          "longitude": -80.0728
+        },
+        "types": [
+          "store",
+          "establishment"
+        ],
+        "primaryType": "store",
+        "googleMapsUri": "https://maps.google.com/?cid=A4A_TEST_0008",
+        "nationalPhoneNumber": "(555) 555-1207",
+        "internationalPhoneNumber": "+1 555-555-1207"
+      },
+      {
+        "id": "A4A_TEST_0009",
+        "displayName": {
+          "text": "Shoreline Shell Exports",
+          "languageCode": "en"
+        },
+        "formattedAddress": "8 Quay St, Tampa, FL 33602, USA",
+        "location": {
+          "latitude": 27.9506,
+          "longitude": -82.4572
+        },
+        "types": [
+          "wholesaler",
+          "establishment"
+        ],
+        "primaryType": "wholesaler",
+        "googleMapsUri": "https://maps.google.com/?cid=A4A_TEST_0009",
+        "nationalPhoneNumber": "(555) 555-1208",
+        "internationalPhoneNumber": "+1 555-555-1208"
+      }
+    ]
+  },
+  "shell_aggregate_page_1": {
+    "places": [
+      {
+        "id": "A4A_TEST_0020",
+        "displayName": {
+          "text": "Broward Crushed Shell & Rock",
+          "languageCode": "en"
+        },
+        "formattedAddress": "1200 SW 2nd Ave, Fort Lauderdale, FL 33315, USA",
+        "location": {
+          "latitude": 26.13,
+          "longitude": -80.14
+        },
+        "types": [
+          "general_contractor",
+          "store",
+          "establishment"
+        ],
+        "primaryType": "store",
+        "googleMapsUri": "https://maps.google.com/?cid=A4A_TEST_0020",
+        "nationalPhoneNumber": "(555) 555-1300",
+        "internationalPhoneNumber": "+1 555-555-1300"
+      },
+      {
+        "id": "A4A_TEST_0021",
+        "displayName": {
+          "text": "Sanibel Landscape Supply Yard",
+          "languageCode": "en"
+        },
+        "formattedAddress": "60 Periwinkle Way, Sanibel, FL 33957, USA",
+        "location": {
+          "latitude": 26.4462,
+          "longitude": -82.0895
+        },
+        "types": [
+          "store",
+          "establishment"
+        ],
+        "primaryType": "store",
+        "googleMapsUri": "https://maps.google.com/?cid=A4A_TEST_0021",
+        "nationalPhoneNumber": "(555) 555-1301",
+        "internationalPhoneNumber": "+1 555-555-1301"
+      },
+      {
+        "id": "A4A_TEST_0022",
+        "displayName": {
+          "text": "Bayou Shell Aggregate Supply",
+          "languageCode": "en"
+        },
+        "formattedAddress": "900 Ship Channel Rd, Houston, TX 77029, USA",
+        "location": {
+          "latitude": 29.7604,
+          "longitude": -95.3698
+        },
+        "types": [
+          "store",
+          "establishment"
+        ],
+        "primaryType": "store",
+        "googleMapsUri": "https://maps.google.com/?cid=A4A_TEST_0022",
+        "nationalPhoneNumber": "(555) 555-1302",
+        "internationalPhoneNumber": "+1 555-555-1302"
+      }
+    ]
+  },
+  "enterprise_tier_missing": {
+    "places": [
+      {
+        "id": "A4A_TEST_0030",
+        "displayName": {
+          "text": "Gulf Coral Trading Co",
+          "languageCode": "en"
+        },
+        "formattedAddress": "1 Shell Row, Sanibel, FL 33957, USA",
+        "location": {
+          "latitude": 26.4462,
+          "longitude": -82.0895
+        },
+        "types": [
+          "wholesaler",
+          "establishment"
+        ],
+        "primaryType": "wholesaler",
+        "googleMapsUri": "https://maps.google.com/?cid=A4A_TEST_0030"
+      },
+      {
+        "id": "A4A_TEST_0031",
+        "displayName": {
+          "text": "Harborlight Shell & Coral Supply",
+          "languageCode": "en"
+        },
+        "formattedAddress": "77 Bay Rd, Naples, FL 34102, USA",
+        "location": {
+          "latitude": 26.142,
+          "longitude": -81.7948
+        },
+        "types": [
+          "wholesaler",
+          "establishment"
+        ],
+        "primaryType": "wholesaler",
+        "googleMapsUri": "https://maps.google.com/?cid=A4A_TEST_0031"
+      }
+    ]
+  },
+  "empty": {
+    "places": []
+  },
+  "error_403": {
+    "error": {
+      "code": 403,
+      "message": "Places API (New) has not been used in project 000000000000 before or it is disabled.",
+      "status": "PERMISSION_DENIED"
+    }
+  }
+}

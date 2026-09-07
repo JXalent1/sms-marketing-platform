@@ -12,13 +12,19 @@ To add a source:
     3. Register it in app/sources/__init__.py.
     4. Run it through app/services/scrape_runner.py — never directly.
 
-## The two things a source may not do
+## The three things a source may not do
 
 **A source never touches the database.** `fetch()` yields records; `ingest()`
-below hands them to `prospect_service`, which normalises, dedups, suppresses and
+below hands them to `prospect_ingest`, which normalises, dedups, suppresses and
 persists. A source that writes a row has taken the dedup guarantee, the
 permanent-rejection check and the provenance requirement into itself, where the
 next source will not inherit any of them.
+
+**A source never decides who is a buyer, either.** The never-prospect list —
+other auction houses, estate liquidators, appraisers — is matched in
+`prospect_ingest.record_prospect()`, on the same rule: a guard with one call
+site is a guard on one path, and every source written after this one has to
+inherit it rather than remember it.
 
 **A source never decides whether something is textable.** Line type is looked up
 by `lookup_service` after ingestion, behind a cache, once per number. A source
@@ -87,10 +93,21 @@ class ProspectRecord:
 
 @dataclass
 class ProspectIngestResult:
+    """One counter per outcome `record_prospect()` can answer.
+
+    Six of them, and none is a spelling of another. "Nobody justified this
+    term", "this business is an auction house", "a reviewer already said no"
+    and "the client already has this number" are four different diagnoses with
+    four different remedies, and a source that reported them as one number
+    would be telling whoever reads the job row nothing they can act on.
+    """
+
     total: int = 0
     created: int = 0
     corroborated: int = 0
     suppressed: int = 0
+    excluded: int = 0
+    known: int = 0
     invalid: int = 0
 
     def as_dict(self) -> dict:
@@ -99,6 +116,8 @@ class ProspectIngestResult:
             "created": self.created,
             "corroborated": self.corroborated,
             "suppressed": self.suppressed,
+            "excluded": self.excluded,
+            "known": self.known,
             "invalid": self.invalid,
         }
 
@@ -155,21 +174,21 @@ class ProspectSource(ABC):
         `record_prospect()` — a second call site for the rules above, which is
         how a guard ends up applying on one path and not the other.
         """
-        from app.services import prospect_service
+        from app.services import prospect_ingest
 
         result = ProspectIngestResult()
         for record in (self.fetch(**kwargs) if records is None else records):
             result.total += 1
-            outcome = prospect_service.record_prospect(
+            outcome = prospect_ingest.record_prospect(
                 db, record, source_name=self.name, job=job)
             # Named rather than setattr'd blind: an outcome this class has never
             # heard of would otherwise create a counter nobody reads and be
             # reported as zero of everything, which reads as a source that found
             # nothing rather than as a bug.
-            if outcome not in prospect_service.RECORD_OUTCOMES:
+            if outcome not in prospect_ingest.RECORD_OUTCOMES:
                 raise ValueError(
                     f"record_prospect returned {outcome!r}; the outcomes this "
-                    f"result can count are {prospect_service.RECORD_OUTCOMES}")
+                    f"result can count are {prospect_ingest.RECORD_OUTCOMES}")
             setattr(result, outcome, getattr(result, outcome) + 1)
             if self.should_stop():
                 logger.info("[%s] stop requested after %d records",

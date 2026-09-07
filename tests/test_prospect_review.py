@@ -240,9 +240,15 @@ def test_a_rejection_suppresses_the_number_for_every_future_source(db):
     would prove nothing about suppression. The claim is about the *number*: a
     business rejected as a consignor comes back next month under a different
     name, a different payload and a different search, and must not resurface.
+
+    The name is deliberately one the never-prospect list does **not** catch.
+    That list stops an estate liquidator who says so on his signage; this rule
+    is what stops the one who does not, on a human's judgement — the two are
+    different guards and a fixture named "Estate Liquidators" would exercise
+    only the first.
     """
     phone = setup.take(1)[0]
-    prospect = _seed(db, phone, name="Coastal Estate Liquidators", source="fake-a")
+    prospect = _seed(db, phone, name="Coastal Salvage & Estate Traders", source="fake-a")
 
     result = prospect_service.reject(db, [prospect.id], "seller_or_consignor",
                                      notes="sells into our sales")
@@ -264,7 +270,7 @@ def test_a_rejection_suppresses_the_number_for_every_future_source(db):
     assert outcome.suppressed == 1 and outcome.created == 0
     row = db.query(Prospect).filter(Prospect.phone == phone).one()
     assert row.status == "rejected"
-    assert row.business_name == "Coastal Estate Liquidators", (
+    assert row.business_name == "Coastal Salvage & Estate Traders", (
         "the re-ingest overwrote the rejected row instead of being suppressed")
 
     page = prospect_queue.queue_page(db, status="pending",

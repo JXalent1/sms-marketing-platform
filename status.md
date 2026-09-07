@@ -3694,3 +3694,269 @@ expecting everything; the one reader that needs the archived rows,
   called but never defined, no DOM id read but never declared.
 - `app/sms/` still imports nothing from the DB layer; no table, column or index
   was dropped or renamed; every new test passes on its own.
+
+---
+
+## Module P2 Part A — the Google Places source, 2026-09-04
+
+The first real discovery source. P1 built the pipeline, the line-type gate and
+the review queue; this fills them, under two independent spend meters.
+
+`bash agent/gate.sh` passes, twice. **696 tests** (613 + 83 new).
+`bash agent/accept-P2.sh` is the stop condition; criteria 1-9 and 6b pass
+locally, criterion 10 is `--with-remote` and needs the deploy.
+`agent/mutate-P2.py`: **36 mutations, 0 survived, 0 failed to apply**, on a tree
+verified byte-identical to the repo.
+
+### decisions/009, implemented
+
+**Shell wholesalers, importers and distributors are buyers and they are the
+priority group.** They are not in the exclusion list; they are `shell_wholesale`,
+`priority=1`, national, running two sweeps. Every other exclusion stands.
+
+The reversal is guarded **in the direction the plan was wrong**, because the next
+session to read the plan's old wording is the risk:
+
+- `test_a_shell_wholesaler_importer_or_distributor_is_accepted` runs
+  `excluded_reason()` over the five real companies `decisions/009` quotes —
+  Atlantic Coral Enterprise, US Shell, Worldwide Wildlife Products, California
+  Seashell, Blue Seas Trading — and requires all five to pass.
+- `test_no_exclusion_phrase_names_a_wholesaler_importer_or_distributor` is the
+  structural half: it fails if any phrase in the list contains `wholesal`,
+  `importer`, `distribut`, whoever the victims would have been.
+- `agent/mutate-P2.py` `X3` re-adds the exclusion and requires the suite to go
+  red for it. It does: 10 tests.
+
+**Radius is a property of the search-term group**, with the category as its
+fallback (`taxonomy.radius_for_group()`), because one category now carries two
+national groups and one regional one. Asserted individually, and the property
+behind the three assertions is asserted too — `test_no_single_value_satisfies_
+all_three_seashell_groups` fails if the three ever resolve to one number, which
+is the defect criterion 6b exists to catch.
+
+| group | priority | radius | sweeps |
+|---|---|---|---|
+| `shell_wholesale` | 1 | national | national + gulf_coast |
+| `shell_makers` | 1 | national | national + gulf_coast |
+| `shell_aggregate` | 2 | **150 miles** | home |
+| `shell_retail` | 4 | national | national |
+
+**The two national groups state `radius_miles=None` rather than inheriting it**,
+and so do `memorabilia_dealers` and `marine_trade`. The fallback reads
+`PROSPECT_CATEGORY_RADIUS_MILES` from `.env`, and a box whose `.env` pins the old
+five-key map would otherwise run the priority group at 150 miles with nothing on
+any screen saying so. The config default gained `marine: null` and
+`seashells: null` as the spec requires, and `.env.example` gained them too — but
+belt and braces, because the .env is the one file this session may not read on
+the live box.
+
+### Two meters, because they are two bills
+
+- **Google**: $35 per 1,000 Text Search requests, first 1,000 of a calendar
+  month free. `GOOGLE_PLACES_MONTHLY_REQUEST_CAP` defaults to exactly the free
+  allowance, is checked **before** every request, and refuses cleanly: the job
+  is `completed` with `api_requests_skipped > 0`, everything already found is
+  persisted, and one ERROR line names the count and the remedy.
+- **Carrier lookups**: P1b's cap, called through, not duplicated.
+
+**The Google meter needed its own dedup, and that is the half that is easy to
+miss.** A request is charged for *asking*, so nothing downstream can save a
+repeat — the cache, the rejection list and the contact check all stop a second
+$0.0025 and none of them stops a second $0.035. So a search already run inside
+`GOOGLE_PLACES_QUERY_REPEAT_DAYS` is not run again, and the ledger is
+`scrape_jobs.search_term` on a **completed, uninterrupted** job. That is why
+`run_plan()` runs **one job per search**: the ledger, the per-search cost
+attribution A3 asks for, and an exact monthly meter across runs all fall out of
+it, with no shared mutable state between searches.
+
+A second identical run is asserted on call counts to make **zero** paid calls of
+either kind.
+
+### Two defects the in-session review found, and both were mine
+
+Neither was found by reading. One was found by working through the arithmetic of
+a figure nothing yet displays, the other by asking what a query does a year from
+now.
+
+1. **`run_plan`'s `skipped_cap` double-subtracted the already-searched.** It was
+   `len(plan) - index - skipped_recent`, and those searches sit at indices below
+   the break, so the slice has already excluded them. Correct on a first run,
+   under-reporting on every run after — which is the only kind of run that
+   figure is read on. Now counted by walking what is left.
+2. **The "was it interrupted" clause was unbounded in time.** It subtracted
+   every term *ever* interrupted from the fresh set, so a search the cap stopped
+   in March and that completed cleanly in April would have stayed out of the
+   ledger permanently — re-run, and paid for, every night forever. It is now one
+   clause of the freshness query, with `is_(None)` beside it because
+   `api_requests_skipped = 0` is NULL, not true, for every job row written
+   before this session's migration.
+
+Both have a test that goes red against the pre-fix tree (verified by reverting
+each in a scratch copy) and a mutation in `agent/mutate-P2.py` (`C8`, `D6`, plus
+`D3` for the NULL branch).
+
+### The mutation harness caught a guard that decided nothing
+
+`RequestBudget.allows()` shipped as `if self.cap <= 0: return False` above
+`return self.remaining > 0` — the same shape as `LookupBudget.allows()`, where
+it is load-bearing because a cost can be zero. The mutation reverting it
+**survived**, and the reason is that with an integer request counter and a
+non-negative spend there is no arrangement in which that `if` decides anything
+the comparison below it would not have decided the same way. It read like a
+guard and was a comment with an `if` in front of it.
+
+This is P1b's lesson from the other end. There the fix was to construct the
+arrangement that reaches the guard; here no such arrangement exists, so the
+guard is gone and the rule now lives in the one expression that holds the
+ceiling: `return self.spent < self.cap`. `C3` mutates that to `<=` — the
+off-by-one that turns a cap of zero into a cap of one — and five tests catch it.
+
+### Edits outside P2's file list in `modules.md`
+
+`modules.md` lists `app/sources/google_places.py`, `app/sources/taxonomy.py`,
+`app/core/config.py`, `agent/mutate-{1,5d,5f,P1}.py` and `tests/`. 5d and P1 set
+the precedent for recording what forced each departure.
+
+| file | what forced it |
+|---|---|
+| `app/sources/exclusions.py` (new) | A1's "make the list one shared definition". It is enforced from `prospect_ingest`, which must not import a module that reaches back into `app.services` — and `taxonomy.py` does, for the radius fallback. Splitting it also kept `taxonomy.py` off the 500-line rule. |
+| `app/services/prospect_ingest.py` (new) | The 500-line rule. Criteria 6 and 7 add the exclusion check and the already-a-contact check to `record_prospect()`, and `prospect_service.py` was at 451 lines — P1's own status note says the next addition forces the split. Ingestion moved; review outcomes stayed. |
+| `app/services/prospect_service.py` | The other side of that split, and its docstring. |
+| `app/services/api_budget.py` (new) | A3's Google request cap. A source may not query the database and the ceiling has to be checked inside the paging loop, so the meter is read by the runner and handed in — `LookupBudget`'s seam exactly. |
+| `app/services/scrape_runner.py` | A3. The runner builds the request budget, records both meters on the job, and owns `run_plan()` and the search ledger. |
+| `app/sources/prospect_base.py` | Criteria 6 and 7 add two outcomes, so `ProspectIngestResult` needs two counters — the base class refuses an outcome it cannot count, by design. |
+| `app/models/scrape.py` + `alembic/versions/e7c05b3a1d94` | A3's "record per job what was attempted, produced and spent", and the monthly request cap needs a persistent counter. Five additive nullable columns, backfilled, no index, no server default. |
+| `app/sources/__init__.py` | `prospect_base`'s own instructions: "Register it in app/sources/__init__.py". |
+| `.env.example` | The radius map is pinned in that file, so a box built from it would not have picked up the `marine` and `seashells` keys the spec requires. |
+| `tests/test_prospect_review.py`, `tests/test_lookup_provider.py` | Fallout, not scope. One fixture was named "Coastal Estate Liquidators", which the exclusion list now stops at ingest; renamed, with a note saying why a fixture for the *rejection* rule must not be a name the *exclusion* rule catches. The other referenced `prospect_service.is_suppressed`, which moved. |
+
+### A4 — the pristine check, back-ported
+
+`CLAUDE.md` states that every mutation harness verifies its scratch tree and
+prints `SCRATCH VERIFIED PRISTINE`. Before this session that was true of **two
+of seven**: `mutate-P1b.py` and `mutate-5j.py` (and `5i`, which copied P1b).
+A documented guarantee that is true in two places is worse than none, because
+it gets quoted.
+
+**The spec names `mutate-1` and `mutate-5d`, and neither exists.** The repo is
+the state: the harnesses lacking the check were `5e`, `5f`, `5g`, `5h` and `P1`
+— five, not four. All five now carry it, and `accept-P2.sh` check 8 asserts the
+property over **every** `agent/mutate-*.py`, so a harness added tomorrow is
+covered without anybody remembering.
+
+Check 8 proves it fires rather than merely existing: it dirties every `.py` file
+in a scratch tree and requires each of the nine harnesses to exit 2 naming the
+files. That works because a harness that refuses exits before applying a patch,
+so one dirty tree serves all nine and nothing needs restoring. Check 8b runs
+`mutate-5g.py` on a clean tree so the check is not merely "everything always
+exits 2".
+
+*(The first version of check 8 parsed each harness's `MUTATIONS` with
+`ast.literal_eval` to choose a victim file, and broke on `mutate-5j.py`, which
+names its path through a variable. A check that has to understand the thing it
+is checking is a check with its own bugs — the sixth time in this project a
+measurement script has been wrong before the code was.)*
+
+### Query cost, measured before it is a screen
+
+`CLAUDE.md`'s 5i lesson is to time a new query against production-scale row
+counts rather than the fixture. Two new queries, measured against **32,485
+`scrape_jobs` rows** — a year of nightly runs at one job per search:
+
+```
+searched_recently        5.9 ms   -> 89 terms    SEARCH ... USING INDEX idx_scrape_jobs_status
+spend_this_month         3.0 ms   -> 712         SCAN scrape_jobs
+```
+
+`spend_this_month` full-scans, and it is called once per job — about 270 ms
+across an 89-search sweep at a year of history. Both are off every request path:
+**nothing calls `run_plan()` from a route or the scheduler**, so neither query
+can hold the event loop the way 5i's freshness join did. No index was added for
+a query nothing waits on. **If a route or a scheduled job is ever wired to
+`run_plan()`, that is the moment this becomes 5i's defect**, and the fix is a
+worker rather than an index.
+
+### Found while working
+
+- **`agent/mutate-P1.py` had rotted too, and one of its mutations is now
+  vacuous.** Two separate things, and only the first was repaired here.
+  <br>`R5` — "the cache is never read" — stopped applying when P1b added
+  `"skipped": None` to `line_type_for()`'s cached return, so that mutation had
+  been silently not-run ever since. The anchor is repaired; `mutate-P1.py` is in
+  this session's file list and was already open for the `prospect_ingest`
+  repointing. With it fixed the harness reports **40 mutations, 0 failed to
+  apply, 1 survived** — R5 is caught by
+  `test_the_single_number_path_reads_the_cache_too`, and the survivor is R12b
+  below. The four mutations P2 repointed at `prospect_ingest.py` (R14, R22, R23,
+  R23b) are all caught by tests that name them.
+  <br>`R12b` — "the screening pass pays to look up numbers a human already
+  rejected" — **survives**, and that is a finding rather than a hole. It reverts
+  `_screen()`'s `status == "pending"` filter, whose stated justification is the
+  $0.0025 a rejected number would cost. P1b then put `unusable_numbers()` inside
+  `line_type_for()`, at the one place a call is actually made, so a rejected
+  number is refused there whether or not the filter above it ran. The money is
+  saved by the lower guard now, and no test can see the upper one. **A guard
+  whose only justification is money, sitting above a guard that saves the same
+  money, is a filter rather than a guard** — it still avoids a query and a
+  rescore loop, and the comment above it should say that instead. Left alone:
+  deciding what that filter is now for is P1's scope, not P2's.
+- **`agent/mutate-5e.py` and `agent/mutate-5h.py` have bit-rotted.** Five and one
+  patch respectively no longer apply, because 5i and 5j moved the code they name:
+  `campaign_service.py` (`scheduled_at`), `campaign_builder.py`
+  (`cross_category_override or list_audience`) and `campaign_topup.py` (three
+  anchors, plus `SMSMessage.top_up_at.isnot(None)`). Both harnesses now *report*
+  it — "PATCH DID NOT APPLY … fix the harness, not the code" — and exit 1, which
+  is correct behaviour and a broken tool. Not repaired here: understanding what
+  5i/5j changed about the top-up path is that module's work, not P2's. The
+  pristine back-port is unaffected — it runs before any patch is applied.
+- **A national group's prospects are scored against a 150-mile radius.**
+  `marine` and `seashells` have no `categories` rows, so `_category_id_for_slug`
+  leaves those prospects uncategorised, and `prospect_scoring.radius_for(None)`
+  returns `PROSPECT_DEFAULT_RADIUS_MILES`. The *search* is national — the source
+  applies the group's rule and drops nothing — but the *score* gives a
+  962-mile-away wholesaler 0 of 15 distance points while a Florida one gets up to
+  15. The priority group therefore sorts below local retail at equal line type.
+  Bounded (15 of 100, and line type is 60) and not a correctness bug, but
+  contrary to `decisions/009`'s intent. Two fixes, both outside P2's file list:
+  seed `marine` and `seashells` as categories (a product decision — the palette
+  is escalation item 9), or carry the applied radius on the prospect row beside
+  `search_term` and `buyer_rationale`, which are denormalised there for exactly
+  this reason. **First item for whichever session next touches
+  `prospect_scoring.py` or the category seed.**
+- **`PROSPECT_ORIGIN_LAT/LON` is silent when wrong.** A mistyped origin moves
+  every regional search and every distance without any symptom. No sanity check
+  was added — a plausible-coordinates assertion is a requirement nobody stated.
+- **There is still no jobs screen**, so a discovery run that the cap stopped
+  early is only visible in the log and in `scrape_jobs`. When one is built,
+  `api_requests_skipped` and `run_plan()`'s `skipped_cap` are what it must show,
+  and `api_cost`, `cost` and `scrape_jobs.error` are what it must not.
+- **`app/services/scrape_runner.py` is 451 lines.** The next addition forces a
+  split, and the seam is already visible: the plan and the ledger on one side,
+  the deadline-and-cleanup job runner on the other.
+- **The job counters record what was persisted, not what the API returned.** A
+  request that produced three prospects and a request that returned three places
+  are the same row. The difference — places returned, places with no phone,
+  places outside the radius — is logged per page rather than given a sixth
+  column, because there is no jobs screen for it to appear on and the systemic
+  case (a key without Enterprise tier, so *no* result carries a phone) already
+  logs at ERROR. If a jobs screen is ever built, that log line is the shape of
+  what it should show.
+- **`docs/API.md` still does not document the prospects API**, nor 5f's reports
+  and links routes. P1 recorded this; P2 added no route, so it is unchanged and
+  still worth one pass.
+
+### Deliberately not built
+
+- **Any real API call.** The spec forbids it and `accept-P2.sh` check 2b asserts
+  it structurally: no test constructs a live `PlacesClient`, names a real carrier
+  provider, or sets a Places key that does not name itself as fake. The fixture
+  file says plainly that it was **written to the documented schema, not recorded
+  from a call** — saying "recorded" about a file that was typed is the kind of
+  claim this project keeps finding underneath a green check. What the repo *can*
+  check is that the field mask, the parser and the fixture agree with each other,
+  and `test_the_field_mask_asks_for_everything_the_parser_reads` does.
+- **A scheduler or a route for `run_plan()`.** The first live run is Jordan's,
+  one category, smallest radius, cap low.
+- **Enrichment, registries and marketplaces.** P3.
+- **A "promote anything unscreened" path.** Unchanged from P1, and still the
+  cheap error.

@@ -41,7 +41,7 @@ client sending real campaigns.
 | 5k | **Close the attribute-escaping class** | Specced · small, run before or beside P2 | 5j | `app/templates/{base,_composer-script,blocklist,contact-history,settings}.html`, `tests/test_attribute_escaping.py`, `agent/accept-5k.sh` |
 | P1 | **Prospect pipeline** | Done · deployed 2026-09-01 | 5f | `app/models/{prospect,scrape}.py`, `app/models/__init__.py`, `app/sms/lookup.py`, `app/sources/prospect_base.py`, `app/sources/__init__.py`, `app/services/{prospect_service,prospect_queue,prospect_scoring,lookup_service,scrape_runner,link_service}.py`, `app/routers/prospects.py`, `app/routers/pages.py`, `app/templates/{prospects,base}.html`, `app/core/config.py`, `app/main.py`, `alembic/versions/`, `tests/`, `agent/{accept-P1.sh,mutate-P1.py}` |
 | P1b | **Lookup provider & gate flake** | Done · deployed 2026-09-01 | P1 | `app/sms/providers/telnyx_lookup.py`, `app/sms/lookup.py`, `app/services/lookup_service.py`, `app/core/config.py`, `.env.example`, `docs/API.md`, `CLAUDE.md`, `tests/{test_lookup_provider,test_wholesale_scan,_wholesale_scan}.py`, `tests/fixtures/number_lookup_responses.json`, `tests/{test_campaign_reports,test_whitelabel,test_campaign_preflight,test_capacity_rounding,test_degraded_send_path,test_prospect_review,test_prospect_pipeline}.py`, `agent/{accept-P1b.sh,mutate-P1b.py,accept-P1.sh}` |
-| P2 | **Google Places source** | Specced · next | P1b | `app/sources/google_places.py`, `app/sources/taxonomy.py`, `app/core/config.py`, `agent/mutate-{1,5d,5f,P1}.py`, `tests/` |
+| P2 | **Google Places source** | Part A done 2026-09-04 · deploy pending | P1b | `app/sources/{google_places,taxonomy,exclusions,__init__,prospect_base}.py`, `app/services/{prospect_ingest,prospect_service,api_budget,scrape_runner}.py`, `app/models/scrape.py`, `app/core/config.py`, `.env.example`, `alembic/versions/`, `agent/{accept-P2.sh,mutate-P2.py,mutate-{5e,5f,5g,5h,P1}.py}`, `tests/` |
 | P3 | **Registries, marketplaces & enrichment** | After P2 | P1 | `app/sources/dbpr.py`, `app/sources/sunbiz.py`, `tests/` |
 
 **That's the launch — six sessions, but only four waves. See "Parallel plan" below.**
@@ -949,6 +949,31 @@ Detail for each is in `status.md` under "Found while working".
 
 ---
 
+### P2's file list above is wider than the one this table carried before the
+session, and each departure is recorded in `status.md` with the requirement that
+forced it — the precedent 5d and P1 set. The four that matter:
+
+- **`app/sources/exclusions.py`** holds the never-prospect list on its own,
+  because it is enforced from `prospect_ingest` and must not import a module
+  that reaches back into `app.services` — which `taxonomy.py` does, deliberately,
+  for the radius fallback.
+- **`app/services/prospect_ingest.py`** is the 500-line rule. The exclusion check
+  and the already-a-contact check took `prospect_service.py` past it, which P1's
+  own status note predicted. Ingestion moved; what a reviewer does to a prospect
+  stayed.
+- **`app/services/api_budget.py`** is the Google request meter. A source may not
+  query the database and the ceiling has to be checked inside the paging loop, so
+  the runner reads the meter and hands it in — `LookupBudget`'s seam exactly.
+- **`alembic/versions/e7c05b3a1d94`** adds five columns to `scrape_jobs`:
+  `records_excluded`, `records_known`, `api_requests`, `api_requests_skipped`,
+  `api_cost`. Additive, nullable, backfilled, no index, no server default.
+  Two meters and two kinds of nothing, kept apart on purpose.
+
+**The spec's A4 names `agent/mutate-1.py` and `agent/mutate-5d.py`, which do not
+exist.** The harnesses that lacked the pristine check were `5e`, `5f`, `5g`, `5h`
+and `P1`. All five have it; `accept-P2.sh` check 8 now asserts the property over
+every `agent/mutate-*.py` rather than over a list.
+
 ## Prospecting, decided 2026-09-04
 
 **`decisions/009` reverses the seashell exclusion.** Shell wholesalers, importers and
@@ -1000,3 +1025,55 @@ refuses cleanly rather than overspending.
 **Blocker, Jordan's:** a Google Places API key with **Enterprise tier**. The phone number
 only comes back at that tier. P2 can be *built* without it — the spec forbids real API
 calls in the session — so the key gates the first live run, not the work.
+
+### P2 — Part A done 2026-09-04
+
+`agent/accept-P2.sh` exits 0 on criteria 1–9 plus 6b (10 needs the deploy), gate green
+twice at **696 tests**, `agent/mutate-P2.py` 36 caught / 0 survived on a verified-pristine
+tree, and migration `e7c05b3a1d94` clean up, down and up again. **Deploy pending; the
+Google Places key and the first live run are Jordan's.**
+
+`app/sources/taxonomy.py` — term groups across seven categories, each with the written
+`buyer_rationale` the review queue renders. `app/sources/exclusions.py` — one shared
+definition, enforced in `record_prospect()` so a future source inherits it rather than
+remembering it.
+
+**`decisions/009` shipped as written and is guarded in the direction the plan was wrong:**
+a test running `excluded_reason()` over the five real companies the decision names, a
+structural test that no exclusion phrase contains `wholesal`/`importer`/`distribut`, and
+mutation X3 which re-adds the exclusion and takes ten tests red. Radius is a property of
+the group with an `INHERIT` sentinel distinct from `None` (national), and
+`test_no_single_value_satisfies_all_three_seashell_groups` is the property behind criterion
+6b. `marine` and the seashell groups were added to the config map and `.env.example`.
+
+**Two meters, because they are two bills.** The carrier's is P1b's, called through.
+Google's is new and needed its own dedup: a request is charged for *asking*, so the cache,
+the rejection list and the new already-a-contact check each save $0.0025 and not one cent
+of $0.035. `run_plan()` runs one job per search with `scrape_jobs.search_term` as the
+ledger.
+
+**Three defects the session found in its own code**, all with tests verified red against
+the pre-fix tree: `skipped_cap` double-subtracted the already-searched (right on a first
+run, wrong on every run after); the "was it interrupted" clause had no time bound, so one
+bad night kept a search out of the ledger forever and re-paid nightly; and a `cap <= 0`
+guard copied from `LookupBudget` decided nothing over an integer counter. Folded into
+`CLAUDE.md`.
+
+**A4 — the spec named two harnesses that do not exist.** `agent/mutate-1.py` and
+`agent/mutate-5d.py` were never written; the file list in this table carried the wrong
+names and the kick-off repeated them. The five actually lacking the pristine check were
+5e, 5f, 5g, 5h and P1, all five now have it, and check 8 asserts the property over **every**
+`agent/mutate-*.py` by handing all nine a dirty tree — which is the durable form, since it
+cannot name a file that is not there.
+
+### Residuals added by P2
+
+8. **`agent/mutate-5e.py` and `agent/mutate-5h.py` have bit-rotted** against 5i and 5j —
+   five and one patch no longer apply, because those sessions moved the code the patches
+   name. They now say so rather than reading as a pass, which is the important half. Until
+   repaired, neither session has live mutation coverage; repairing them or retiring them
+   deliberately is a decision somebody should take rather than inherit.
+9. **`_screen()`'s `status == "pending"` filter has a comment that is no longer true**
+   (mutation R12b, the one survivor on the repaired `mutate-P1`). Its justification moved
+   into `line_type_for()` in P1b. The filter still avoids a query and a rescore loop — a
+   real reason and a different one — and the comment should say that. P1's scope.

@@ -29,7 +29,9 @@ import pytest
 from app.core.config import settings
 from app.models.prospect import ProspectRejection
 from app.models.scrape import PhoneLookup
-from app.services import blocklist_service, lookup_service, prospect_service
+from app.services import (
+    blocklist_service, lookup_service, prospect_ingest, prospect_service,
+)
 from app.sms import lookup as lookup_module
 from app.sms.providers import telnyx_lookup
 
@@ -650,10 +652,10 @@ def test_the_unusable_set_agrees_with_the_two_services_that_own_the_rules(db):
     """Two statements of one rule, so the test asserts they agree.
 
     `unusable_numbers()` batches over the tables because it runs on a whole
-    scrape, while `prospect_service.is_suppressed()` and
+    scrape, while `prospect_ingest.is_suppressed()` and
     `blocklist_service.is_blocked()` answer about one number — and
-    `prospect_service` imports `lookup_service`, so the reverse import is a
-    cycle rather than a choice. Pinning either list would prove the list; this
+    `prospect_ingest` reaches `lookup_service` through `prospect_service`, so
+    the reverse import is a cycle rather than a choice. Pinning either list would prove the list; this
     proves the property the second copy exists to preserve.
     """
     rejected, blocked, clean = setup.take(1)[0], setup.take(1)[0], setup.take(1)[0]
@@ -666,7 +668,7 @@ def test_the_unusable_set_agrees_with_the_two_services_that_own_the_rules(db):
     batched = lookup_service.unusable_numbers(db, everything)
     one_at_a_time = {
         phone for phone in everything
-        if prospect_service.is_suppressed(db, phone)
+        if prospect_ingest.is_suppressed(db, phone)
         or blocklist_service.is_blocked(db, phone)
     }
 

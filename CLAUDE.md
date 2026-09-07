@@ -49,7 +49,7 @@ These are the commands acceptance criteria reference. Run them and show the outp
   `ModuleNotFoundError: slowapi` and reports **"test suite is red"** — a true statement
   about the wrong interpreter, and a convincing false alarm. Either activate `.venv`
   or run `PATH="$PWD/.venv/bin:$PATH" bash agent/gate.sh`.
-- **Tests:** `python -m pytest tests/ -q` — must exit 0. **613 passing as of session 5j.**
+- **Tests:** `python -m pytest tests/ -q` — must exit 0. **696 passing as of session P2.**
   A lower count means you are on a stale branch, not that tests vanished.
 - **Migrations:** `alembic upgrade head` — must succeed from a clean DB.
 - **Run it:** `./run.sh` then `curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/login` → `200`
@@ -641,6 +641,69 @@ change to a live table.
   written by the delivery webhook** — input from outside the system entirely.
   A guard with one call site is a guard on one path, again.
 
+- **A dedup that saves a per-item price does not save a per-request price.** P2's
+  pipeline had four things stopping a number being paid for twice — the
+  `phone_lookups` cache, the rejection list, the existing-prospect check and the
+  new already-a-contact check — and **not one of them saves a single cent of the
+  discovery API's bill**, because Text Search is charged for *asking*, not for
+  what comes back. Twenty businesses arrive per $0.035 request, and every one of
+  them can be a perfect cache hit while the request is still billed. So the
+  Google meter needed a dedup of its own shape: a ledger of which *searches*
+  have run, keyed on `scrape_jobs.search_term`. The general form: **before
+  trusting a dedup, ask what the unit of billing is.** A guard placed one unit
+  down from the invoice saves nothing, and it looks thorough while doing it.
+- **A guard no arrangement can reach is dead code, not a guard — and the
+  mutation harness is what tells you which.** P1b's lesson was that a test can
+  name a guard and never reach it, and the fix there was to construct the
+  arrangement that makes the guard the only thing deciding. P2 found the mirror:
+  `RequestBudget.allows()` shipped with `if self.cap <= 0: return False` above
+  `return self.remaining > 0`, copied from `LookupBudget`, where it *is*
+  load-bearing because a cost can be zero. With an integer request counter and a
+  non-negative spend, no arrangement exists — the comparison below always
+  answers the same way. The mutation reverting it survived, which is the only
+  reason anybody noticed. When you copy a guard between two classes, ask whether
+  the thing that made it reachable in the first one came with it; if it did not,
+  delete the `if` and let one expression carry the rule, because a comment with
+  an `if` in front of it is worse than a comment.
+- **Two ways a bookkeeping figure goes quietly wrong, both found by reading the
+  arithmetic rather than by running it.** First, **count what is left by walking
+  what is left**: `len(plan) - index - already_skipped` double-subtracts, because
+  the already-skipped are below the index and the slice has excluded them
+  already. It is correct on the first run and wrong on every run after — which is
+  the only kind of run the figure is read on. Second, **a subtraction needs a
+  time bound**: "every search ever interrupted" removed from "searches completed
+  recently" means one bad night in March keeps a search out of the ledger
+  forever, so it is re-run and re-paid every night. Both are figures nothing
+  renders yet, which is exactly why nobody would have noticed.
+- **`NULL = 0` is NULL, not true, and every additive counter starts life NULL.**
+  A column added to an existing SQLite table cannot be `NOT NULL` without a
+  server default (the second writer 5i spent a migration removing) or a table
+  rebuild (escalation item 8), so it is nullable with a Python-side default —
+  and every row written before the migration holds NULL. A filter spelled
+  `counter == 0` silently drops all of them. `or_(col == 0, col.is_(None))`, and
+  a test that sets the column to NULL by hand, because nothing the application
+  writes will ever produce one.
+
+- **A guard copied to a new context brings its justification, and the
+  justification may not survive the move.** P2 copied `if self.cap <= 0: return
+  False` out of `LookupBudget`, where it is reachable because a lookup can be
+  priced at zero. The Google meter counts integer requests, so nothing can make
+  that branch decide anything, and the mutation reverting it survived — the
+  harness noticed what review did not. `self.spent < self.cap` carries the whole
+  rule there.
+  <br>The same shape, one layer up, is `_screen()`'s `status == "pending"` filter
+  (mutation R12b, the single survivor on the repaired `mutate-P1`). Its stated
+  justification is the $0.0025 a rejected number would cost — and P1b later put
+  `unusable_numbers()` inside `line_type_for()`, at the one place a call is
+  actually made, so a rejected number is refused there whether or not the filter
+  ran. The money is saved below it now and no test can see the upper one. **A
+  guard whose only justification is money, sitting above a guard that saves the
+  same money, is a filter, not a guard.** It still avoids a query and a rescore
+  loop, which is a real reason and a different one, and the comment has to say so
+  — a comment that outlives its reason reads as a rule and gets defended as one.
+  <br>Both ways round: when you copy a guard, ask what makes it reachable *here*;
+  when you add a lower guard, re-read the comment on the upper one.
+
 ## Where things live
 
 - `A4A_BUILD_PLAN.md` — the full project plan and reasoning
@@ -835,10 +898,27 @@ tokens and interruptions and, on this project's evidence, buys nothing.
 
 ### A measurement script is code, and it fails the same ways
 
-Three times now a verification script has been wrong before the code was, and every time
-in the same shape: **prose describing a rule counted as a violation of it.** Check 8b
-flagged a docstring. A layering grep counted a comment stating the layering rule. A
-white-label grep flagged `main.py`'s own webhook module imports.
+Six times now a verification script has been wrong before the code was, usually in the
+same shape: **prose describing a rule counted as a violation of it.** Check 8b flagged a
+docstring. A layering grep counted a comment stating the layering rule. A white-label grep
+flagged `main.py`'s own webhook module imports. P2's prospect-surface sweep flagged the
+word *wholesaler* inside the buyer rationale that exists to justify searching for
+wholesalers — the figure sweep is `_wholesale_scan`, which compares parsed numbers, and a
+word sweep must never stand in for it.
+
+Two new shapes from P2, both worth naming:
+
+- **A pattern that matches a longer name ending the same way.** `PlacesClient\(\)`
+  matched `ReplayPlacesClient()` — the test fake, flagged as the live client it exists to
+  replace. Same defect as `21610` matching a phone number, one column over. `\b` in front
+  of the class name fixes it, and a self-check that runs the pattern against both the real
+  and the fake spelling proves it.
+- **A check that has to parse the thing it is checking.** P2's harness sweep read each
+  `agent/mutate-*.py` with `ast.literal_eval` to pick a file to dirty, and broke on
+  `mutate-5j.py`, which names its path through a variable. The rewrite dirties *every*
+  `.py` file in one scratch tree and hands the same tree to all nine harnesses — which
+  works precisely because a harness that refuses exits before applying a patch. Prefer a
+  check that needs no model of its target.
 
 Two consequences, both learned the expensive way:
 

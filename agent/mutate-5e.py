@@ -26,6 +26,7 @@ import pathlib, re, subprocess, sys
 
 SCRATCH = pathlib.Path(sys.argv[1])
 PY = sys.argv[2]
+REPO = pathlib.Path(__file__).resolve().parent.parent
 TARGETS = [
     "tests/test_campaign_first_flow.py",
     "tests/test_topup_and_zero_send.py",
@@ -244,8 +245,28 @@ MUTATIONS = {
     "        list.innerHTML = '<li class=\"px-5 py-4 text-[13px] text-ink-3\">'")],
 }
 
-pristine = {p: (SCRATCH / p).read_text()
-            for muts in MUTATIONS.values() for p, _, _ in muts}
+# ── The precondition. P1's first run was worthless without it ──────────────
+# Back-ported by session P2 (A4). P1's first mutation run reported 38 caught and
+# 0 survived on a scratch tree a killed run had left already mutated, so every
+# verdict sat on top of a leftover edit. `accept-P1.sh` did `rm -rf` before its
+# rsync, which is weaker and only holds when the harness is run through that
+# script. CLAUDE.md states that every harness verifies its tree and prints
+# `SCRATCH VERIFIED PRISTINE`; before P2 that was true of two of seven.
+#
+# Read the results the same way: check that the tests failing for a mutation are
+# the tests that **name** it. A harness is code and it fails the same ways.
+files = sorted({path for muts in MUTATIONS.values() for path, _, _ in muts})
+dirty = [p for p in files
+         if (SCRATCH / p).read_bytes() != (REPO / p).read_bytes()]
+if dirty:
+    print("SCRATCH TREE IS NOT PRISTINE — every verdict below would sit on top "
+          "of a leftover edit:")
+    for path in dirty:
+        print(f"   -> {path} differs from the repo")
+    sys.exit(2)
+print(f"SCRATCH VERIFIED PRISTINE ({len(files)} files byte-identical to the repo)")
+
+pristine = {p: (SCRATCH / p).read_text() for p in files}
 
 survivors, unapplied = [], []
 for name, mutations in MUTATIONS.items():

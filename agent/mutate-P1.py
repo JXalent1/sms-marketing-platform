@@ -31,6 +31,11 @@ import pathlib, re, subprocess, sys
 
 SCRATCH = pathlib.Path(sys.argv[1])
 PY = sys.argv[2]
+REPO = pathlib.Path(__file__).resolve().parent.parent
+# Session P2 moved `record_prospect()`, `_add_sighting()` and `is_suppressed()`
+# out of `prospect_service.py` into `prospect_ingest.py` when the exclusion and
+# already-a-contact checks pushed that file past 500 lines. Four mutations below
+# were repointed at the new file; the behaviour each reverts is unchanged.
 TARGETS = [
     "tests/test_prospect_pipeline.py",
     "tests/test_prospect_review.py",
@@ -63,11 +68,17 @@ MUTATIONS = {
     '        .filter(PhoneLookup.phone.in_(wanted))')],
 
  "R5 the cache is never read, so every number is paid for again": [
+   # Anchor repaired by P2: session P1b added `"skipped": None` to this return,
+   # so the patch stopped applying and the mutation had been silently not-run
+   # ever since. "PATCH DID NOT APPLY" is the harness saying so — it is not a
+   # pass, and it means the code moved and this file was not updated with it.
    ("app/services/lookup_service.py",
     '    if row is not None and row.status == "ok":\n'
-    '        return {"line_type": row.line_type, "cached": True, "ok": True}',
+    '        return {"line_type": row.line_type, "cached": True, "ok": True,\n'
+    '                "skipped": None}',
     '    if False:\n'
-    '        return {"line_type": row.line_type, "cached": True, "ok": True}')],
+    '        return {"line_type": row.line_type, "cached": True, "ok": True,\n'
+    '                "skipped": None}')],
 
  "R5b the batch screen re-looks-up the numbers it already found cached": [
    ("app/services/lookup_service.py",
@@ -174,7 +185,7 @@ MUTATIONS = {
  # ── A6: rejection is permanent, and permanent on the number ────────────────
  "R14 ingestion stops checking the rejection list — a rejected business "
  "resurfaces from the next source": [
-   ("app/services/prospect_service.py",
+   ("app/services/prospect_ingest.py",
     "    if is_suppressed(db, phone):\n"
     '        return _count(job, "records_suppressed", "suppressed")',
     "    if False:\n"
@@ -237,13 +248,13 @@ MUTATIONS = {
 
  # ── A1/A2: the rationale requirement and provenance ────────────────────────
  "R22 a record with no buyer rationale is persisted anyway": [
-   ("app/services/prospect_service.py",
+   ("app/services/prospect_ingest.py",
     "    if not rationale or not term or not source_url:",
     "    if False:")],
 
  "R23 the sighting constraint is bypassed, so a nightly re-run inflates "
  "corroboration and re-orders the queue": [
-   ("app/services/prospect_service.py",
+   ("app/services/prospect_ingest.py",
     "    if exists is not None:\n"
     "        return False",
     "    if False:\n"
@@ -251,7 +262,7 @@ MUTATIONS = {
 
  "R23b source_count is read after the new sighting is flushed, so a second "
  "source never counts": [
-   ("app/services/prospect_service.py",
+   ("app/services/prospect_ingest.py",
     "    already = {row[0] for row in\n"
     "               db.query(ProspectSighting.source)\n"
     "               .filter(ProspectSighting.prospect_id == prospect.id)\n"
@@ -359,8 +370,28 @@ MUTATIONS = {
     '    """One page of the queue. Server-side paging and sorting, always."""')],
 }
 
-pristine = {p: (SCRATCH / p).read_text()
-            for muts in MUTATIONS.values() for p, _, _ in muts}
+# ── The precondition. P1's first run was worthless without it ──────────────
+# Back-ported by session P2 (A4). P1's first mutation run reported 38 caught and
+# 0 survived on a scratch tree a killed run had left already mutated, so every
+# verdict sat on top of a leftover edit. `accept-P1.sh` did `rm -rf` before its
+# rsync, which is weaker and only holds when the harness is run through that
+# script. CLAUDE.md states that every harness verifies its tree and prints
+# `SCRATCH VERIFIED PRISTINE`; before P2 that was true of two of seven.
+#
+# Read the results the same way: check that the tests failing for a mutation are
+# the tests that **name** it. A harness is code and it fails the same ways.
+files = sorted({path for muts in MUTATIONS.values() for path, _, _ in muts})
+dirty = [p for p in files
+         if (SCRATCH / p).read_bytes() != (REPO / p).read_bytes()]
+if dirty:
+    print("SCRATCH TREE IS NOT PRISTINE — every verdict below would sit on top "
+          "of a leftover edit:")
+    for path in dirty:
+        print(f"   -> {path} differs from the repo")
+    sys.exit(2)
+print(f"SCRATCH VERIFIED PRISTINE ({len(files)} files byte-identical to the repo)")
+
+pristine = {p: (SCRATCH / p).read_text() for p in files}
 
 survivors, unapplied = [], []
 for name, mutations in MUTATIONS.items():

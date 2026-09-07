@@ -1,6 +1,6 @@
 # Handoff
 
-_Last updated: 2026-09-04 (session 5i). Sections append; the bottom is current._
+_Last updated: 2026-09-04 (session P2). Sections append; the bottom is current._
 
 ## What just happened
 
@@ -1264,3 +1264,130 @@ Expect `idx_sms_contact` and `idx_member_contact` present, and
 `ix_sms_messages_contact_id` and `ix_clm_contact_id` gone. **Four indexes where
 there should be two means the migration created rather than converged**, and the
 duplicates cost write time on every send.
+
+---
+
+# Session P2 handoff — the Google Places source (2026-09-04)
+
+## Where this leaves things
+
+Part A is complete and unshipped. `bash agent/accept-P2.sh` exits 0 with every
+criterion printed, `bash agent/gate.sh` is green twice at **696 tests**, and
+`agent/mutate-P2.py` reports **36 mutations, 0 survived, 0 failed to apply** on
+a scratch tree it verified byte-identical to the repo first. Full detail is the
+P2 section at the end of `status.md`.
+
+Nothing here has made a paid API call. The first live run is Jordan's, and it
+needs a key.
+
+## What landed
+
+**A taxonomy, in two files.** `app/sources/taxonomy.py` is twelve search-term
+groups across seven categories, each carrying the written buyer rationale the
+review queue renders and `record_prospect()` refuses a record without.
+`app/sources/exclusions.py` is the never-prospect list — auction houses,
+estate-sale companies, estate liquidators, appraisers, consignment galleries,
+"we buy houses" — matched on business name from **one shared definition**,
+enforced in `record_prospect()` so every future source inherits it.
+
+**`decisions/009` is implemented as written.** Shell wholesalers, importers and
+distributors are buyers and they are `priority=1`. Radius is a property of the
+group with the category as fallback: two national seashell groups, one regional
+one, inside one category. The two national groups *state* their radius rather
+than inheriting it, because the fallback reads `.env`.
+
+**A source that never touches the database and never decides who is textable.**
+`GooglePlacesSource.fetch()` pages one planned search and yields records; the
+base persists. It does decide geography, because that is what a search is — a
+result outside the group's radius is dropped before it can cost $0.0025 to
+screen.
+
+**Two spend meters, independent, because they are two bills.** The carrier's is
+P1b's, called through. Google's is new: `GOOGLE_PLACES_MONTHLY_REQUEST_CAP`,
+checked before every request, refusing cleanly mid-run with everything already
+found kept and one ERROR line naming the count and the remedy.
+
+**`scrape_runner.run_plan()` runs one job per search.** That is the design, not a
+convenience: `scrape_jobs.search_term` becomes the ledger that stops a re-run
+paying $0.035 for sixty businesses we already hold, the job row carries what
+*that search* cost, and the monthly meter is exact across runs because each job
+re-reads it from the table.
+
+## Five things worth knowing before you touch any of it
+
+1. **A Places request is charged for asking.** The cache, the rejection list and
+   the already-a-contact check all stop a second $0.0025 and **none of them
+   stops a second $0.035.** That is why there is a search ledger at all, and why
+   it keys on a completed, *uninterrupted* job.
+2. **`prospect_service.py` split.** Ingestion — `record_prospect()`,
+   `_add_sighting()`, `is_suppressed()`, `RECORD_OUTCOMES` — is now
+   `app/services/prospect_ingest.py`. The 500-line rule forced it and P1's own
+   status note predicted it. If you are looking for where a source's records
+   become rows, it is there.
+3. **`RECORD_OUTCOMES` has six members**, and `ProspectSource.ingest()` refuses
+   one it cannot count. `excluded` and `known` are separate counters on purpose:
+   a term that returns competitors should be retired, and a term that returns
+   businesses the client already has is working correctly on a covered niche.
+   Adding a seventh means adding a counter and a column in the same commit.
+4. **`RequestBudget.allows()` is one expression on purpose.** It shipped with an
+   `if self.cap <= 0: return False` above it and the mutation reverting that
+   guard *survived* — with an integer counter and a non-negative spend, no
+   arrangement makes it decide anything. `self.spent < self.cap` is the line
+   that holds the ceiling, and `<` rather than `<=` is the whole rule.
+5. **Nothing calls `run_plan()` from a route or the scheduler.** Its two queries
+   are 6 ms and 3 ms at a year of production row counts, and both would be on
+   the event loop the moment somebody wires a button to them. 5i's incident, one
+   module over, and the fix then is a worker rather than an index.
+
+## Not done, and deliberately
+
+- **Any real API call**, Google or carrier. Fixtures only; `accept-P2.sh` check
+  2b asserts the suite structurally cannot make one. The fixture file says
+  plainly that it was written to the documented schema rather than recorded.
+- **A scheduler, a route or a button for discovery.** The first run is a human's.
+- **Seeding `marine` and `seashells` as categories.** They have no rows, so
+  their prospects are uncategorised and the *scorer* measures them against the
+  150-mile default even though the *search* was national. Bounded at 15 of 100
+  points, contrary to `decisions/009`'s intent, and the fix is a product
+  decision about the palette. First item in `status.md`'s "Found while working".
+- **Repairing `mutate-5e.py` and `mutate-5h.py`.** Six of their patches no
+  longer apply because 5i and 5j moved the code they name. Both now report it
+  and exit 1 rather than reading as a pass. That is another module's work.
+  `mutate-P1.py`'s one rotted anchor *was* repaired — that file was already open
+  — and it now surfaces a real survivor, `R12b`, described in `status.md`.
+
+## Verified this session
+
+- `bash agent/gate.sh` — green twice, 696 tests.
+- `bash agent/accept-P2.sh` — ACCEPT PASS, criteria 1-9 and 6b.
+- `agent/mutate-P2.py` — 36 mutations, 0 survived, `SCRATCH VERIFIED PRISTINE`.
+- Every `agent/mutate-*.py` refuses a dirty scratch tree naming the files, and
+  `mutate-5g.py` runs green on a clean one.
+- `./run.sh` — `/login`, `/static/app.css`, `/`, `/prospects`, `/contacts`,
+  `/campaigns`, `/settings`, `/health` all 200. `/prospects` and the four
+  prospect API routes carry no carrier name, no raw payload, no API endpoint and
+  no cost of ours, scanned with the parsed-number checker.
+- Driven with real P2 data over HTTP: `/api/prospects` returns the search term
+  and its buyer rationale on every row, and a shell importer at the top of the
+  queue.
+
+## Part B — Jordan's
+
+1. **A Google Places API key with Enterprise tier**, and a billing budget alert
+   set below `GOOGLE_PLACES_MONTHLY_REQUEST_CAP` as a second net. Without that
+   tier the response parses cleanly and carries no phone at all — the log says
+   so rather than reporting an empty niche, but the run is wasted.
+2. Add `GOOGLE_PLACES_API_KEY` and set `PROSPECT_LOOKUP_PROVIDER=telnyx` in
+   `/home/appuser/app/.env`, then restart. Until both are set, a scrape produces
+   prospects whose line type is `unknown`, and `unknown` is not promote-eligible
+   by design.
+3. **Check `PROSPECT_CATEGORY_RADIUS_MILES` in the live `.env`.** If it is
+   pinned there as the old five-key map, add `"marine":null` and
+   `"seashells":null`. The taxonomy's national groups state their own radius so
+   they are safe either way, but the scorer reads that map.
+4. **First live run: one category, smallest radius, cap set low.** Read the
+   review queue before scaling. The question is not "did it find businesses" but
+   "would these people bid?" Memorabilia and seashells are the first sweep —
+   the volume and the conversion — and which sweep runs first is yours.
+5. **Watch the carrier balance.** Lookups and sends draw on the same pot, so a
+   large scrape can fail the next morning's campaign pre-flight.

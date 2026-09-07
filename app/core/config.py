@@ -188,14 +188,27 @@ class Settings(BaseSettings):
     #
     # Config, not code, and the plan of record says to move them once there is
     # response data to move them with — not before.
+    # `marine` and `seashells` are national and are listed for that reason. The
+    # plan of record has called both national since it was written, and neither
+    # had a row here — so both fell through to the 150-mile default, and the two
+    # categories that most need to run nationally would have run as regional
+    # searches with nothing on any screen saying so. See `decisions/009`.
     PROSPECT_CATEGORY_RADIUS_MILES: dict[str, int | None] = {
         "food_service": 150,
         "equipment": 150,
         "general": 150,
         "estates": 100,
         "memorabilia": None,
+        "marine": None,
+        "seashells": None,
     }
     PROSPECT_DEFAULT_RADIUS_MILES: int = 150
+
+    # Where "can they collect it" is measured from: the auction house itself.
+    # A radius is meaningless without a centre, and a source that guessed one
+    # would be deciding the client's market in code.
+    PROSPECT_ORIGIN_LAT: float = 26.1224          # Fort Lauderdale
+    PROSPECT_ORIGIN_LON: float = -80.1373
 
     # A scrape job that has not finished in this long is abandoned, its cleanup
     # is run and it is recorded `timed_out`. Minutes, not hours: the box has
@@ -211,6 +224,43 @@ class Settings(BaseSettings):
     # share it guards.
     PROSPECT_TERM_FLAG_MIN_REJECTIONS: int = 5
     PROSPECT_TERM_FLAG_SHARE: float = 0.5
+
+    # ─── Google Places (the first discovery source) ─────────────────────────
+    # Empty means the source refuses to run rather than running degraded. There
+    # is no useful half-configured state: without a key there is nothing to
+    # search, and a source that answered "found nothing" would be indistinguish-
+    # able from a niche that really is empty. The line-type gate can degrade
+    # safely because `unknown` promotes nobody; this cannot.
+    GOOGLE_PLACES_API_KEY: str = ""
+
+    # **A hard monthly ceiling on requests, checked before every call.** The
+    # second of the two independent meters — this one counts Google requests and
+    # the other counts carrier lookups, and they are separate because they are
+    # separate bills. Text Search is $35 per 1,000 requests with the first 1,000
+    # of a calendar month free, so the default is exactly the free allowance:
+    # the first month of a niche costs nothing, and going past it is a number
+    # somebody raised on purpose.
+    #
+    # Zero or less switches the source off rather than meaning unlimited, the
+    # same reading `PROSPECT_LOOKUP_MONTHLY_CAP` has. A guard that is off
+    # refuses.
+    GOOGLE_PLACES_MONTHLY_REQUEST_CAP: int = 1000
+    GOOGLE_PLACES_FREE_REQUESTS_PER_MONTH: int = 1000
+    GOOGLE_PLACES_COST_PER_1000_REQUESTS: float = 35.0
+
+    # Twenty places per request is the API's own maximum, and three pages is
+    # sixty businesses per search term — past that a text search is returning
+    # progressively less relevant matches for three cents a page.
+    GOOGLE_PLACES_PAGE_SIZE: int = 20
+    GOOGLE_PLACES_MAX_PAGES: int = 3
+    GOOGLE_PLACES_TIMEOUT_SECONDS: int = 20
+
+    # How long a search term's results are treated as still true. A re-run
+    # inside this window makes no request at all: the same query returns the
+    # same sixty businesses, we already hold every one of them, and paying for
+    # them again buys nothing. This is what makes "a second identical run costs
+    # nothing" true of the Google meter as well as the carrier one.
+    GOOGLE_PLACES_QUERY_REPEAT_DAYS: int = 30
 
     # ─── Alerting ───────────────────────────────────────────────────────────
     ALERT_PHONE: str = ""                        # your number, for balance/scrape alerts

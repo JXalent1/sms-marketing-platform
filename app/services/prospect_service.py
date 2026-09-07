@@ -1,8 +1,13 @@
-"""Everything that writes to the prospect tables.
+"""What a human does to a prospect: score it, reject it, promote it.
 
-Three operations, and each one is a guard the sources are not allowed to hold:
-`record_prospect()` persists what a source found, `reject()` suppresses a number
-permanently, and `promote()` turns a prospect into a contact.
+Two operations and the scorer's single writer. `reject()` suppresses a number
+permanently and `promote()` turns a prospect into a contact.
+
+**Ingestion moved to `prospect_ingest.py`** when P2 added the exclusion check
+and the already-a-contact check and this file crossed the 500-line rule. The
+seam is the one P1 already drew between the writes here and the reads in
+`prospect_queue.py`, one level finer: that module is what a *source* does, this
+one is what a *reviewer* does.
 
 ## Promotion runs the same guards as every other way in
 
@@ -43,20 +48,13 @@ from sqlalchemy.orm import Session
 
 from app.models.blocked_number import BlockedNumber
 from app.models.category import Category
-from app.models.prospect import (
-    Prospect, ProspectRejection, ProspectSighting, REJECT_REASONS,
-)
+from app.models.prospect import Prospect, ProspectRejection, REJECT_REASONS
 from app.services import blocklist_service, category_service, contact_service
 from app.services import lookup_service, prospect_scoring
-from app.sms.phone import normalize, is_valid
+from app.sms.phone import is_valid
 import logging
 
 logger = logging.getLogger("prospects")
-
-# What `record_prospect()` can answer. `prospect_base.ProspectSource.ingest()`
-# counts these by name and refuses anything else, so adding an outcome here
-# without adding a counter there fails loudly rather than reporting zero.
-RECORD_OUTCOMES = ("created", "corroborated", "suppressed", "invalid")
 
 # ─── What a refusal says ────────────────────────────────────────────────────
 #
@@ -95,169 +93,13 @@ INVALID_PHONE_REFUSAL = "That is not a usable phone number, so nothing was added
 NO_CATEGORY_REFUSAL = "Pick the auction category these buyers belong to first."
 
 
-# ─── Ingestion ──────────────────────────────────────────────────────────────
-
-def _category_id_for_slug(db: Session, slug: Optional[str]) -> Optional[int]:
-    """Resolve a source's category slug, or None.
-
-    An unrecognised slug is logged and dropped rather than refused. The taxonomy
-    in the plan of record is wider than the categories currently seeded — Marine
-    has no row yet — and a source that finds a real buyer under a category this
-    box has not created should still land in the queue, where a human picks the
-    category at promote time anyway.
-    """
-    if not slug:
-        return None
-    row = db.query(Category).filter(Category.slug == slug).first()
-    if row is None:
-        logger.info("Prospect source named category %r, which does not exist "
-                    "on this box; leaving the prospect uncategorised", slug)
-        return None
-    return row.id
-
+# ─── Scoring ────────────────────────────────────────────────────────────────
 
 def _slug_for_category_id(db: Session, category_id: Optional[int]) -> Optional[str]:
     if category_id is None:
         return None
     row = db.get(Category, category_id)
     return row.slug if row else None
-
-
-def is_suppressed(db: Session, phone: str) -> bool:
-    """Has a human already said no to this number, from any source, ever?"""
-    normalized = normalize(phone)
-    if not normalized:
-        return False
-    return (db.query(ProspectRejection)
-            .filter(ProspectRejection.phone == normalized).first() is not None)
-
-
-def record_prospect(db: Session, record, source_name: str, job=None) -> str:
-    """Persist one record from a source. Returns a member of RECORD_OUTCOMES.
-
-    The order of the checks is the order of their cost: a malformed number and a
-    missing rationale are decided without a query, and the suppression check
-    comes before anything is written so a rejected number never gets a row at
-    all.
-    """
-    phone = normalize(getattr(record, "phone", "") or "")
-    rationale = (getattr(record, "buyer_rationale", "") or "").strip()
-    term = (getattr(record, "search_term", "") or "").strip()
-    source_url = (getattr(record, "source_url", "") or "").strip()
-
-    if not phone or not is_valid(phone):
-        return _count(job, "records_invalid", "invalid")
-
-    # The first of the three places "buyers, never sellers" is enforced. A term
-    # with no written claim about why these people would bid cannot reach a
-    # reviewer, because a reviewer cannot agree or disagree with a blank.
-    if not rationale or not term or not source_url:
-        logger.info("[%s] record for %s dropped: %s", source_name, phone,
-                    "no buyer rationale" if not rationale else
-                    "no search term" if not term else "no source url")
-        return _count(job, "records_invalid", "invalid")
-
-    if is_suppressed(db, phone):
-        return _count(job, "records_suppressed", "suppressed")
-
-    now = datetime.now().isoformat()
-    existing = db.query(Prospect).filter(Prospect.phone == phone).first()
-
-    if existing is not None:
-        _add_sighting(db, existing, record, source_name, term, rationale,
-                      source_url, now, job)
-        rescore(db, existing, commit=False)
-        existing.updated_at = now
-        db.commit()
-        return _count(job, "prospects_corroborated", "corroborated")
-
-    prospect = Prospect(
-        phone=phone,
-        business_name=(getattr(record, "business_name", None) or None),
-        address=(getattr(record, "address", None) or None),
-        category_id=_category_id_for_slug(db, getattr(record, "category_slug", None)),
-        category_confidence=getattr(record, "category_confidence", None),
-        distance_miles=getattr(record, "distance_miles", None),
-        source=source_name,
-        source_url=source_url,
-        scraped_at=now,
-        raw_payload=dict(getattr(record, "raw_payload", None) or {}),
-        search_term=term,
-        buyer_rationale=rationale,
-        status="pending",
-        score=0,
-        source_count=1,
-        created_at=now,
-    )
-    db.add(prospect)
-    db.flush()                      # id, for the sighting row
-
-    _add_sighting(db, prospect, record, source_name, term, rationale,
-                  source_url, now, job, count_source=False)
-    rescore(db, prospect, commit=False)
-    db.commit()
-    return _count(job, "prospects_created", "created")
-
-
-def _add_sighting(db: Session, prospect: Prospect, record, source_name: str,
-                  term: str, rationale: str, source_url: str, now: str,
-                  job=None, count_source: bool = True) -> bool:
-    """Record that this source and this term found this prospect.
-
-    The (prospect, source, term) uniqueness is checked here rather than left to
-    the constraint, because a re-run of the same nightly search is the normal
-    case and an IntegrityError per row is not an error path worth having.
-
-    `source_count` is maintained here, next to the row it counts, and nowhere
-    else. It is the denormalised `COUNT(DISTINCT source)` the scorer reads on
-    every rescore; two writers for it would put the queue's ordering and its
-    "found by 2 searches" column out of step with each other.
-    """
-    exists = (db.query(ProspectSighting)
-              .filter(ProspectSighting.prospect_id == prospect.id,
-                      ProspectSighting.source == source_name,
-                      ProspectSighting.search_term == term)
-              .first())
-    if exists is not None:
-        return False
-
-    # Read the distinct sources *before* the new row is added. SQLAlchemy
-    # autoflushes on query, so asking afterwards would flush the sighting being
-    # inserted, find its own source in the answer, and conclude the source was
-    # already known — leaving `source_count` at 1 forever and the corroboration
-    # term of the score permanently dead.
-    already = {row[0] for row in
-               db.query(ProspectSighting.source)
-               .filter(ProspectSighting.prospect_id == prospect.id)
-               .distinct().all()} if count_source else set()
-
-    db.add(ProspectSighting(
-        prospect_id=prospect.id,
-        source=source_name,
-        search_term=term,
-        buyer_rationale=rationale,
-        source_url=source_url,
-        scraped_at=now,
-        raw_payload=dict(getattr(record, "raw_payload", None) or {}),
-        job_id=getattr(job, "id", None),
-    ))
-
-    if count_source and source_name not in already:
-        prospect.source_count = (prospect.source_count or 1) + 1
-    return True
-
-
-def _count(job, field: str, outcome: str) -> str:
-    """Bump a job counter and answer with the outcome name.
-
-    Folded together because every return in `record_prospect()` does both, and
-    the one that forgot the counter would report a run that found nothing. The
-    outcome is passed rather than derived from the field name: two names for one
-    thing is how they come to disagree.
-    """
-    if job is not None:
-        setattr(job, field, (getattr(job, field, 0) or 0) + 1)
-    return outcome
 
 
 def rescore(db: Session, prospect: Prospect, line_type: str = None,

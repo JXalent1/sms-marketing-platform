@@ -240,9 +240,10 @@ def unusable_numbers(db: Session, phones: Iterable[str]) -> set:
         refuses them, so a line type for one buys nothing at all.
 
     Queried against the two tables directly rather than through
-    `prospect_service.is_suppressed()` and `blocklist_service.is_blocked()`,
+    `prospect_ingest.is_suppressed()` and `blocklist_service.is_blocked()`,
     because those answer about one number and this runs over a whole scrape, and
-    because `prospect_service` imports this module — the reverse import is a
+    because `prospect_ingest` reaches this module through `prospect_service` —
+    the reverse import is a
     cycle. That leaves two statements of one rule, which is the shape this
     codebase keeps getting bitten by, so the test asserts the *property* that
     they agree rather than pinning either.
