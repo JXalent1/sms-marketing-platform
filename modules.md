@@ -41,7 +41,9 @@ client sending real campaigns.
 | 5k | **Close the attribute-escaping class** | Specced · small, run before or beside P2 | 5j | `app/templates/{base,_composer-script,blocklist,contact-history,settings}.html`, `tests/test_attribute_escaping.py`, `agent/accept-5k.sh` |
 | P1 | **Prospect pipeline** | Done · deployed 2026-09-01 | 5f | `app/models/{prospect,scrape}.py`, `app/models/__init__.py`, `app/sms/lookup.py`, `app/sources/prospect_base.py`, `app/sources/__init__.py`, `app/services/{prospect_service,prospect_queue,prospect_scoring,lookup_service,scrape_runner,link_service}.py`, `app/routers/prospects.py`, `app/routers/pages.py`, `app/templates/{prospects,base}.html`, `app/core/config.py`, `app/main.py`, `alembic/versions/`, `tests/`, `agent/{accept-P1.sh,mutate-P1.py}` |
 | P1b | **Lookup provider & gate flake** | Done · deployed 2026-09-01 | P1 | `app/sms/providers/telnyx_lookup.py`, `app/sms/lookup.py`, `app/services/lookup_service.py`, `app/core/config.py`, `.env.example`, `docs/API.md`, `CLAUDE.md`, `tests/{test_lookup_provider,test_wholesale_scan,_wholesale_scan}.py`, `tests/fixtures/number_lookup_responses.json`, `tests/{test_campaign_reports,test_whitelabel,test_campaign_preflight,test_capacity_rounding,test_degraded_send_path,test_prospect_review,test_prospect_pipeline}.py`, `agent/{accept-P1b.sh,mutate-P1b.py,accept-P1.sh}` |
-| P2 | **Google Places source** | Part A done 2026-09-04 · deploy pending | P1b | `app/sources/{google_places,taxonomy,exclusions,__init__,prospect_base}.py`, `app/services/{prospect_ingest,prospect_service,api_budget,scrape_runner}.py`, `app/models/scrape.py`, `app/core/config.py`, `.env.example`, `alembic/versions/`, `agent/{accept-P2.sh,mutate-P2.py,mutate-{5e,5f,5g,5h,P1}.py}`, `tests/` |
+| P2 | **Google Places source** | **Part A NOT complete** · accept-P2 criterion 9 fails (D2 survived) · deployed but inert without a key | P1b | `app/sources/{google_places,taxonomy,exclusions,__init__,prospect_base}.py`, `app/services/{prospect_ingest,prospect_service,api_budget,scrape_runner}.py`, `app/models/scrape.py`, `app/core/config.py`, `.env.example`, `alembic/versions/`, `agent/{accept-P2.sh,mutate-P2.py,mutate-{5e,5f,5g,5h,P1}.py}`, `tests/` |
+| P2b | **Close D2; make the mutation harness reproducible** | Specced · next | P2 | `app/services/scrape_runner.py`, `app/sources/google_places.py`, `tests/`, `agent/{mutate-P2.py,accept-P2.sh}` |
+| B1 | **Stripe: settle August, then auto-bill usage** | Specced · next | — | `app/services/stripe_billing.py`, `app/routers/billing.py`, `app/templates/subscribe.html`, `app/services/{billing_service,campaign_dispatch}.py`, `app/routers/pages.py`, `app/core/config.py`, `app/main.py`, `tools/bill_period.py`, `requirements.txt`, `.env.example`, `tests/`, `agent/{accept-B1.sh,mutate-B1.py}` |
 | P3 | **Registries, marketplaces & enrichment** | After P2 | P1 | `app/sources/dbpr.py`, `app/sources/sunbiz.py`, `tests/` |
 
 **That's the launch — six sessions, but only four waves. See "Parallel plan" below.**
@@ -1026,12 +1028,34 @@ refuses cleanly rather than overspending.
 only comes back at that tier. P2 can be *built* without it — the spec forbids real API
 calls in the session — so the key gates the first live run, not the work.
 
-### P2 — Part A done 2026-09-04
+### P2 — Part A NOT complete, 2026-09-04
 
-`agent/accept-P2.sh` exits 0 on criteria 1–9 plus 6b (10 needs the deploy), gate green
-twice at **696 tests**, `agent/mutate-P2.py` 36 caught / 0 survived on a verified-pristine
-tree, and migration `e7c05b3a1d94` clean up, down and up again. **Deploy pending; the
-Google Places key and the first live run are Jordan's.**
+**`agent/accept-P2.sh --with-remote` FAILS on criterion 9.** Mutation **D2** — "the search
+ledger is not consulted, so every nightly re-run pays $0.035 a query to be told the same
+sixty businesses" — reverts with **no test noticing**. The ledger is the guard that stops a
+nightly re-run re-paying for every search, and nothing stands behind it.
+
+**The harness gave two different answers to the same question.** The in-session run reported
+36 caught / 0 survived on a tree it printed `SCRATCH VERIFIED PRISTINE`; the verification
+run reported 36 mutations, 1 survived. Same mutations, same tree, opposite verdict. Until
+that is explained, **no verdict from this harness is evidence** — `CLAUDE.md` already
+records that this suite has no isolation, is green exactly once, and that a mutation caught
+by a test which does not name it was never caught. A catch that comes and goes between runs
+is the same defect wearing a green tick.
+
+**Why criterion 2 did not cover it.** Criterion 2 asserts a second run produces 0 new
+prospects and 0 paid calls, and it passes — but *two meters, two bills*. The prospect-level
+dedup stops the **$0.0025** lookups. The ledger is what stops the **$0.035** requests, and
+D2 says no test reaches it.
+
+**Exposure today: none.** The code is deployed but `google_places.py` cannot run without
+`GOOGLE_PLACES_API_KEY`, which is not set. The untested guard costs nothing until the first
+live run — and must be closed before it.
+
+Criterion 10 has not run: the invocation was given a placeholder password and got a 401.
+
+Gate is green twice at 696 tests and migration `e7c05b3a1d94` is clean up, down and up
+again; those parts stand.
 
 `app/sources/taxonomy.py` — term groups across seven categories, each with the written
 `buyer_rationale` the review queue renders. `app/sources/exclusions.py` — one shared
