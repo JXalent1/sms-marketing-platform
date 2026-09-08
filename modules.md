@@ -1,6 +1,6 @@
 # Modules
 
-_Last updated: 2026-08-18_
+_Last updated: 2026-09-08_
 
 Root for all paths: `sms-marketing-platform/`.
 
@@ -43,8 +43,9 @@ client sending real campaigns.
 | P1b | **Lookup provider & gate flake** | Done · deployed 2026-09-01 | P1 | `app/sms/providers/telnyx_lookup.py`, `app/sms/lookup.py`, `app/services/lookup_service.py`, `app/core/config.py`, `.env.example`, `docs/API.md`, `CLAUDE.md`, `tests/{test_lookup_provider,test_wholesale_scan,_wholesale_scan}.py`, `tests/fixtures/number_lookup_responses.json`, `tests/{test_campaign_reports,test_whitelabel,test_campaign_preflight,test_capacity_rounding,test_degraded_send_path,test_prospect_review,test_prospect_pipeline}.py`, `agent/{accept-P1b.sh,mutate-P1b.py,accept-P1.sh}` |
 | P2 | **Google Places source** | **Part A NOT complete** · accept-P2 criterion 9 fails (D2 survived) · deployed but inert without a key | P1b | `app/sources/{google_places,taxonomy,exclusions,__init__,prospect_base}.py`, `app/services/{prospect_ingest,prospect_service,api_budget,scrape_runner}.py`, `app/models/scrape.py`, `app/core/config.py`, `.env.example`, `alembic/versions/`, `agent/{accept-P2.sh,mutate-P2.py,mutate-{5e,5f,5g,5h,P1}.py}`, `tests/` |
 | P2b | **Close D2; make the mutation harness reproducible** | Specced · next | P2 | `app/services/scrape_runner.py`, `app/sources/google_places.py`, `tests/`, `agent/{mutate-P2.py,accept-P2.sh}` |
-| B1 | **Stripe: settle August, then auto-bill usage** | **Part A done 2026-09-07** · accept 1-11 + gate twice + 47/0 mutations · reviewed · **Part B is Jordan's** | — | `app/services/{stripe_billing,stripe_meter,stripe_tiers}.py`, `app/routers/billing.py`, `app/templates/{subscribe,base}.html`, `app/services/{billing_service,campaign_dispatch}.py`, `app/routers/pages.py`, `app/core/config.py`, `app/main.py`, `tools/bill_period.py`, `requirements.txt`, `.env.example`, `tests/`, `agent/{accept-B1.sh,mutate-B1.py}` |
-| B1b | **Meter once, late, and correctly** | Specced · next · blocks Part B | B1 | `app/models/sms_message.py`, `app/services/{stripe_meter,campaign_dispatch,campaign_topup}.py`, `app/main.py`, `app/core/config.py`, `tools/bill_period.py`, `alembic/versions/`, `tests/`, `agent/{accept-B1b.sh,mutate-B1b.py}` |
+| B1 | **Stripe: settle August, then auto-bill usage** | **Part A done 2026-09-07** · accept 1-11 + gate twice · 47/0 mutations, 34/0 after B1b retired the thirteen that moved · reviewed · **Part B is Jordan's, after B1b** | — | `app/services/{stripe_billing,stripe_meter,stripe_tiers}.py`, `app/routers/billing.py`, `app/templates/{subscribe,base}.html`, `app/services/{billing_service,campaign_dispatch}.py`, `app/routers/pages.py`, `app/core/config.py`, `app/main.py`, `tools/bill_period.py`, `requirements.txt`, `.env.example`, `tests/`, `agent/{accept-B1.sh,mutate-B1.py}` |
+| B1b | **Meter once, late, and correctly** | **Part A done 2026-09-08** · accept 0-10 + gate twice + 35/0 mutations · reviewed · `decisions/012` open, not blocking · **Part B is Jordan's** | B1 | `app/models/sms_message.py`, `app/services/{stripe_meter,stripe_reconcile,campaign_dispatch,campaign_topup}.py`, `app/main.py`, `app/core/config.py`, `tools/bill_period.py`, `alembic/versions/`, `tests/`, `agent/{accept-B1b.sh,mutate-B1b.py,accept-B1.sh,mutate-B1.py}` |
+| B1c | **Invoice the refused window as the plan's increment** | Specced pending · after Part B | B1b | `tools/bill_period.py`, `app/models/sms_message.py`, `app/services/stripe_reconcile.py`, `alembic/versions/`, `tests/` |
 | P3 | **Registries, marketplaces & enrichment** | After P2 | P1 | `app/sources/dbpr.py`, `app/sources/sunbiz.py`, `tests/` |
 
 **That's the launch — six sessions, but only four waves. See "Parallel plan" below.**
@@ -1173,3 +1174,80 @@ run. **Do not do the Stripe dashboard setup and drop the keys in until B1b is gr
 That plus 007, 008 and 011 is four consecutive sessions departing from a mechanism I wrote
 from memory, and `RULES.md` now carries the rule that follows: a spec clause naming a
 third-party field is a hypothesis until the session verifies it.
+
+### B1b — Part A done 2026-09-08: the meter is a scheduled, ledgered pass
+
+`agent/accept-B1b.sh` ACCEPT PASS with every criterion printed, gate green twice
+at **788 tests**, 35 mutations 0 survived on two consecutive invocations, each on
+a tree verified byte-identical to the repo. `decisions/011` implemented as
+decided: Option 2 with its three amendments. The review found two money-moving
+defects in a tree at 26/0 — the manual-invoice remedy double-billed a
+partly-metered window (now refused; the design is `decisions/012`, open), and
+a database lock during the mark could turn into a double bill after a status
+flip (the batch is now staged before the call). Eight mutations carry them.
+
+**What changed, in one paragraph.** `sms_messages.metered_at` is the ledger.
+An hourly pass selects rows that are billable, *settled* (`delivered`, or `sent`
+for more than `BILLING_SETTLE_HOURS`, default 24), unmarked and sent on or after
+the stored subscription start; posts one meter event per campaign per calendar
+day, stamped with the send time; and marks exactly those rows in the same
+transaction. Nothing on the send path meters — the Send button, the scheduler
+and the top-up all just write unmarked rows. Usage older than Stripe's 35-day
+horizon is refused loudly and goes to `tools/bill_period.py`, which gained
+`--unmetered` to say which rows in a window are unmetered and why. The backfill
+*is* the pass, run by a human, dry run by default.
+
+**Both third-party clauses the spec marked unverified held** — the 24-hour
+identifier window and the 35-day timestamp horizon, read from the pinned SDK's
+own docstrings and now asserted on every run. First time in five sessions.
+
+**File list widened, each edit recorded in `status.md`:**
+`app/services/stripe_reconcile.py` is new (the 500-line split: `stripe_meter`
+reports, `stripe_reconcile` reads back); `agent/mutate-B1.py` and
+`agent/accept-B1.sh` were repaired because thirteen of B1's mutations sat on
+lines this session removed or inverted, and a harness that exits 2 forever is
+the bit-rot CLAUDE.md already lists for 5e and 5h. B1's harness runs 34/0 on
+the new tree.
+
+**Part B is unchanged and now unblocked.** Do the Stripe dashboard setup from
+B1's handoff list, then run `accept-B1.sh --with-stripe` with the test key.
+Two things Part B should look at that the SDK could not settle offline: what
+Stripe does with an event timestamped before the subscription's first period
+(rows sent on the anchor day before the checkout moment), and whether a
+backdated event arriving after an invoice is finalised lands on that invoice
+or the next.
+
+### B1b — Part A done 2026-09-08. Part B is unblocked, with one added step.
+
+`agent/accept-B1b.sh` ACCEPT PASS, gate green twice at **788 tests**, 35 mutations 0
+survived identically on two runs, and B1's repaired harness green twice at 34/0. Review
+lens 5 confirmed criterion 1 goes red on the pre-fix tree for the right reason — 12,000
+metered against 8,000 used.
+
+`decisions/011` implemented as decided. The meter is out of the send path; an hourly pass
+meters settled, unmarked rows, one event per campaign per calendar day stamped with the
+send time, marking `metered_at` on exactly those rows. A top-up needs no hook — it is a
+later batch.
+
+**Two money defects the review caught, both fixed:** the remedy B1b's own A3 named
+double-billed (a part-metered window priced through `compute_usage()` applies the allowance
+twice — measured $210.00 against a correct $180.00), and a database lock during the mark
+could bill survivors twice on retry, now closed by staging the batch in `app_settings`
+before the Stripe call.
+
+**`decisions/012` — resolved, Option 1, and not blocking.** The refused-window invoice is
+priced as the plan's increment, `cost_for_segments(metered + refused) - cost_for_segments(metered)`,
+and stamped `invoiced_at` so the refusal stops. Specced as **B1c**, after Part B: it needs
+35 days of the pass not running before it matters.
+
+**Part B gains a mandatory dashboard step**, from the same investigation. Stripe's default
+invoice finalization grace period is **1 hour**; `BILLING_SETTLE_HOURS` is 24 and the pass
+runs hourly, so a campaign sent in the last day of a cycle is metered after that invoice
+finalises — past the grace period for that invoice, and timestamped inside a closed period
+so it never reaches the next one. **It is never billed at all.** Set a 72-hour finalization
+delay on a rule conditioned on *Has a metered price* + *Invoice is from a subscription
+cycle*. Step 5 of `sessions/session-B1.md` Part B.
+
+**And a standing billing rule:** never change the metered price mid-cycle — Stripe drops
+grace-period usage from the current *and* subsequent invoices when a subscription item's
+price changes during a cycle. Rate changes wait for a boundary.

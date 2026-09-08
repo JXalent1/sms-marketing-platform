@@ -5,11 +5,12 @@ fake for every block, `conftest.py` blanks the four Stripe settings for the whol
 suite, and `agent/accept-B1.sh` check 1 runs this module with `socket.connect`
 raising so that "no network" is proved rather than promised.
 
-The one thing this file is really about is A1. `billable_segments()` subtracts
-the allowance and so does the Stripe tier, so reporting the first to the second
-subtracts it twice and a 15,000-segment month invoices $0 instead of $75 — with
-`/usage` still showing $75 due, which is why nothing on any screen would look
-wrong.
+The A1 tests — the meter receives the RAW count, because `billable_segments()`
+subtracts the allowance and so does the Stripe tier — lived here until session
+B1b replaced metering at send time with a scheduled, ledgered pass. They are in
+`tests/test_metering_pass.py` now, asserted against that pass. What stays here
+is the tier check, the cycle, the ownership guard, the webhook, the checkout
+shape and the back-bill tool's arithmetic.
 """
 
 import json
@@ -24,10 +25,9 @@ from app.core.config import settings
 from app.core.database import SessionLocal
 from app.main import app
 from app.models.app_setting import get_setting
-from app.models.campaign import Campaign
-from app.models.sms_message import SMSMessage, BILLABLE_STATUSES
-from app.services import (billing_service, campaign_dispatch, stripe_billing,
-                          stripe_meter, stripe_tiers)
+from app.models.sms_message import SMSMessage
+from app.services import (billing_service, stripe_billing, stripe_reconcile,
+                          stripe_tiers)
 from tests import _stripe_fixtures as fx
 
 PASSWORD = os.environ["ADMIN_PASSWORD"]
@@ -49,484 +49,12 @@ def db():
         session.close()
 
 
-@pytest.fixture
-def subscribed(db):
-    """A stored customer, which is what makes the meter have somewhere to post."""
-    from app.models.app_setting import set_setting
-    set_setting(db, stripe_billing.CUSTOMER_ID_KEY, fx.CUSTOMER)
-    return fx.CUSTOMER
-
-
-def make_campaign(db, *, name, rows):
-    """A campaign with `rows` of (status, segments) or (status, segments, body).
-
-    Real rows, because every figure under test is a query over `sms_messages`
-    and a fake that returned a number would be testing the fake. The optional
-    third element is the message body, which only matters for a row whose
-    `segments` is NULL — that is the case the two legacy rules can disagree on.
-    """
-    campaign = Campaign(name=name, message_template="hi", audience="all",
-                        status="completed", created_at="2021-05-01T09:00:00")
-    db.add(campaign)
-    db.commit()
-    db.refresh(campaign)
-    for row in rows:
-        status, segments = row[0], row[1]
-        body = row[2] if len(row) > 2 else "hi"
-        db.add(SMSMessage(campaign_id=campaign.id, phone="+15555550300",
-                          message=body, status=status, segments=segments,
-                          sent_at="2021-05-02T09:00:00"))
-    db.commit()
-    return campaign.id
-
-
-def drop_campaign(db, campaign_id):
-    db.query(SMSMessage).filter(SMSMessage.campaign_id == campaign_id).delete(
-        synchronize_session=False)
-    db.query(Campaign).filter(Campaign.id == campaign_id).delete(
-        synchronize_session=False)
-    db.commit()
-
-
-# ─── A1: the allowance is subtracted once, and it is subtracted in Stripe ───
-
-
-def test_a_fifteen_thousand_segment_month_reports_fifteen_thousand(db, subscribed):
-    """Criterion 2, through the real reporting path.
-
-    Three campaigns, 15,000 billable segments between them, in a month whose
-    allowance is 10,000. The meter must receive 15,000: the tier subtracts the
-    allowance, and this code must not.
-
-    Asserted on the *sum of what the meter received*, not on a helper's return
-    value. A property proved of a helper is not proved of its only caller — 5f
-    shipped exactly that mistake and only the mutation harness saw it.
-    """
-    fake = fx.FakeStripe()
-    ids = []
-    try:
-        ids = [make_campaign(db, name=f"B1 meter {n}",
-                             rows=[("sent", 5000)]) for n in range(3)]
-        with fx.stripe_configured(), fx.replaced_api(fake):
-            for campaign_id in ids:
-                stripe_meter.report_campaign(db, campaign_id)
-    finally:
-        for campaign_id in ids:
-            drop_campaign(db, campaign_id)
-
-    assert sum(fake.metered_values) == 15000, fake.metered_values
-    # And the figure that must NOT have been reported, stated explicitly so the
-    # test says what it is defending against rather than only what it wants.
-    assert billing_service.billable_segments(15000) == 5000
-    assert sum(fake.metered_values) != billing_service.billable_segments(15000)
-
-
-def test_the_meter_gets_the_raw_count_for_one_campaign(db, subscribed):
-    """The single-campaign case, at a size that makes the two answers differ.
-
-    12,000 segments in one campaign: raw is 12,000, allowance-applied is 2,000.
-    A campaign smaller than the allowance would give 0 for the wrong answer and
-    the right one would look like a coincidence.
-    """
-    fake = fx.FakeStripe()
-    campaign_id = make_campaign(db, name="B1 single", rows=[("sent", 12000)])
-    try:
-        with fx.stripe_configured(), fx.replaced_api(fake):
-            outcome = stripe_meter.report_campaign(db, campaign_id)
-    finally:
-        drop_campaign(db, campaign_id)
-
-    assert outcome["reported"] is True
-    assert fake.metered_values == [12000]
-    assert billing_service.billable_segments(12000) == 2000
-
-
-def test_only_billable_statuses_reach_the_meter(db, subscribed):
-    """The set is imported from the model, never restated here.
-
-    `held_back`, `not_sent`, `skipped`, `blocked` and `failed` are all outside
-    it already, and each is outside for a reason a previous session paid for.
-    """
-    fake = fx.FakeStripe()
-    campaign_id = make_campaign(db, name="B1 statuses", rows=[
-        ("sent", 3), ("delivered", 4), ("held_back", 100), ("not_sent", 100),
-        ("skipped", 100), ("blocked", 100), ("failed", 100), ("pending", 100),
-        ("undelivered", 100),
-    ])
-    try:
-        assert stripe_meter.campaign_segments(db, campaign_id) == 7
-        with fx.stripe_configured(), fx.replaced_api(fake):
-            stripe_meter.report_campaign(db, campaign_id)
-    finally:
-        drop_campaign(db, campaign_id)
-    assert fake.metered_values == [7]
-    assert BILLABLE_STATUSES == ("sent", "delivered")
-
-
-def test_the_meter_follows_the_models_definition_of_billable(db, subscribed,
-                                                             monkeypatch):
-    """The binding, not the contents. 5i's lesson, applied to the invoice.
-
-    A local restatement of the tuple is behaviourally identical today, so no
-    assertion about what it contains can tell the two apart. This changes what
-    `BILLABLE_STATUSES` *means* and requires the metered figure to follow: with
-    only `sent` billable, the delivered row must drop out. A copy in
-    `stripe_meter` would go on counting both and the invoice would stop tracking
-    a commercial decision.
-    """
-    campaign_id = make_campaign(db, name="B1 binding",
-                                rows=[("sent", 3), ("delivered", 4)])
-    try:
-        assert stripe_meter.campaign_segments(db, campaign_id) == 7
-        monkeypatch.setattr("app.models.sms_message.BILLABLE_STATUSES", ("sent",))
-        assert stripe_meter.campaign_segments(db, campaign_id) == 3, (
-            "the meter is reading its own copy of BILLABLE_STATUSES, so a change "
-            "to the billable set would never reach the invoice")
-    finally:
-        drop_campaign(db, campaign_id)
-
-
-def test_a_reporting_failure_cannot_raise_into_the_send_path(db, subscribed):
-    """The property the two try/excepts exist for, asserted at the call site.
-
-    Neither wrapper alone can be tested away — remove one and the other still
-    catches — so this is the assertion that goes red when both are gone. What is
-    at stake is not the exception itself: `run_due_campaigns` would catch it and
-    log `Scheduled campaign N failed` about a campaign that reached every buyer
-    on the list, which is a lie in the one place an operator looks after a bad
-    night.
-    """
-    import logging
-
-    records = []
-
-    class _Capture(logging.Handler):
-        def emit(self, record):
-            records.append(record.getMessage())
-
-    handler = _Capture()
-    logging.getLogger("campaign").addHandler(handler)
-    fake = fx.FakeStripe(fail_with=RuntimeError("Stripe is down"))
-    campaign_id = make_campaign(db, name="B1 no raise", rows=[("sent", 4)])
-    try:
-        with fx.stripe_configured(), fx.replaced_api(fake):
-            assert campaign_dispatch.report_usage(db, campaign_id) is None
-    finally:
-        logging.getLogger("campaign").removeHandler(handler)
-        drop_campaign(db, campaign_id)
-
-    # The informational line is expected and wanted — a skip must not be silent.
-    assert any("not metered" in line for line in records), records
-    # The line that must NOT appear is the scheduler's, which describes the
-    # campaign itself as having failed.
-    assert not any(line.startswith(f"Scheduled campaign {campaign_id} failed")
-                   or line.startswith(f"Campaign {campaign_id} background send failed")
-                   for line in records), records
-
-
-def test_the_scheduler_does_not_report_a_sent_campaign_as_failed(db, subscribed,
-                                                                 monkeypatch):
-    """The same rule at the call site where the lie would actually be told.
-
-    `run_due_campaigns()` catches per campaign and logs `Scheduled campaign N
-    failed`. If the meter's error escapes `report_usage()`, that line appears
-    for a campaign that reached every buyer on the list — and it appears in the
-    one place an operator looks after a bad night.
-
-    `send_campaign` is replaced with a no-op: what is under test is the wiring
-    around it, not the send loop, and dragging the loop in would make this test
-    fail for a dozen reasons that are not this one.
-    """
-    import asyncio
-    import logging
-
-    from app.services.campaign_service import CampaignService
-
-    records = []
-
-    class _Capture(logging.Handler):
-        def emit(self, record):
-            records.append(record.getMessage())
-
-    campaign = Campaign(name="B1 scheduled", message_template="hi", audience="all",
-                        status="draft", created_at="2021-05-01T09:00:00",
-                        scheduled_at="2021-05-01T09:00:00")
-    db.add(campaign)
-    db.commit()
-    db.refresh(campaign)
-    campaign_id = campaign.id
-    db.add(SMSMessage(campaign_id=campaign_id, phone="+15555550302", message="hi",
-                      status="sent", segments=6, sent_at="2021-05-02T09:00:00"))
-    db.commit()
-
-    async def _no_op(self, cid):
-        return None
-
-    monkeypatch.setattr(CampaignService, "send_campaign", _no_op)
-    handler = _Capture()
-    logging.getLogger("campaign").addHandler(handler)
-    fake = fx.FakeStripe(fail_with=RuntimeError("Stripe is down"))
-    try:
-        with fx.stripe_configured(), fx.replaced_api(fake):
-            dispatched = asyncio.run(campaign_dispatch.run_due_campaigns())
-    finally:
-        logging.getLogger("campaign").removeHandler(handler)
-        drop_campaign(db, campaign_id)
-
-    assert campaign_id in dispatched
-    assert any("not metered" in line for line in records), records
-    assert not any(line.startswith(f"Scheduled campaign {campaign_id} failed")
-                   for line in records), records
-
-
-def test_a_row_with_no_segment_count_is_billed_as_one(db, subscribed):
-    """The legacy-row rule, and it has to match `compute_usage()`'s.
-
-    Rows written before per-message segment tracking carry NULL. `/usage`
-    charges them as at least one segment; a meter that dropped them would bill
-    less than the dashboard says is due, and the difference would only ever show
-    up as an invoice the client could not reconcile.
-    """
-    fake = fx.FakeStripe()
-    # A 480-character body, because the divergence this exists to catch is
-    # invisible on a short one. The first version of this test used "hi" and
-    # passed against a meter that priced every legacy row as exactly 1 while
-    # `/usage` priced this row as 3.
-    long_row = ("sent", None, "x" * 480)
-    campaign_id = make_campaign(db, name="B1 legacy",
-                                rows=[long_row, ("sent", None), ("sent", 5)])
-    try:
-        assert stripe_meter.campaign_segments(db, campaign_id) == 3 + 1 + 5
-        with fx.stripe_configured(), fx.replaced_api(fake):
-            stripe_meter.report_campaign(db, campaign_id)
-    finally:
-        drop_campaign(db, campaign_id)
-    assert fake.metered_values == [9]
-
-
-def test_the_meter_and_usage_price_a_legacy_row_identically(db):
-    """The property, not two arithmetics that happen to look alike.
-
-    `stripe_meter` and `billing_service` both have to answer "how many segments
-    is a row with no stored count". The first version of this session wrote a
-    second, *similar* rule — `segments or 1` — with a docstring in between
-    asserting the two agreed, and they disagreed by a factor of three on any
-    legacy row over 160 characters.
-
-    Swept across the lengths where they could differ rather than pinned at one,
-    because one short sample is exactly what let the divergence through.
-    """
-    campaign_id = None
-    try:
-        lengths = (0, 1, 159, 160, 161, 320, 321, 480, 1000)
-        campaign_id = make_campaign(db, name="B1 legacy sweep", rows=[
-            ("sent", None, "x" * length) for length in lengths])
-        expected = sum(billing_service.legacy_segment_count("x" * length)
-                       for length in lengths)
-        # Precondition: the sweep must contain rows that are NOT one segment, or
-        # it passes against the rule it exists to reject.
-        assert expected > len(lengths), expected
-
-        via_meter = stripe_meter.campaign_segments(db, campaign_id)
-        _, via_usage = billing_service.compute_usage(
-            db, date(2021, 5, 2), date(2021, 5, 2))
-        assert via_meter == expected, (via_meter, expected)
-        assert via_usage == via_meter, (via_usage, via_meter)
-    finally:
-        if campaign_id:
-            drop_campaign(db, campaign_id)
-
-
-# ─── A6: idempotency, and never breaking a send ─────────────────────────────
-
-
-def test_a_repeated_meter_event_bills_once(db, subscribed):
-    """Criterion 7. The identifier is `campaign_<id>` and Stripe dedupes on it.
-
-    The fake models Stripe's *record* rather than our restraint, so this fails
-    if the identifier stops being deterministic — which is the mutation. Three
-    reports of the same campaign: three calls, one billed event.
-    """
-    fake = fx.FakeStripe()
-    campaign_id = make_campaign(db, name="B1 dedupe", rows=[("sent", 11)])
-    try:
-        with fx.stripe_configured(), fx.replaced_api(fake):
-            for _ in range(3):
-                stripe_meter.report_segments(11, campaign_id, db)
-    finally:
-        drop_campaign(db, campaign_id)
-
-    assert len(fake.named("create_meter_event")) == 3, "the calls were not made"
-    assert fake.metered_values == [11], "Stripe would have billed this twice"
-    assert fake.meter_events[0]["identifier"] == f"campaign_{campaign_id}"
-
-
-def test_a_stripe_outage_during_reporting_does_not_break_the_send(db, subscribed):
-    """The failure mode is chosen, not inherited.
-
-    A campaign that reached the client's buyers must not be reported failed
-    because a payment processor was down; `decisions/002` settled that an empty
-    saleroom costs more than a late invoice. The recovery is the backfill.
-    """
-    fake = fx.FakeStripe(fail_with=RuntimeError("Stripe is down"))
-    campaign_id = make_campaign(db, name="B1 outage", rows=[("sent", 9)])
-    try:
-        with fx.stripe_configured(), fx.replaced_api(fake):
-            outcome = stripe_meter.report_campaign(db, campaign_id)
-            # And through the send path's own wrapper, which is the call site
-            # the rule is actually about.
-            campaign_dispatch.report_usage(db, campaign_id)
-    finally:
-        drop_campaign(db, campaign_id)
-
-    assert outcome["reported"] is False
-    assert outcome["reason"] == "stripe call failed"
-
-
-def test_the_send_path_reports_the_campaign_it_just_sent(db, subscribed):
-    """`campaign_dispatch.report_usage()` is the hook, and it uses the raw count."""
-    fake = fx.FakeStripe()
-    campaign_id = make_campaign(db, name="B1 dispatch", rows=[("sent", 13000)])
-    try:
-        with fx.stripe_configured(), fx.replaced_api(fake):
-            campaign_dispatch.report_usage(db, campaign_id)
-    finally:
-        drop_campaign(db, campaign_id)
-    assert fake.metered_values == [13000]
-
-
-def test_the_button_press_path_reports_what_it_sent(db, subscribed, monkeypatch):
-    """`send_campaign_background` is the path a Send click reaches.
-
-    `report_usage()` is wired into two entry points and the scheduler's has its
-    own test below. This is the other one — a guard on one path is a guard on
-    one path, and the same is true of a hook.
-    """
-    import asyncio
-
-    from app.services.campaign_service import CampaignService
-
-    async def _no_op(self, cid):
-        return None
-
-    monkeypatch.setattr(CampaignService, "send_campaign", _no_op)
-    fake = fx.FakeStripe()
-    campaign_id = make_campaign(db, name="B1 button", rows=[("sent", 17)])
-    try:
-        with fx.stripe_configured(), fx.replaced_api(fake):
-            asyncio.run(campaign_dispatch.send_campaign_background(campaign_id))
-    finally:
-        drop_campaign(db, campaign_id)
-    assert fake.metered_values == [17]
-
-
-def test_a_backfill_replays_only_what_was_never_reported(db, subscribed):
-    """Dry run by default, and it does not re-offer what the ledger already has.
-
-    `since` is passed explicitly rather than left to the default, so the window
-    contains this test's two campaigns and nothing another module seeded. The
-    default bound has a test of its own below — asserting on a set the suite's
-    other modules also write to is the "guard on the wrong set" mistake, and it
-    caught this test on its first run.
-    """
-    fake = fx.FakeStripe()
-    first = make_campaign(db, name="B1 backfill a", rows=[("sent", 20)])
-    second = make_campaign(db, name="B1 backfill b", rows=[("sent", 30)])
-    window = date(2021, 5, 1)
-    try:
-        with fx.stripe_configured(), fx.replaced_api(fake):
-            stripe_meter.report_campaign(db, first)
-            plan = stripe_meter.backfill_unreported(db, dry_run=True, since=window)
-            replayed = {row["campaign_id"] for row in plan["replayed"]}
-            assert first not in replayed
-            assert second in replayed
-            assert len(fake.named("create_meter_event")) == 1, "a dry run posted"
-
-            done = stripe_meter.backfill_unreported(db, dry_run=False, since=window)
-            assert {row["campaign_id"] for row in done["replayed"]} >= {second}
-            assert first not in {row["campaign_id"] for row in done["replayed"]}
-    finally:
-        drop_campaign(db, first)
-        drop_campaign(db, second)
-    assert 20 in fake.metered_values and 30 in fake.metered_values
-
-
-def test_a_backfill_will_not_re_meter_the_period_the_balance_already_settled(db,
-                                                                            subscribed):
-    """The bound, which the identifier cannot supply.
-
-    Every campaign in this client's history predates the subscription and
-    August's segments are settled by the one-time price on the first invoice. An
-    unbounded replay would meter them again, into the current period, on top of
-    a charge he has already paid.
-    """
-    from app.models.app_setting import set_setting
-    fake = fx.FakeStripe()
-    old = make_campaign(db, name="B1 pre-subscription", rows=[("sent", 28002)])
-    try:
-        # No subscription start stored: nothing is replayed and the refusal says why.
-        with fx.stripe_configured(), fx.replaced_api(fake):
-            refused = stripe_meter.backfill_unreported(db)
-        assert refused["replayed"] == []
-        assert "no subscription" in refused["refused"]
-
-        # Subscribed today: the August campaign is outside the bound.
-        set_setting(db, stripe_billing.CYCLE_ANCHOR_AT_KEY, date.today().isoformat())
-        with fx.stripe_configured(), fx.replaced_api(fake):
-            plan = stripe_meter.backfill_unreported(db)
-        assert old not in {row["campaign_id"] for row in plan["replayed"]}
-        assert plan["since"] == date.today().isoformat()
-    finally:
-        drop_campaign(db, old)
-    assert fake.metered_values == []
-
-
-def test_nothing_is_metered_before_the_client_has_subscribed(db):
-    """No customer means no meter — and a named reason rather than an exception."""
-    fake = fx.FakeStripe()
-    campaign_id = make_campaign(db, name="B1 unsubscribed", rows=[("sent", 5)])
-    try:
-        with fx.stripe_configured(), fx.replaced_api(fake):
-            outcome = stripe_meter.report_campaign(db, campaign_id)
-    finally:
-        drop_campaign(db, campaign_id)
-    assert outcome == {"reported": False, "reason": "no subscription yet",
-                       "segments": 5}
-    assert fake.calls == []
-
-
-def test_the_backfill_bound_is_when_the_segments_were_sent(db, subscribed):
-    """R6. A draft written before the subscription and sent after it.
-
-    A campaign left in the composer, or one with `scheduled_at`, is created in
-    August and sends in September — and its segments are September's. A bound on
-    `Campaign.created_at` puts it outside the window forever, which is a silent
-    under-bill on the one path the backfill exists for. The bound is
-    `sms_messages.sent_at`, which is also what `compute_usage()` filters on, so
-    the backfill and the dashboard agree about which period a campaign is in.
-    """
-    from app.models.app_setting import set_setting
-
-    fake = fx.FakeStripe()
-    campaign = Campaign(name="B1 straddle", message_template="hi", audience="all",
-                        status="completed", created_at="2021-04-20T09:00:00")
-    db.add(campaign)
-    db.commit()
-    db.refresh(campaign)
-    db.add(SMSMessage(campaign_id=campaign.id, phone="+15555550396", message="hi",
-                      status="sent", segments=25, sent_at="2021-05-10T09:00:00"))
-    db.commit()
-    try:
-        # Subscribed on 1 May: the campaign row predates that, its segments do not.
-        set_setting(db, stripe_billing.CYCLE_ANCHOR_AT_KEY, "2021-05-01")
-        with fx.stripe_configured(), fx.replaced_api(fake):
-            plan = stripe_meter.backfill_unreported(db, dry_run=True)
-        assert campaign.id in {row["campaign_id"] for row in plan["replayed"]}, (
-            "a campaign created before the subscription and sent after it fell "
-            "outside the backfill window")
-    finally:
-        drop_campaign(db, campaign.id)
-
+# ─── A1 and A6: the meter ───────────────────────────────────────────────────
+#
+# Moved to `tests/test_metering_pass.py` in session B1b, which replaced
+# metering at send time with a scheduled, ledgered pass (`decisions/011`). The
+# A1 property — the meter receives the RAW count and reads BILLABLE_STATUSES
+# through the model — is asserted there against the pass.
 
 def test_the_back_bill_tool_says_when_its_window_is_not_a_billing_cycle(db):
     """R7. `cost_for_segments()` gives whatever window it is handed an allowance.
@@ -546,9 +74,9 @@ def test_the_back_bill_tool_says_when_its_window_is_not_a_billing_cycle(db):
             rows.append(row)
         db.commit()
 
-        whole = stripe_meter.period_usage(db, date(2021, 5, 1), date(2021, 5, 31))
-        first = stripe_meter.period_usage(db, date(2021, 5, 1), date(2021, 5, 15))
-        second = stripe_meter.period_usage(db, date(2021, 5, 16), date(2021, 5, 31))
+        whole = stripe_reconcile.period_usage(db, date(2021, 5, 1), date(2021, 5, 31))
+        first = stripe_reconcile.period_usage(db, date(2021, 5, 1), date(2021, 5, 15))
+        second = stripe_reconcile.period_usage(db, date(2021, 5, 16), date(2021, 5, 31))
         # The defect the warning exists for: one cycle split in two bills nothing.
         assert whole["total_due"] > 0
         assert first["total_due"] == 0 and second["total_due"] == 0
@@ -678,7 +206,7 @@ def test_the_tier_check_is_registered_to_run_daily(db):
     # was added; nothing asserted it until a mutation walked straight through.
     ids = [job_id for job_id, _, _ in registered]
     assert len(ids) == len(set(ids)), f"duplicate scheduler job id: {sorted(ids)}"
-    assert len(registered) == 4, (
+    assert len(registered) == 5, (
         f"a scheduled job appeared or vanished: {sorted(ids)}")
 
 
@@ -939,7 +467,7 @@ def test_the_back_bill_tool_prices_august_from_billing_services_own_functions(db
             db.add(row)
             rows.append(row)
         db.commit()
-        usage = stripe_meter.period_usage(db, BILL_MONTH_START, BILL_MONTH_END)
+        usage = stripe_reconcile.period_usage(db, BILL_MONTH_START, BILL_MONTH_END)
     finally:
         for row in rows:
             db.delete(row)

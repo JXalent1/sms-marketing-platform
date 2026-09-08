@@ -485,7 +485,9 @@ async def top_up_background(campaign_id: int) -> None:
     Same shape and the same reason as `campaign_dispatch.send_campaign_background`:
     a request-scoped session is closed the moment the response is returned. The
     refusals have already run synchronously by the time this is queued, so what
-    reaches here is a top-up that passed pre-flight.
+    reaches here is a top-up that passed pre-flight. No metering hook, on
+    purpose (`decisions/011`): the scheduled pass in `stripe_meter` takes every
+    settled, unmarked row whichever path wrote it, so a top-up is a later batch.
     """
     from app.core.database import SessionLocal
     db = SessionLocal()

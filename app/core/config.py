@@ -303,6 +303,23 @@ class Settings(BaseSettings):
     # mapping `stripe_customer_id`, value key `value`.
     STRIPE_METER_EVENT_NAME: str = "sms_segments"
 
+    # How long after a send a `sent` row is treated as settled — its status no
+    # longer able to move out of the billable set — and therefore metered.
+    # A `delivered` row settles at once (`SETTLED_STATUSES` in the model); this
+    # window is for the receipt that never arrives, so it cannot hold billing
+    # open forever. Hours, and 24 of them: on this account's traffic the
+    # carrier's verdict comes back in seconds to minutes (the failure corpus is
+    # "not routable" rejections), so a day covers every receipt that is going
+    # to arrive, while keeping the last day of a cycle within reach of the
+    # invoice Stripe finalises shortly after the cycle closes. The event is
+    # stamped with the *send* time, so metering a day late does not move usage
+    # into the next cycle — see `stripe_meter`.
+    #
+    # Which way to err: a row metered before a late receipt flips it is half a
+    # cent over-billed, in our favour, and `decisions/011` calls that the
+    # serious direction. Lengthen this before shortening it.
+    BILLING_SETTLE_HOURS: int = 24
+
     # `whsec_…` from Developers -> Webhooks. **Unset means every webhook payload
     # is ignored**, not trusted: an unsigned event is an event anybody on the
     # internet can post, and what it would write is the customer id we meter

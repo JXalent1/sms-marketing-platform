@@ -4,9 +4,15 @@
     python tools/bill_period.py --start 2026-08-01 --end 2026-08-31
     python tools/bill_period.py --start 2026-08-01 --end 2026-08-31 --create
     python tools/bill_period.py --start 2026-08-01 --end 2026-08-31 --create --charge
+    python tools/bill_period.py --start 2026-09-09 --end 2026-10-08 --unmetered
 
 Dry run by default. `--create` drafts an invoice; `--charge` finalises it, which
-is the step that puts it in front of the client.
+is the step that puts it in front of the client. `--unmetered` adds the
+reconciliation view: which billable rows in the window have not reached the
+usage meter, grouped by why, plus the residue running the other way — rows
+metered and since moved out of the billable set. That is the question anyone
+comparing Stripe's figure to `/usage` will ask, and `stripe_reconcile` answers
+it from the same rows and the same rule the metering pass uses.
 
 ## Why it does not do its own arithmetic
 
@@ -61,7 +67,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.core.config import settings                            # noqa: E402
 from app.core.database import SessionLocal                      # noqa: E402
-from app.services import stripe_billing, stripe_meter          # noqa: E402
+from app.services import stripe_billing, stripe_reconcile      # noqa: E402
 
 PERIOD_METADATA_KEY = "back_billed_period"
 
@@ -120,6 +126,70 @@ def describe(usage: dict) -> str:
         lines.append(f"  Monthly fee       ${settings.BILLING_MONTHLY_FEE}")
     lines.append(f"  TOTAL DUE         ${usage['total_due']:.2f}")
     return "\n".join(lines)
+
+
+def describe_unmetered(breakdown: dict) -> str:
+    """The reconciliation view. Every figure from `stripe_reconcile`, rendered.
+
+    Rendered and nothing else: the reasons are `stripe_reconcile`'s constants
+    and the arithmetic is its `unmetered_breakdown()`, so this cannot invent a
+    fifth reason or a second total. The first line restates the window's
+    billable total so the reader can check `metered + unmetered` by eye.
+    """
+    lines = [
+        "",
+        f"  Meter reconciliation for {breakdown['start']} to {breakdown['end']}",
+        f"  Billable segments {breakdown['billable_segments']:,}",
+        f"    metered         {breakdown['metered_segments']:,}",
+        f"    unmetered       {breakdown['unmetered_segments']:,}",
+    ]
+    for reason, bucket in sorted(breakdown["unmetered"].items(),
+                                 key=lambda item: -item[1]["segments"]):
+        lines.append(f"      {bucket['segments']:>8,} segments in "
+                     f"{bucket['rows']:,} row(s): {reason}")
+    residue = breakdown["metered_no_longer_billable"]
+    if residue["rows"]:
+        lines += [
+            "",
+            f"  Metered, then left the billable set: {residue['segments']:,} "
+            f"segment(s) in {residue['rows']:,} row(s).",
+            "     These reached the meter before a late receipt moved them out of",
+            "     BILLABLE_STATUSES. Stripe's total for the window exceeds the",
+            "     dashboard's by this much; the mark is final and this is the",
+            "     residue, not an error to repair by re-reporting.",
+        ]
+    return "\n".join(lines)
+
+
+def metered_refusal(breakdown: dict) -> str:
+    """Why `--create` must not run over this window, or "".
+
+    The window's arithmetic comes from `compute_usage()`, which counts every
+    billable row whether or not the usage meter has already reported it. That
+    is right for the period this tool was written for — August, before any
+    meter existed — and wrong for any window the meter has touched: an invoice
+    here would bill the metered segments a second time, and apply the
+    10,000-segment allowance twice, once in this arithmetic and once in
+    Stripe's tier. Found by review, measured: 12,000 metered plus 12,000
+    refused priced as 24,000 and $210.00. The only usage a one-off invoice
+    should carry is what the meter *refused*, and how that is priced and
+    recorded is `decisions/012`, open — until it is decided this refuses
+    rather than guesses.
+    """
+    metered = breakdown["metered_segments"]
+    if not metered:
+        return ""
+    return "\n".join([
+        "",
+        "  !! REFUSED: THIS WINDOW IS PARTLY ON THE STRIPE METER !!",
+        f"     {metered:,} of its {breakdown['billable_segments']:,} billable "
+        f"segments have already been reported to the usage meter and",
+        "     are on the subscription invoice. An invoice drafted here would bill",
+        "     them a second time, and apply the allowance twice — once above, once",
+        "     in Stripe's tier. Only usage the meter refused belongs on a one-off",
+        "     invoice; how that is priced and recorded is decisions/012, open.",
+        "     --create is refused for this window. Nothing was sent to Stripe.",
+    ])
 
 
 def amount_in_cents(exact: Decimal) -> int:
@@ -182,6 +252,9 @@ def main(argv=None) -> int:
                         help="draft the invoice in Stripe")
     parser.add_argument("--charge", action="store_true",
                         help="finalise the draft — the client is billed")
+    parser.add_argument("--unmetered", action="store_true",
+                        help="show which billable rows in the window have not "
+                             "reached the usage meter, and why")
     args = parser.parse_args(argv)
 
     start = date.fromisoformat(args.start)
@@ -193,8 +266,10 @@ def main(argv=None) -> int:
 
     db = SessionLocal()
     try:
-        usage = stripe_meter.period_usage(db, start, end)
+        usage = stripe_reconcile.period_usage(db, start, end)
         warning = window_warning(db, start, end)
+        breakdown = stripe_reconcile.unmetered_breakdown(db, start, end)
+        refusal = metered_refusal(breakdown)
         print(describe(usage))
         if warning:
             # Printed after the figures, not before: the operator reads the
@@ -202,10 +277,18 @@ def main(argv=None) -> int:
             # `--create` as well as on the dry run, because the flag that
             # commits is the one where it matters.
             print(warning)
+        if args.unmetered or refusal:
+            print(describe_unmetered(breakdown))
+        if refusal:
+            # On the dry run too, so the refusal is never first seen on the
+            # invocation that meant to commit.
+            print(refusal)
         if not args.create:
             print("\n  (dry run — nothing was sent to Stripe. Add --create to draft "
                   "an invoice.)")
             return 0
+        if refusal:
+            return 2
         if usage["total_due"] <= 0:
             print("\n  Nothing to invoice: the period is inside the allowance.")
             return 0

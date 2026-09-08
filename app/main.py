@@ -220,6 +220,27 @@ async def lifespan(app: FastAPI):
         coalesce=True,
     )
 
+    # Usage metering, hourly. The one place a segment reaches the billing
+    # meter. It is a scheduled adjudication and not a call in the send path:
+    # a row is reported only once its delivery status has settled, and it is
+    # marked in the database so that no path — this job, a redeploy, a
+    # backfill — can report it twice. `decisions/011` is the reasoning.
+    #
+    # A sync function, so APScheduler runs it on its executor thread rather
+    # than on the event loop the send path shares. Hourly because the settle
+    # window is measured in hours and the event is stamped with the send time,
+    # so nothing about *when* this runs moves usage between cycles. It never
+    # raises: a job that raises is a job APScheduler stops running, and a
+    # meter that quietly stopped is the failure nobody's screen would show.
+    from app.services import stripe_meter as billing_meter
+
+    scheduler.add_job(
+        billing_meter.metering_pass_job,
+        IntervalTrigger(hours=1),
+        id="usage_metering", replace_existing=True, max_instances=1,
+        coalesce=True,
+    )
+
     scheduler.start()
     for job in scheduler.get_jobs():
         # One line per job, by id. "Scheduler started" told us a scheduler

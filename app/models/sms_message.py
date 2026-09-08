@@ -75,6 +75,28 @@ SENT_STATUSES = ("sent", "delivered")
 # a message that was never handed to a carrier is not a segment.
 HELD_BACK_STATUS = "held_back"
 
+# Billable statuses the carrier has finished deciding. The usage meter
+# (`stripe_meter`) reports a billable row only once it is *settled* — its
+# status can no longer move out of BILLABLE_STATUSES — and a row is settled
+# either because it is in this set or because `BILLING_SETTLE_HOURS` have
+# passed since it was sent.
+#
+# `delivered` is a handset receipt, and it settles at once. `sent` is not —
+# it is the carrier *accepting* the message, and the delivery webhook moves it
+# to `delivered` or `undelivered` minutes to days later, which is the whole
+# reason B1's meter-at-send-time over-billed (`decisions/011`). A receipt can
+# still be overwritten: `record_delivery_status()` admits a failure event on a
+# delivered row (its own comment calls that a carrier race), and a metered row
+# that goes that way stays metered — the bounded residue
+# `tools/bill_period.py --unmetered` shows. `held_back` is not a send and is
+# outside BILLABLE_STATUSES already, so it never reaches the question.
+#
+# Beside BILLABLE_STATUSES and read through this module, never restated — the
+# same rule and the same reason as the set above it: a local copy is
+# behaviourally identical today, so no test of its contents could ever tell the
+# two apart, and a change here would silently stop reaching the invoice.
+SETTLED_STATUSES = ("delivered",)
+
 
 class SMSMessage(Base):
     __tablename__ = "sms_messages"
@@ -121,6 +143,22 @@ class SMSMessage(Base):
     # by two. The row's own history is intact either way: it is one row, it
     # carries the body it was rendered with, and it was never sent before.
     top_up_at = Column(String(50), nullable=True)
+
+    # When this row's segments were reported to the usage meter. NULL means
+    # **never metered** — and for every row written before migration
+    # `d7e2a91c4f36` that is a fact, not a gap: nothing was ever metered, by any
+    # path, because no Stripe customer existed. Whether a NULL row is the
+    # meter's business at all is decided by the stored subscription start
+    # (`stripe_meter.subscription_start()`); rows sent before it were settled by
+    # the one-time balance and stay NULL for good.
+    #
+    # This column is the idempotency ledger, and it lives here rather than in
+    # Stripe's meter-event `identifier` because that identifier is unique only
+    # over a rolling 24 hours (`decisions/011`, Amendment 1). One writer —
+    # `stripe_meter`'s pass — stamps it after Stripe has accepted the event and
+    # in the same transaction, by row id, whatever the row's status later
+    # becomes. A row that carries a value is never reported again, by any path.
+    metered_at = Column(String(50), nullable=True)
 
     # ─── What the carrier actually charged ──────────────────────────────────
     #

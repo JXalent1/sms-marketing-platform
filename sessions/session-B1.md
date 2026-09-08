@@ -268,8 +268,18 @@ Do these yourself; the session must not automate them.
    `add_invoice_items` if that is the mechanism that verifies.
 4. **Developers → Webhooks** → `https://app.onlineauctions.co/webhooks/stripe`, event
    `checkout.session.completed`. Copy the `whsec_…`.
-5. **Settings → Billing → Customer portal → enable**, so he can update his own card later.
-6. Put `STRIPE_SECRET_KEY`, `STRIPE_PRICE_METERED`, `STRIPE_METER_EVENT_NAME`,
+5. **Settings → Billing → Invoice settings → Invoice finalization grace period → Add
+   rule.** Set the finalization delay to **72 hours**, conditioned on *Has a metered price*
+   **and** *Invoice is from a subscription cycle*.
+   <br>**This is not optional.** The default is 1 hour; `BILLING_SETTLE_HOURS` is 24 and the
+   metering pass runs hourly, so without this rule every campaign sent in the last day of a
+   cycle is metered after that invoice has finalised and **is never billed on any invoice**.
+   `decisions/012` has the reasoning and Stripe's own wording.
+   <br>While you are on that page: **never change the metered price mid-cycle** — Stripe
+   drops grace-period usage from the current *and* subsequent invoices when a subscription
+   item's price changes during a cycle. Rate changes wait for a boundary.
+6. **Settings → Billing → Customer portal → enable**, so he can update his own card later.
+7. Put `STRIPE_SECRET_KEY`, `STRIPE_PRICE_METERED`, `STRIPE_METER_EVENT_NAME`,
    `STRIPE_WEBHOOK_SECRET` and `PUBLIC_BASE_URL` in `/home/appuser/app/.env` and restart.
 
 Then hand the session the **price IDs** (`price_…`, not `prod_…`).

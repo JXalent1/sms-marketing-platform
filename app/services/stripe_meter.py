@@ -1,242 +1,137 @@
-"""What Stripe is told to bill, and the check that the tier still agrees with us.
+"""What Stripe is told to bill, and the ledger that makes it exactly once.
 
 Split from `stripe_billing.py` on the 500-line rule, along the boundary the two
 halves already had: that module owns *this account's link to Stripe* — checkout,
 the ownership guard, the webhook, the cycle anchor — and this one owns *what
 Stripe is told about usage*. It imports from there and nothing imports back.
-`stripe_tiers.py` came out of this file the same way, and owns the separate
-question of whether Stripe is *configured* to price what it is told correctly.
+`stripe_tiers.py` owns whether Stripe is *configured* to price what it is told
+correctly; `stripe_reconcile.py` owns what a person reads back afterwards.
+
+## The property
+
+**Every billable segment reaches the meter exactly once, and the figure metered
+is the figure `billing_service.compute_usage()` would report for the same
+window.** Everything below serves that sentence; `decisions/011` is the reasoning
+and is not repeated here.
+
+## The mechanism, in four parts
+
+**The ledger is `sms_messages.metered_at`, not Stripe's identifier.** Session B1
+metered a campaign the instant its send loop returned and leaned on the meter
+event's deterministic `identifier` to make every later report free. Stripe
+enforces identifier uniqueness only over a rolling period of at least 24 hours —
+it exists for the same-minute retry — so a backfill of any older period billed
+twice, and a figure reported at send time could never be corrected once the
+delivery webhook moved rows out of `BILLABLE_STATUSES`. Now a pass selects rows
+that are **billable, settled and unmarked**, reports them, and stamps
+`metered_at` in the transaction that follows the accepted report. A marked row
+is never reported again, by any path, including the backfill.
+
+**Settled means the status can no longer leave the billable set.** `delivered`
+is a handset receipt and settles at once; `sent` is only the carrier accepting
+the message, and settles when `BILLING_SETTLE_HOURS` have passed — the window
+exists so a receipt that never arrives cannot hold billing open forever. Both
+sets are read through the model module (`BILLABLE_STATUSES`,
+`SETTLED_STATUSES`), never restated: a local copy is behaviourally identical
+today, which is exactly why no test of its contents could catch it.
+
+**The event is stamped with the send time.** Stripe's `timestamp` accepts
+anything within the past 35 calendar days, so a pass running hours or days
+later still lands the usage in the cycle the send belongs to. Usage older than
+35 days cannot reach the meter at all: the pass detects it, refuses it, leaves
+`metered_at` NULL and says so at ERROR — a one-off invoice, never a silent
+drop. A guard that is switched off refuses; it does not wave things through.
+
+**The pass is scheduled, and it is the only place a segment is metered.** It
+runs hourly off the scheduler in its own session, never inside the send loop
+and never raising into it. `campaign_dispatch` and `campaign_topup` carry no
+hook: their rows are unmarked, so the next pass takes them — a top-up is
+simply a later batch on the same campaign.
 
 ## The allowance is applied exactly once, and it is applied in Stripe
 
-`billing_service.billable_segments()` is `max(0, segments - 10,000)`. That is the
-same arithmetic a graduated tiered price performs:
+`billing_service.billable_segments()` is `max(0, segments - 10,000)`, the same
+arithmetic a graduated tiered price performs. So **the meter receives the raw
+count of segments in `BILLABLE_STATUSES`** and the tier subtracts the
+allowance; reporting `billable_segments()` would subtract it twice, and a
+15,000-segment month would invoice $0 while `/usage` still showed $75 due.
 
-    tier 1    up to BILLING_SEGMENTS_INCLUDED     $0
-    tier 2    thereafter                          BILLING_PRICE_PER_SEGMENT
+## What the pass does when Stripe — or the database — fails mid-batch
 
-So **the meter receives the raw count of segments in `BILLABLE_STATUSES`** and
-the tier subtracts the allowance. Reporting `billable_segments()` would subtract
-it twice — once here and once in the tier — and a 15,000-segment month would
-invoice $0 instead of $75 with nothing on any screen looking wrong, because
-`/usage` would still show 15,000 used and $75 due. It is the quietest way this
-session could lose money, which is why it is acceptance criterion 2 and a
-mutation.
-
-`BILLABLE_STATUSES` is imported, never restated. Opt-outs, carrier rejections,
-region skips, `held_back` and failures are already outside it, and a local copy
-of the tuple is how a commercial change to that set silently stops reaching the
-invoice.
-
-## Reporting must never be able to stop a send
-
-`report_campaign()` is called after the messages have gone out and cannot raise:
-a Stripe outage that aborted a campaign would turn a billing problem into an
-empty saleroom, and `decisions/002` already settled which of those two costs
-more. The meter event's `identifier` is deterministic — `campaign_<id>` — so a
-retry, a redeploy and a backfill each count once. Stripe dedupes on it.
+A batch is **staged** (written to `app_settings`, committed) before Stripe is
+called, and cleared in the same commit as the mark. Stripe fails: nothing
+marked, the pass stops. The mark's commit fails — a database lock under a
+delivery-webhook storm — or the process dies: Stripe has the event, and the
+next pass **re-offers exactly the staged rows under exactly the staged
+identifier**, which Stripe dedupes. Never recomputed from the rows: one
+delivery-status flip between two passes would change a recomputed identifier
+and bill the survivors twice. A batch staged longer than Stripe's window is
+refused, loudly, until a person resolves it.
 """
 
 import logging
-from datetime import date
-from typing import Optional
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta
+from typing import Dict, List, Optional
 
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.models.app_setting import get_setting, set_setting
+from app.models.app_setting import AppSetting, get_setting, set_setting
 from app.models import sms_message as message_model
 from app.models.sms_message import SMSMessage
 from app.services import billing_service, stripe_billing
 
 logger = logging.getLogger("billing.stripe")
 
-# One row per campaign already reported, so `backfill_unreported()` knows what
-# it is replaying. Stripe's own dedupe makes a double report harmless; this
-# makes it unnecessary, which is what keeps the backfill readable.
-REPORTED_KEY_PREFIX = "stripe_meter_campaign:"
+# Stripe's own rules, read from the pinned SDK's declared parameters rather than
+# remembered — `tests/test_stripe_contract.py` asserts both figures still stand,
+# so a pin that moves either fails at `pip install` and not on an invoice.
+#   timestamp:  "within the past 35 calendar days or up to 5 minutes in the future"
+#   identifier: "uniqueness within a rolling period of at least 24 hours"
+METER_TIMESTAMP_MAX_AGE_DAYS = 35
+IDENTIFIER_WINDOW_HOURS = 24
+
+# One UPDATE per chunk when marking a batch. SQLite's host-parameter limit was
+# 999 before 3.32, and a single campaign is thousands of rows.
+MARK_CHUNK = 500
+
+# The batch in flight: offered to Stripe, not yet marked. One row, one writer.
+PENDING_BATCH_KEY = "stripe_meter_pending_batch"
+
+# ─── Settled, defined ───────────────────────────────────────────────────────
 
 
-
-def reported_key(campaign_id: int) -> str:
-    return f"{REPORTED_KEY_PREFIX}{campaign_id}"
-
-
-# ─── A6: what a campaign owes ───────────────────────────────────────────────
+def settle_cutoff(now: datetime) -> datetime:
+    """A `sent` row sent at or before this moment is settled."""
+    return now - timedelta(hours=settings.BILLING_SETTLE_HOURS)
 
 
-def campaign_segments(db: Session, campaign_id: int) -> int:
-    """The raw billable-status segment count for one campaign.
+def too_old_cutoff(now: datetime) -> datetime:
+    """A row sent before this moment can no longer be timestamped for Stripe."""
+    return now - timedelta(days=METER_TIMESTAMP_MAX_AGE_DAYS)
 
-    Raw: the allowance is **not** applied here. See this module's docstring —
-    the tier applies it, and applying it twice is the defect this session most
-    easily ships.
 
-    A row with no `segments` is priced by the **same** function
-    `billing_service.compute_usage()` uses, not by a rule that resembles it.
-    The first version of this said "counted as one" and was wrong for every
-    legacy row over 160 characters: a 480-character message metered as 1 and
-    appeared on `/usage` as 3. The docstring claimed the two agreed, which is
-    how it survived review — a comment asserting an equivalence is not an
-    equivalence. `legacy_segment_count()` is now the one implementation and both
-    call it.
+def row_segments(segments: Optional[int], message: Optional[str]) -> int:
+    """One row's segments, priced by the rule `compute_usage()` uses.
 
-    `BILLABLE_STATUSES` is read **through the model module** rather than bound
-    at import, and that is not a style choice. A local restatement of the tuple
-    is behaviourally identical today, so no assertion about its *contents* could
-    ever tell the two apart — 5i learned this the hard way when
-    `SENT_STATUSES is not BILLABLE_STATUSES` failed for a reason that had
-    nothing to do with this codebase. Late binding is what lets a test change
-    what the constant *means* and require this figure to follow, which is the
-    property that actually matters: a commercial change to the billable set has
-    to reach the invoice.
+    A row with no stored count is priced by `legacy_segment_count()` and by
+    nothing that resembles it: B1's first version said `segments or 1` and
+    metered a 480-character legacy row as 1 while `/usage` showed 3, with a
+    docstring between the two asserting they agreed.
     """
-    rows = (db.query(SMSMessage.segments, SMSMessage.message)
-            .filter(SMSMessage.campaign_id == campaign_id,
-                    SMSMessage.status.in_(message_model.BILLABLE_STATUSES))
-            .all())
-    return sum(int(segments) if segments
-               else billing_service.legacy_segment_count(message)
-               for segments, message in rows)
-
-
-def report_segments(segments: int, campaign_id: int, db: Session) -> dict:
-    """Post one meter event. Never raises, never double-bills.
-
-    The identifier is `campaign_<id>` and that is the entire idempotency story:
-    Stripe records the first event under an identifier and ignores the rest, so
-    a retried background task, a redeploy mid-run and a backfill all leave the
-    invoice unchanged.
-
-    Skips — rather than fails — when there is nothing to meter against: no
-    Stripe configured, no customer stored yet (he has not subscribed), or zero
-    segments. Each returns a named reason so the caller's log line says which,
-    because "nothing happened" is three different situations and only one of
-    them is worth waking up for.
-    """
-    if segments <= 0:
-        return {"reported": False, "reason": "no billable segments", "segments": 0}
-    if not stripe_billing.configured():
-        return {"reported": False, "reason": "stripe not configured",
-                "segments": segments}
-    customer = stripe_billing.customer_id(db)
-    if not customer:
-        return {"reported": False, "reason": "no subscription yet",
-                "segments": segments}
-
-    identifier = f"campaign_{campaign_id}"
-    try:
-        stripe_billing.api().create_meter_event(
-            event_name=settings.STRIPE_METER_EVENT_NAME,
-            identifier=identifier,
-            payload={"stripe_customer_id": customer, "value": str(segments)},
-        )
-    except Exception as exc:
-        # Logged and swallowed. The caller is on the send path and a carrier
-        # that worked must not be undone by a payment processor that did not;
-        # `backfill_unreported()` is the recovery, and it is safe because of the
-        # identifier above.
-        logger.error("Meter event %s (%s segments) failed: %s",
-                     identifier, segments, exc)
-        return {"reported": False, "reason": "stripe call failed",
-                "segments": segments, "error": str(exc)}
-
-    set_setting(db, reported_key(campaign_id),
-                stripe_billing.dumps({"segments": segments,
-                                      "at": date.today().isoformat()}),
-                "Segments already metered for this campaign")
-    logger.info("Metered %s segment(s) for campaign #%s as %s",
-                segments, campaign_id, identifier)
-    return {"reported": True, "reason": None, "segments": segments,
-            "identifier": identifier}
-
-
-def report_campaign(db: Session, campaign_id: int) -> dict:
-    """Meter one finished campaign. The entry point the send path calls."""
-    return report_segments(campaign_segments(db, campaign_id), campaign_id, db)
-
-
-def already_reported(db: Session, campaign_id: int) -> Optional[dict]:
-    return stripe_billing.loads(get_setting(db, reported_key(campaign_id)))
-
-
-def backfill_unreported(db: Session, dry_run: bool = True,
-                        since: Optional[date] = None) -> dict:
-    """Replay campaigns that were never metered. Dry run by default.
-
-    Safe to run twice, and safe to run over campaigns that *were* metered: the
-    identifier is derived from the campaign id, so Stripe counts each once
-    however many times it is offered. The ledger row is only an optimisation —
-    it keeps the output honest about what this run actually changed.
-
-    Dry run is the default because the alternative is a tool whose first
-    invocation is its irreversible one.
-
-    **A subtraction needs a time bound, and this one is load-bearing.** The
-    identifier makes a *repeat* free; it does nothing about history. Every
-    campaign this client has ever sent predates the subscription, and August's
-    28,002 segments are already settled by the one-time price on the first
-    invoice — so an unbounded replay would meter them a second time, into the
-    current period, on top of a charge he has paid. The default bound is the day
-    the subscription started, stored at checkout. Passing `since` overrides it,
-    deliberately and by a human.
-
-    With no subscription stored there is nothing to meter onto and nothing to
-    bound the replay with, so it replays nothing and says so rather than
-    silently ranging over the whole table.
-    """
-    bound = since or subscription_start(db)
-    if bound is None:
-        return {"dry_run": dry_run, "replayed": [], "skipped": 0, "failed": [],
-                "segments": 0,
-                "refused": "no subscription is stored, so there is no period to "
-                           "replay into and no bound to replay from"}
-
-    # Bounded on when the segments were **sent**, not on when the campaign row
-    # was created. A draft written in August and sent in September — a campaign
-    # left in the composer, or one with `scheduled_at` — is billable in
-    # September, and a bound on `created_at` would put it outside the window
-    # forever. That is a silent under-bill on the one path this function exists
-    # to recover. `sent_at` is also the column `compute_usage()` filters on, so
-    # the backfill and the dashboard agree about which period a campaign is in.
-    query = (db.query(SMSMessage.campaign_id)
-             .filter(SMSMessage.campaign_id.isnot(None),
-                     SMSMessage.status.in_(message_model.BILLABLE_STATUSES),
-                     SMSMessage.sent_at >= bound.isoformat())
-             .distinct()
-             .order_by(SMSMessage.campaign_id))
-
-    replayed, skipped, failed = [], 0, []
-    for (campaign_id,) in query.all():
-        if already_reported(db, campaign_id):
-            skipped += 1
-            continue
-        segments = campaign_segments(db, campaign_id)
-        if segments <= 0:
-            skipped += 1
-            continue
-        if dry_run:
-            replayed.append({"campaign_id": campaign_id, "segments": segments})
-            continue
-        outcome = report_segments(segments, campaign_id, db)
-        if outcome["reported"]:
-            replayed.append({"campaign_id": campaign_id, "segments": segments})
-        else:
-            failed.append({"campaign_id": campaign_id, "segments": segments,
-                           "reason": outcome["reason"]})
-
-    return {"dry_run": dry_run, "replayed": replayed, "skipped": skipped,
-            "failed": failed, "since": bound.isoformat(),
-            "segments": sum(row["segments"] for row in replayed)}
+    return int(segments) if segments else billing_service.legacy_segment_count(message)
 
 
 def subscription_start(db: Session) -> Optional[date]:
     """The day the subscription began, as stored at checkout. None before that.
 
-    It is the bound `backfill_unreported()` uses, and it is read rather than
-    derived: `BILLING_CYCLE_DAY` would give a day of the month with no year in
-    it, and "the earliest campaign" would give exactly the answer that
-    double-bills.
+    The pass's lower bound: everything this client sent before subscribing is
+    settled by the one-time balance, so a pass ranging over the whole table
+    would meter August twice. Read rather than derived — "the earliest
+    campaign" is exactly the answer that double-bills. Unreadable is None,
+    which the pass refuses on.
     """
     stored = get_setting(db, stripe_billing.CYCLE_ANCHOR_AT_KEY)
     try:
@@ -246,26 +141,359 @@ def subscription_start(db: Session) -> Optional[date]:
         return None
 
 
-# ─── A7's arithmetic, shared with tools/bill_period.py ──────────────────────
+def _unmarked_billable(db: Session, since: date):
+    """Billable, never metered, in scope. The base of both selections below.
 
-
-def period_usage(db: Session, start: date, end: date) -> dict:
-    """A closed period priced by `billing_service`'s own functions.
-
-    The back-bill tool and `/usage` render from this, so the invoice and the
-    dashboard cannot disagree — the same argument that put `SENT_STATUSES` and
-    the opt-out definition in one place each.
+    Both status sets are read through `message_model` at call time — see the
+    module docstring on why a bound-at-import copy cannot be told apart. A row
+    with no `sent_at` cannot be timestamped or placed in a window; SQL's NULL
+    comparison already excludes it, and the explicit filter says so.
     """
-    messages, segments = billing_service.compute_usage(db, start, end)
-    exact = billing_service.cost_for_segments(segments)
-    return {
-        "start": start.isoformat(),
-        "end": end.isoformat(),
-        "messages": messages,
-        "segments": segments,
-        "included_segments": settings.BILLING_SEGMENTS_INCLUDED,
-        "billable_segments": billing_service.billable_segments(segments),
-        "price_per_segment": settings.BILLING_PRICE_PER_SEGMENT,
-        "exact_total": exact,
-        "total_due": billing_service.to_money(exact),
-    }
+    return (db.query(SMSMessage)
+            .filter(SMSMessage.status.in_(message_model.BILLABLE_STATUSES),
+                    SMSMessage.metered_at.is_(None),
+                    SMSMessage.sent_at.isnot(None),
+                    SMSMessage.sent_at >= since.isoformat()))
+
+
+def settled_unmetered(db: Session, now: datetime, since: date) -> List[SMSMessage]:
+    """The rows this pass may report: settled, and young enough to timestamp.
+
+    `sent_at` is compared as an ISO string, which is chronological for this
+    format and is the basis `compute_usage()` already uses on the same column
+    — the meter has to agree with it about which rows are in a window, so it
+    compares the way it does. The lower bound is the later of the subscription
+    start and the 35-day horizon; anything older than the horizon is a
+    refusal, gathered separately by `too_old_unmetered()`, never a quiet skip.
+    """
+    return (_unmarked_billable(db, since)
+            .filter(SMSMessage.sent_at >= too_old_cutoff(now).isoformat(),
+                    or_(SMSMessage.status.in_(message_model.SETTLED_STATUSES),
+                        SMSMessage.sent_at <= settle_cutoff(now).isoformat()))
+            .order_by(SMSMessage.campaign_id, SMSMessage.sent_at, SMSMessage.id)
+            .all())
+
+
+def too_old_unmetered(db: Session, now: datetime, since: date) -> List[SMSMessage]:
+    """In scope, never metered, and beyond what Stripe's timestamp accepts."""
+    return (_unmarked_billable(db, since)
+            .filter(SMSMessage.sent_at < too_old_cutoff(now).isoformat())
+            .order_by(SMSMessage.campaign_id, SMSMessage.sent_at, SMSMessage.id)
+            .all())
+
+
+# ─── A batch: the unit that is reported ─────────────────────────────────────
+
+
+@dataclass
+class Batch:
+    """The settled, unmarked rows of one campaign sent on one calendar day.
+
+    One day per batch because the event carries one `timestamp` and the cycle
+    boundary this codebase keeps is a date (`get_billing_cycle()`); a campaign
+    still sending at midnight on the last day of a cycle must split the way
+    `compute_usage()` splits it. `campaign_id` may be None — a billable row with
+    no campaign is still a billable row on `/usage`.
+
+    Every figure is computed once, from the rows, when the batch is built, and
+    the rows themselves are not kept. The mark's commit expires every loaded
+    ORM object, so a property that read `row.segments` afterwards cost one
+    SELECT per row — 1,204 queries for a 1,200-row batch, measured.
+    """
+    campaign_id: Optional[int]
+    day: str
+    ids: List[int]
+    segments: int
+    timestamp: int
+
+    @property
+    def identifier(self) -> str:
+        """Deterministic from the rows. Not load-bearing — `metered_at` and the
+        staged row are — but it is what makes a retry of the same batch one
+        event rather than two."""
+        tag = self.campaign_id if self.campaign_id is not None else "none"
+        return (f"u_c{tag}_{self.day.replace('-', '')}_{min(self.ids)}_{max(self.ids)}"
+                f"_{len(self.ids)}_{self.segments}")
+
+    def staged(self) -> dict:
+        return {"identifier": self.identifier, "ids": self.ids,
+                "segments": self.segments, "timestamp": self.timestamp,
+                "campaign_id": self.campaign_id, "day": self.day}
+
+
+def batches(rows: List[SMSMessage]) -> List[Batch]:
+    grouped: Dict[tuple, List[SMSMessage]] = {}
+    for row in rows:
+        grouped.setdefault((row.campaign_id, row.sent_at[:10]), []).append(row)
+    out = []
+    for (campaign_id, day), group in sorted(
+            grouped.items(), key=lambda item: (item[0][0] or 0, item[0][1])):
+        # `fromisoformat()` on the naive local string this app writes gives a
+        # local datetime, and `.timestamp()` converts it with the local offset
+        # — the same clock `_local_date()` uses on the way back from Stripe.
+        latest = max(row.sent_at for row in group)
+        out.append(Batch(campaign_id, day, [row.id for row in group],
+                         sum(row_segments(row.segments, row.message) for row in group),
+                         int(datetime.fromisoformat(latest).timestamp())))
+    return out
+
+
+def _summary(staged: dict) -> dict:
+    return {"campaign_id": staged["campaign_id"], "day": staged["day"],
+            "rows": len(staged["ids"]), "segments": staged["segments"],
+            "identifier": staged["identifier"]}
+
+
+# ─── The staged batch ───────────────────────────────────────────────────────
+
+
+def pending_batch(db: Session) -> Optional[dict]:
+    return stripe_billing.loads(get_setting(db, PENDING_BATCH_KEY))
+
+
+def _stage(db: Session, batch: Batch, now: datetime) -> dict:
+    """Write the batch down before offering it. Committed on its own."""
+    staged = {**batch.staged(), "staged_at": now.isoformat(timespec="seconds")}
+    set_setting(db, PENDING_BATCH_KEY, stripe_billing.dumps(staged),
+                "The meter batch in flight: offered to Stripe, not yet marked")
+    return staged
+
+
+def _report(customer: str, staged: dict) -> None:
+    """The one Stripe call. Everything it sends comes from the staged record."""
+    stripe_billing.api().create_meter_event(
+        event_name=settings.STRIPE_METER_EVENT_NAME,
+        identifier=staged["identifier"],
+        timestamp=staged["timestamp"],
+        # The RAW count. The tier applies the allowance — see the module
+        # docstring for what applying it here as well costs.
+        payload={"stripe_customer_id": customer,
+                 "value": str(staged["segments"])},
+    )
+
+
+def _finish(db: Session, staged: dict, now: datetime) -> None:
+    """Stamp `metered_at` on exactly the staged ids and clear the staged row.
+
+    One commit. After the report, never before: a mark Stripe did not accept
+    is a segment the client is never billed for, silently. By row id and
+    unconditionally, not `WHERE status IN billable`: the column records that
+    *these rows' segments were reported*, which is true whatever the row's
+    status becomes.
+
+    **A row whose status changes after it is marked stays marked and stays
+    metered.** That is the residual over-bill this session bounds rather than
+    removes — it can only happen to a row that was settled, so on a receipt
+    arriving after `BILLING_SETTLE_HOURS`, or on the delivered-then-failed
+    sequence the webhook itself treats as a carrier race. Unmarking it would
+    re-report it (Stripe cannot take a negative event), so the mark is final
+    and `tools/bill_period.py --unmetered` shows the residue instead.
+    """
+    stamp = now.isoformat()
+    ids = staged["ids"]
+    for start in range(0, len(ids), MARK_CHUNK):
+        (db.query(SMSMessage)
+         .filter(SMSMessage.id.in_(ids[start:start + MARK_CHUNK]))
+         .update({"metered_at": stamp}, synchronize_session=False))
+    (db.query(AppSetting).filter(AppSetting.key == PENDING_BATCH_KEY)
+     .update({"value": None}, synchronize_session=False))
+    db.commit()
+
+
+def _offer(db: Session, customer: str, staged: dict, now: datetime,
+           verdict: dict) -> bool:
+    """Report, then mark. False — with `verdict["failed"]` set — on either failing."""
+    try:
+        _report(customer, staged)
+    except Exception as exc:
+        # Nothing marked. The batch stays staged and is offered again next
+        # pass under the same identifier; if Stripe is down the next batch
+        # would fail the same way, so the caller stops here.
+        logger.error("Meter event %s (%s segments) failed; the batch stays "
+                     "staged for the next pass: %s",
+                     staged["identifier"], staged["segments"], exc)
+        verdict["failed"] = {**_summary(staged), "error": str(exc)}
+        return False
+    try:
+        _finish(db, staged, now)
+    except Exception as exc:
+        db.rollback()
+        logger.error("Stripe accepted meter event %s (%s segments) but the rows "
+                     "could not be marked: %s. The batch stays staged; the next "
+                     "pass re-offers the same identifier, which Stripe dedupes.",
+                     staged["identifier"], staged["segments"], exc)
+        verdict["failed"] = {**_summary(staged), "error": str(exc)}
+        return False
+    return True
+
+
+def _is_stale(staged: dict, now: datetime) -> bool:
+    try:
+        staged_at = datetime.fromisoformat(staged["staged_at"])
+    except (KeyError, TypeError, ValueError):
+        return True
+    return now - staged_at > timedelta(hours=IDENTIFIER_WINDOW_HOURS)
+
+
+def resolve_pending_batch(db: Session, recorded: bool,
+                          now: Optional[datetime] = None) -> dict:
+    """A person's answer for a batch staged longer than Stripe dedupes.
+
+    `recorded=True`: Stripe's event summary shows the identifier, so mark the
+    rows and clear the stage without sending again. `recorded=False`: it does
+    not, so clear the stage and let the next pass batch the rows afresh.
+    """
+    staged = pending_batch(db)
+    if not staged:
+        return {"resolved": False, "reason": "nothing is staged"}
+    if recorded:
+        _finish(db, staged, now or datetime.now())
+    else:
+        (db.query(AppSetting).filter(AppSetting.key == PENDING_BATCH_KEY)
+         .update({"value": None}, synchronize_session=False))
+        db.commit()
+    return {"resolved": True, "recorded": recorded, **_summary(staged)}
+
+
+# ─── The pass ───────────────────────────────────────────────────────────────
+
+
+def meter_settled_rows(db: Session, now: Optional[datetime] = None,
+                       dry_run: bool = False, since: Optional[date] = None) -> dict:
+    """Report every settled, unmarked billable row, once. The metering pass.
+
+    `now` is injectable so the settle window and the 35-day horizon can be
+    tested against fixed dates; production passes nothing. `since` overrides
+    the stored subscription start, deliberately and by a human — it is how the
+    backfill widens the bound.
+
+    Returns a verdict rather than raising. The ways to report nothing are each
+    named: Stripe is not configured, no customer is stored, no subscription
+    start is stored to bound the pass with — the last is a refusal, not a skip,
+    because a pass with no lower bound is the double bill
+    `backfill_unreported()` was written to avoid — or a staged batch too old to
+    retry safely.
+    """
+    now = now or datetime.now()
+    verdict = {"dry_run": dry_run, "now": now.isoformat(timespec="seconds"),
+               "since": None, "reason": None, "reported": [], "replayed": None,
+               "failed": None, "refused": [], "segments": 0}
+    if not stripe_billing.configured():
+        verdict["reason"] = "stripe not configured"
+        if stripe_billing.customer_id(db):
+            # A key removed after checkout. The pass would otherwise skip
+            # every hour with nothing on any screen saying so, and every row
+            # would age past the 35-day horizon in silence.
+            logger.error("A Stripe customer is stored but STRIPE_SECRET_KEY or "
+                         "STRIPE_PRICE_METERED is blank: nothing is being "
+                         "metered. Restore the keys before usage ages out.")
+        return verdict
+    customer = stripe_billing.customer_id(db)
+    if not customer:
+        verdict["reason"] = "no subscription yet"
+        return verdict
+    bound = since or subscription_start(db)
+    if bound is None:
+        logger.error("A Stripe customer is stored but no subscription start is; "
+                     "the metering pass has no lower bound and refuses to run")
+        verdict["reason"] = "no subscription start stored"
+        return verdict
+    verdict["since"] = bound.isoformat()
+
+    staged = pending_batch(db)
+    if staged and not dry_run:
+        if _is_stale(staged, now):
+            logger.error(
+                "A metering batch (%s, %s rows, %s segments) has been staged "
+                "since %s — longer than the %s hours Stripe dedupes an "
+                "identifier for, so it cannot be retried safely. Check the "
+                "meter's event summary in Stripe for that identifier, then run "
+                "stripe_meter.resolve_pending_batch(db, recorded=True|False). "
+                "Nothing meters until it is resolved.",
+                staged["identifier"], len(staged["ids"]), staged["segments"],
+                staged.get("staged_at"), IDENTIFIER_WINDOW_HOURS)
+            verdict["reason"] = "a staged batch is too old to retry"
+            verdict["failed"] = {**_summary(staged),
+                                 "error": "staged longer than the identifier window"}
+            return verdict
+        if not _offer(db, customer, staged, now, verdict):
+            return verdict
+        verdict["replayed"] = _summary(staged)
+        logger.info("Re-offered staged meter event %s (%s segments); marked",
+                    staged["identifier"], staged["segments"])
+
+    too_old = too_old_unmetered(db, now, bound)
+    if too_old:
+        verdict["refused"] = [_summary(b.staged()) for b in batches(too_old)]
+        # Loud, every pass, until somebody invoices it by hand. These rows
+        # will never reach the meter and `metered_at` stays NULL on purpose:
+        # the column says what was reported, and these were not.
+        logger.error(
+            "USAGE NOT METERED: %s billable segment(s) in %s row(s) are older "
+            "than %s days and cannot be timestamped for Stripe. They need a "
+            "one-off invoice: run tools/bill_period.py --unmetered for the "
+            "window and read decisions/012 before --create. They will be "
+            "refused on every pass until then. Campaigns: %s",
+            sum(b["segments"] for b in verdict["refused"]), len(too_old),
+            METER_TIMESTAMP_MAX_AGE_DAYS,
+            sorted({b["campaign_id"] for b in verdict["refused"]}, key=str))
+
+    for batch in batches(settled_unmetered(db, now, bound)):
+        if dry_run:
+            verdict["reported"].append(_summary(batch.staged()))
+            continue
+        staged = _stage(db, batch, now)
+        if not _offer(db, customer, staged, now, verdict):
+            break
+        verdict["reported"].append(_summary(staged))
+        logger.info("Metered %s segment(s) for campaign #%s sent %s as %s",
+                    batch.segments, batch.campaign_id, batch.day, batch.identifier)
+
+    verdict["segments"] = sum(b["segments"] for b in verdict["reported"])
+    return verdict
+
+
+def metering_pass_job(now: Optional[datetime] = None) -> dict:
+    """The scheduler's entry point. Owns its own session and never raises.
+
+    Its own session for `campaign_dispatch`'s reason — an APScheduler job has no
+    request to borrow one from — closed in a `finally` with every return below
+    it. It cannot raise: an exception out of a scheduled job is a job APScheduler
+    stops running, and the failure would be a meter that quietly stopped
+    metering. `meter_settled_rows()` already returns rather than raises on a
+    Stripe failure; this wrapper is about *this call site*, for anything else.
+    `now` is for tests; the scheduler passes nothing.
+    """
+    from app.core.database import SessionLocal
+    db = None
+    try:
+        db = SessionLocal()
+        verdict = meter_settled_rows(db, now=now)
+        if verdict["reported"] or verdict["failed"] or verdict["refused"]:
+            logger.info("Metering pass: %s batch(es), %s segment(s) reported%s",
+                        len(verdict["reported"]), verdict["segments"],
+                        "" if not verdict["failed"] else " — stopped on a failure")
+        return verdict
+    except Exception as exc:
+        logger.error("Metering pass failed: %s", exc)
+        return {"dry_run": False, "reason": "pass failed", "reported": [],
+                "replayed": None, "failed": {"error": str(exc)}, "refused": [],
+                "segments": 0}
+    finally:
+        if db is not None:
+            db.close()
+
+
+def backfill_unreported(db: Session, dry_run: bool = True,
+                        since: Optional[date] = None,
+                        now: Optional[datetime] = None) -> dict:
+    """The pass, run by a human. Dry run by default.
+
+    The same function the scheduler runs, so it cannot report a marked row for
+    the same reason the scheduler cannot; there is no replay logic to drift.
+    It adds a dry run — the alternative is a tool whose first invocation is
+    its irreversible one — and `since`, which widens the bound on purpose
+    (before the subscription start it re-meters rows the balance settled; the
+    dry run is the only guard, deliberately). 35 days is still refused here.
+    """
+    return meter_settled_rows(db, now=now, dry_run=dry_run, since=since)

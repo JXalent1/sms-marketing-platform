@@ -148,20 +148,56 @@ def test_the_billing_period_is_on_the_subscription_item_not_the_subscription():
     assert "billing_cycle_anchor" in stripe.Subscription.__annotations__
 
 
-# ─── A6: the meter event and its dedupe key ─────────────────────────────────
+# ─── A6 / B1b: the meter event, its dedupe key and its timestamp ────────────
 
 
-def test_a_meter_event_takes_a_deterministic_identifier():
-    """`identifier` is the whole idempotency story for A6.
+def test_a_meter_event_takes_an_identifier_and_a_timestamp():
+    """The two parameters B1b's pass sends beyond the payload.
 
-    Without it a retried background task, a redeploy mid-run and a backfill each
-    bill the same campaign again.
+    `identifier` is the second line of defence for a same-minute retry (the
+    ledger is `sms_messages.metered_at`). `timestamp` is what lands usage in
+    the cycle the send belongs to when the pass runs after the boundary.
     """
     params = _create_params("stripe.params.billing._meter_event_create_params",
                             "MeterEventCreateParams")
-    for name in ("event_name", "identifier", "payload"):
+    for name in ("event_name", "identifier", "payload", "timestamp"):
         assert name in params, f"billing.MeterEvent.create no longer takes {name}"
     assert "identifier" in stripe.billing.MeterEvent.__annotations__
+    assert "timestamp" in stripe.billing.MeterEvent.__annotations__
+
+
+def test_the_sdk_still_documents_the_two_limits_this_session_builds_on():
+    """RULES.md: a spec clause naming a third party's limit is unverified until
+    the session checks it. `sessions/session-B1b.md` names two, both
+    load-bearing: the identifier is unique over a rolling **24 hours** (so it
+    cannot be the ledger), and the timestamp reaches back **35 calendar days**
+    (so older usage must be refused and invoiced by hand).
+
+    Both are read from the pinned SDK's own parameter docstrings — the same
+    artefact that settled `decisions/010` — so a pin that moves either number
+    fails here rather than on an invoice. The 35 is also compared against the
+    constant the pass refuses on, because a docstring and a constant that
+    disagree is the two-definitions defect this codebase keeps finding.
+    """
+    import inspect
+    import re
+
+    from app.services import stripe_meter
+    from stripe.params.billing._meter_event_create_params import MeterEventCreateParams
+
+    source = inspect.getsource(MeterEventCreateParams)
+    identifier_doc = source.split("identifier:", 1)[1].split("payload:", 1)[0]
+    timestamp_doc = source.split("timestamp:", 1)[1]
+
+    assert re.search(r"rolling period of at least 24 hours", identifier_doc), (
+        "the SDK no longer describes identifier uniqueness as a rolling 24 "
+        "hours — re-read decisions/011 Amendment 1 before touching the ledger")
+    days = re.search(r"within the past (\d+) calendar days", timestamp_doc)
+    assert days, "the SDK no longer states a calendar-day limit on timestamp"
+    assert int(days.group(1)) == stripe_meter.METER_TIMESTAMP_MAX_AGE_DAYS, (
+        f"Stripe's timestamp horizon is {days.group(1)} days; the pass refuses "
+        f"at {stripe_meter.METER_TIMESTAMP_MAX_AGE_DAYS}")
+    assert "5 minutes in the future" in timestamp_doc
 
 
 def test_the_invoice_calls_the_back_bill_tool_makes_still_exist():
@@ -263,30 +299,49 @@ def test_the_meter_event_payload_uses_the_meters_own_field_names():
     Part B configures the meter with those names. A payload that spelled either
     differently would be accepted by the API and aggregate to nothing — a meter
     that reads zero looks exactly like a quiet month.
+
+    Driven through the pass, which is the only thing that builds the payload,
+    against one settled row: a property proved of a helper is not proved of its
+    only caller. And every parameter the pass sends is checked against the set
+    the SDK declares, as a difference, so a parameter added later is covered
+    without anybody extending this test.
     """
+    from datetime import date, datetime
+
     from app.core.config import settings
-    from app.services import stripe_meter
-    from tests._stripe_fixtures import FakeStripe, replaced_api, stripe_configured
     from app.core.database import SessionLocal
     from app.models.app_setting import set_setting
-    from app.services import stripe_billing
+    from app.models.sms_message import SMSMessage
+    from app.services import stripe_billing, stripe_meter
+    from tests._stripe_fixtures import (FakeStripe, clear_billing_rows,
+                                        replaced_api, stripe_configured)
 
     fake = FakeStripe()
     db = SessionLocal()
+    row = SMSMessage(phone="+15555550399", message="hi", status="delivered",
+                     segments=42, sent_at="2021-05-02T09:00:00")
     try:
         set_setting(db, stripe_billing.CUSTOMER_ID_KEY, "cus_probe")
+        set_setting(db, stripe_billing.CYCLE_ANCHOR_AT_KEY, "2021-05-01")
+        db.add(row)
+        db.commit()
         with stripe_configured(), replaced_api(fake):
-            stripe_meter.report_segments(42, 99, db)
+            stripe_meter.meter_settled_rows(db, now=datetime(2021, 5, 3, 10, 0))
     finally:
-        from tests._stripe_fixtures import clear_billing_rows
+        db.delete(row)
+        db.commit()
         clear_billing_rows(db)
         db.close()
 
     _, params = fake.named("create_meter_event")[0]
     assert set(params["payload"]) == {"stripe_customer_id", "value"}, params
     assert params["payload"]["value"] == "42"
+    assert params["payload"]["stripe_customer_id"] == "cus_probe"
     # Compared against the setting, not against the literal it defaults to. A
     # pinned literal goes red on a developer who has STRIPE_METER_EVENT_NAME
     # exported, and green on the change it exists to catch — the
     # `OPT_OUT_REASONS` failure, one file along.
     assert params["event_name"] == settings.STRIPE_METER_EVENT_NAME
+    declared = _create_params("stripe.params.billing._meter_event_create_params",
+                              "MeterEventCreateParams")
+    assert set(params) <= declared, set(params) - declared

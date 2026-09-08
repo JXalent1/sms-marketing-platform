@@ -1566,3 +1566,99 @@ Unchanged from `sessions/session-B1.md` except item 3, which is now settled:
    `pricing_state: "never_checked"` and `pricing_ok: false`, on purpose.
 8. **Then, once, with the test-mode key:**
    `STRIPE_SECRET_KEY=sk_test_… STRIPE_PRICE_METERED=price_… bash agent/accept-B1.sh --with-stripe`
+
+---
+
+# Session B1b — meter once, late, and correctly (2026-09-08)
+
+## Where this leaves things
+
+The usage meter is no longer called from the send path. An hourly pass reads
+`sms_messages`, reports every billable row that has settled and has not been
+reported, stamps `metered_at` on exactly those rows, and stops. That closes the
+three defects `decisions/011` measured — the over-bill on delivery failures,
+the unbilled top-up, and the double-billed backfill — and it makes the property
+statable: **every billable segment reaches the meter exactly once, and the
+figure metered is the figure `compute_usage()` reports for the same window.**
+
+**Still nothing bills anybody.** No keys, no customer, and the pass returns
+"no subscription yet" every hour. Part B is now unblocked.
+
+`bash agent/gate.sh` green twice, **788 tests**. `bash agent/accept-B1b.sh`
+exits 0 with every criterion printed. `agent/mutate-B1b.py`: 35 mutations, 0
+survived, identical on two consecutive invocations — eight of them (`R1`-`R8`)
+from the review, which found two money-moving defects in a tree at 26/0.
+`agent/accept-B1.sh` still passes; its harness runs 34/0 after the thirteen
+mutations that moved to B1b were retired with their successors named.
+
+**One escalation is open and it is not blocking:** `decisions/012` — how usage
+the meter *refused* (older than 35 days) is invoiced by hand and recorded.
+The tool the spec named for it would have billed a partly-metered window
+twice; it now refuses that window. Nothing is refused until the pass has been
+unable to run for 35 days.
+
+## What landed
+
+- **`alembic/versions/d7e2a91c4f36_sms_messages_metered_at.py`** — one
+  nullable column, added in place. NULL means never metered, and for every
+  existing row that is the truth.
+- **`app/models/sms_message.py`** — `metered_at`, and `SETTLED_STATUSES`
+  beside `BILLABLE_STATUSES`, read through the module and never restated.
+- **`app/core/config.py`** — `BILLING_SETTLE_HOURS = 24`, with the direction
+  to err written next to it.
+- **`app/services/stripe_meter.py`** — rewritten: the pass
+  (`meter_settled_rows`), the batch, the mark, the job
+  (`metering_pass_job`), and `backfill_unreported()` as the pass run by hand.
+- **`app/services/stripe_reconcile.py`** — new: `period_usage()` (moved) and
+  `unmetered_breakdown()`, the reconciliation view.
+- **`app/services/campaign_dispatch.py`** — `report_usage()` gone, and a
+  docstring saying why it must stay gone. `campaign_topup.py`: one sentence.
+- **`app/main.py`** — the hourly job, sync, under `usage_metering`.
+- **`tools/bill_period.py --unmetered`** — which rows in a window have not
+  reached the meter, grouped by reason, plus the residue running the other way.
+- **`tests/test_metering_pass.py`** — 32 tests; the B1 meter tests moved here.
+
+## Six things worth knowing before you touch any of it
+
+1. **The ledger is ours. Stripe's identifier is not.** It dedupes for a
+   rolling 24 hours and no longer — the pinned SDK says so and a test reads
+   it every run. `metered_at` is what stops a double report; the identifier
+   only absorbs the same-minute retry after a lost commit.
+2. **Stage, report, mark-and-clear, per batch.** The batch is written to
+   `app_settings` before the Stripe call and cleared in the same commit as
+   the mark. A Stripe failure marks nothing and stops the pass; a mark that
+   fails after Stripe accepted leaves the batch staged, and the next pass
+   re-offers the *staged* identifier — never one recomputed from rows a
+   webhook may have flipped since. A batch staged longer than 24 hours is
+   refused until `stripe_meter.resolve_pending_batch(db, recorded=…)` is run
+   from Stripe's event summary. Mutations `S3`, `S4`, `S9b`, `B7`, `R2`-`R5`,
+   `R8`.
+3. **A marked row stays metered whatever happens to it afterwards.** That is
+   the one residue this session leaves, it can only hit a row that was
+   settled, and `--unmetered` shows it. Do not "fix" it by unmarking: Stripe
+   cannot take a negative event and the row would be re-reported.
+4. **`delivered` settles at once; `sent` waits 24 hours.** Lengthen the window
+   before shortening it. Metering before a late receipt is the over-bill in
+   our favour, which 011 calls the serious direction.
+5. **The event carries the send time.** A pass that runs after the cycle
+   boundary still lands usage in the right cycle, and a campaign that straddles
+   midnight is split into two batches because the cycle here is a date. Usage
+   older than 35 days cannot reach the meter and is refused at ERROR every
+   pass. **Do not `--create` an invoice over a window the meter has touched**:
+   the tool refuses it, because that would bill the metered half twice.
+   `decisions/012` is how the refused half gets invoiced.
+6. **There is exactly one place a segment is metered, and a test counts it.**
+   `create_meter_event` has one call site outside the adapter, and the three
+   modules that write `sent` rows import neither Stripe module — asserted by
+   AST walk, because B1's hook was an import inside a function body.
+
+## Part B — Jordan's, in the Stripe dashboard
+
+B1's list stands. Two things to look at on the first live dry run that the SDK
+could not settle offline:
+
+- rows sent on the anchor day *before* the checkout moment are timestamped
+  before the subscription's first period — see what the meter does with them;
+- usage from a cycle's last day is metered up to ~25 hours after the cycle
+  closes, backdated; check the account's invoice finalisation delay, or accept
+  that those segments bill on the next invoice.

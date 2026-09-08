@@ -4217,3 +4217,301 @@ Fixed this session, each with a mutation (`R1`-`R8`) so it cannot come back:
   before the client confirms. A second copy in `subscribe.html` would be a second
   number to keep true, and the page already renders every other figure from
   `pricing_table()`.
+
+## Module B1b Part A — meter once, late, and correctly (2026-09-08)
+
+`decisions/011` implemented: the meter moved off the send path onto a scheduled,
+ledgered pass. **The property**: every billable segment reaches the meter exactly
+once, and the figure metered is the figure `compute_usage()` would report for the
+same window.
+
+`bash agent/gate.sh` passes, twice. **788 tests** (764 + 24 net new; the
+sixteen B1 meter tests moved and were rewritten against the pass, 39 tests are
+in the new module). `bash agent/accept-B1b.sh` is the stop condition and exits
+0 with every criterion printed. `agent/mutate-B1b.py`: **35 mutations, 0
+survived, 0 failed to apply**, identical on two consecutive invocations on a
+tree verified byte-identical to the repo. Eight of the thirty-five (`R1`-`R8`)
+exist because the review found defects in a tree where the first 26 were all
+caught. `agent/accept-B1.sh` still passes after its harness was repaired (below).
+
+### The two third-party clauses, verified before anything was built
+
+`RULES.md`'s new rule had its first outing and both clauses survived it — the
+first time in five sessions that a spec's third-party claims did. Read from the
+pinned `stripe==15.6.1`'s own `MeterEventCreateParams` docstrings:
+
+- `identifier`: "Stripe enforces uniqueness within a rolling period of **at
+  least 24 hours** … primarily addresses issues arising from accidental retries."
+- `timestamp`: "Must be within the past **35 calendar days** or up to 5 minutes
+  in the future. Defaults to current timestamp if not specified." An `int` of
+  epoch seconds.
+
+Both now run on every suite invocation in
+`test_the_sdk_still_documents_the_two_limits_this_session_builds_on`, which
+also compares the SDK's 35 against the constant the pass refuses on, so the two
+cannot drift apart. What could **not** be verified offline is recorded under
+"Found while working": what Stripe does with a backdated event that arrives
+after the closed period's invoice has been finalised.
+
+### A1 — the ledger is `sms_messages.metered_at`
+
+Migration `d7e2a91c4f36`, additive and nullable, added in place without
+`batch_alter_table` (the `top_up_at` route). Its docstring says what NULL
+means: **never metered**, and for every pre-existing row that is a fact rather
+than a gap, because no customer has ever been stored. One writer, one clock —
+the pass, `datetime.now()`. No index on the column: an index on `sms_messages`
+is escalation item 8, and the selection ranges on `sent_at`, which has one.
+
+The pass (`stripe_meter.meter_settled_rows()`) selects rows that are billable,
+settled, unmarked and in scope, groups them into one batch per campaign per
+calendar day, posts one meter event per batch, then stamps `metered_at` on
+exactly those row ids and commits — report, then mark, then commit, per batch.
+`_mark()`'s comment answers review lens 2: **a row whose status changes after
+it is marked stays marked and stays metered.** The mark is by id and
+unconditional, because the column records that *these rows' segments were
+reported*, which is true whatever the row later becomes; unmarking would
+re-report it and Stripe cannot take a negative event. That residue is the one
+bounded over-bill this session leaves, it can only happen to a row that was
+settled, and `tools/bill_period.py --unmetered` shows it as "metered, then
+left the billable set" rather than hiding it.
+
+Stripe's identifier stays, deterministic from the batch's row ids
+(`u_c<campaign>_<day>_<min id>_<max id>_<n>_<segments>`), as the second line of
+defence for the one window the ledger leaves: Stripe accepting the event and
+the commit that marks its rows not happening — a process death, or (the
+review's finding) a database lock under a webhook storm. The batch is
+**staged** in `app_settings` before the call and cleared with the mark, so the
+next pass re-offers exactly the staged rows under exactly the staged
+identifier; see the review section. No comment anywhere calls the identifier
+load-bearing.
+
+### A2 — settled
+
+`SETTLED_STATUSES = ("delivered",)` lives in `app/models/sms_message.py` beside
+`BILLABLE_STATUSES`, and both are read through the model module at call time,
+never restated — the comment says why, and two binding tests change what each
+constant *means* and require the selection to follow. A `sent` row settles when
+`BILLING_SETTLE_HOURS` (config, default **24**) have passed since `sent_at`; the
+config comment states which direction to err (lengthen before shortening —
+metering before a late receipt is the over-bill 011 calls the serious one).
+`delivered` settles at once: it is the carrier's final word, and the webhook's
+own comment treats a later failure on a delivered row as a carrier race.
+`held_back` is outside the billable set and never reaches the question.
+
+### A3 — the send time, and the 35-day refusal
+
+Each event carries `timestamp` = the epoch of the batch's latest `sent_at`,
+converted from the naive local string this app writes with the same local
+clock `_local_date()` uses on the way back. A pass run on 2 June for a send at
+23:00 on 31 May lands the event in May's cycle
+(`test_the_event_carries_the_send_time_and_lands_in_the_earlier_cycle`), and a
+campaign still sending at midnight is split into two batches because the
+cycle boundary this codebase keeps is a date.
+
+Rows in scope but older than 35 days are gathered by a separate query,
+refused, left NULL, returned in the verdict, and logged at **ERROR** every pass
+with the remedy in the sentence ("Invoice them with tools/bill_period.py; they
+will be refused on every pass until then"). The positive control at 34 days
+meters the same rows. The reconciliation view labels them.
+
+### A4 — the pass is scheduled, and it is the only place
+
+`app/main.py` registers `stripe_meter.metering_pass_job` hourly under its own
+id, `coalesce=True`, `max_instances=1`. It is a **sync** function on purpose, so
+APScheduler runs it on the executor thread rather than on the event loop the
+send path shares (5i's lesson); a test asserts it is not a coroutine. It owns
+its session, closes it in a `finally`, and never raises — two shapes tested:
+Stripe raising (the pass returns) and something the pass does not expect (the
+job returns).
+
+`campaign_dispatch.py` lost `report_usage()` and both calls to it; its docstring
+says why there is no hook and must not be one. `campaign_topup.py` gained one
+sentence saying the same. Review lens 1 is asserted as a sweep:
+`test_a_segment_can_be_metered_from_exactly_one_place` counts
+`.create_meter_event(` call sites in `app/` (one, in `stripe_meter.py`) and walks
+the AST of the three modules that write `sent` rows for any import of either
+Stripe module, including inside function bodies, which is where B1's hook lived.
+Criterion 7 also drives a real send on the console provider with a customer
+stored and Stripe configured, and asserts zero Stripe calls; then the pass, a
+settle window later, meters exactly what was sent.
+
+**When Stripe is down (review lens 3):** the batch's report raises, nothing is
+marked, the verdict names the failure, and the pass stops rather than hammering
+a Stripe that is down. Earlier batches are already committed; later ones wait
+for the next hour. `test_a_failure_after_the_first_batch_leaves_that_batch_committed`
+drives exactly that mid-pass shape. If the webhook flips a row between the
+SELECT and the UPDATE, the row is reported and marked — that is lens 2's
+residue, visible in the breakdown.
+
+### A5 — the backfill, and the tool
+
+`backfill_unreported()` **is the pass**, called by a human: dry run by default,
+`since` widens the bound deliberately, `now` is injectable. There is no second
+replay logic to drift, so it is incapable of reporting a marked row for the same
+reason the scheduler is — criterion 4 proves it against marked rows with a fake
+that bills every call, and the positive control replays a campaign whose mark
+was removed by hand. The pass's lower bound is still the stored subscription
+start: with a customer stored and no start, it **refuses** rather than ranging
+over the table, because a pass with no lower bound is the double bill the
+backfill was written to avoid.
+
+`tools/bill_period.py` gained `--unmetered` and nothing else; its arithmetic is
+untouched. `stripe_reconcile.unmetered_breakdown()` splits a window's billable
+segments into metered and unmetered-by-reason — not settled, too old for the
+meter, before the subscription, awaiting the next pass, no send time — plus
+the residue running the other way, and a test asserts `metered + unmetered`
+equals `compute_usage()` for the same window. `unmetered_reason()` is the one
+implementation of that classification.
+
+### What is where, and why the file list is wider than the spec's
+
+- **`app/services/stripe_reconcile.py` is new and not in the spec's list.**
+  The pass pushed `stripe_meter.py` to 488 lines — twelve short of the rule,
+  with a review still to land. Split along the boundary the code already had:
+  `stripe_meter` *reports* (the pass, the batch, the mark, the job, the
+  backfill); `stripe_reconcile` *reads back* (`period_usage()`, which moved,
+  and `unmetered_breakdown()`). Nothing in it writes or calls Stripe, and
+  `stripe_meter` imports nothing from it. `tools/bill_period.py` and
+  `tests/test_stripe_billing.py` now import `period_usage` from there.
+- **`agent/mutate-B1.py` and `agent/accept-B1.sh` were repaired, and that is
+  outside the file list on purpose.** Thirteen of B1's mutations sat on lines
+  this session removed or inverted (`A6a` — "the Send button's path never
+  reports what it sent" — is now the *correct* behaviour). Left alone, B1's
+  harness would have exited 2 at `ANCHORS VERIFIED` forever, which CLAUDE.md
+  already lists for 5e and 5h as "a decision somebody should take rather than
+  inherit". Taken: each moved mutation is retired with its successor named
+  (`A1a`/`A1b` -> `B2`, `A1c` -> `S8`/`S8c`, `A1d`/`R1` -> `B3`, `A6a`/`A6a2`
+  -> `S1`, `A6b` -> `B4`, `A6c` -> `S9`/`S9b`, `A6d` -> `B9`, `A6e` -> `S5`,
+  `A6f`/`R6` -> `B1`/`B1b`), `A7a` is re-pointed to `stripe_reconcile.py`, and
+  `accept-B1.sh`'s criteria 2 and 7 point at the tests that now carry those
+  properties. B1's harness runs at **34 mutations, 0 survived** on the new tree.
+- **`tests/test_stripe_billing.py` lost its sixteen meter tests** to
+  `tests/test_metering_pass.py`, rewritten against the pass; the A1 property —
+  the meter receives the RAW count, reads `BILLABLE_STATUSES` through the model,
+  prices a legacy row as `/usage` does — is asserted there. `test_stripe_contract.py`
+  gained the two-limits test and `timestamp`; `_stripe_fixtures.py` lost the
+  app_settings ledger cleanup (there is no ledger there any more) and gained
+  `FakeStripe(dedupe=False)`, so a test can prove the mark is what stopped a
+  double report rather than the fake's own record.
+
+### Cost, measured before it is a job
+
+5j's rule. The pass's two selections against **360,000 rows** (a year at this
+account's rate, eleven months already marked): `settled_unmetered` 12,943 rows
+in **128 ms**, `too_old_unmetered` in **46 ms**. The planner uses
+`idx_sms_status (status=?)`, walking the billable rows rather than ranging on
+`sent_at` — fine hourly on the executor thread, and `accept-B1b.sh` check 8b
+re-measures it every run with a two-second ceiling. If the table outgrows that,
+the fix is a partial index on `(sent_at) WHERE metered_at IS NULL`, which is
+escalation item 8 and not this session's.
+
+### The fresh-context review, and what it found
+
+One synchronous reviewer, five lenses from the spec plus the standing
+structural checks, on a tree that was green twice with 26 of 26 mutations
+caught. It cleared lens 2 (the mark's comment says what happens to a row that
+changes afterwards, and the code does it) and lens 5 (every boundary,
+comparison and clock agrees with `compute_usage()`; no wholesale figure or
+carrier name in the pass's log or verdict), and found **eleven defects**, two
+of which move money. Both are fixed, with mutations `R1`-`R8` so they cannot
+come back; the rest are fixed or recorded below. Same shape as B1: the harness
+proves a rule cannot be reverted, and only a reader notices the rule that was
+written slightly wrong, or the remedy nobody ran.
+
+- **The remedy the spec names for refused usage double-bills.** The pass's
+  ERROR said "invoice them with `tools/bill_period.py`", and that tool prices
+  a window through `compute_usage()`, which reads no `metered_at`. Measured:
+  July with 12,000 metered and 12,000 refused priced as 24,000 segments and
+  $210.00 — the metered half billed a second time, the allowance applied
+  twice. And nothing records a manual invoice, so the ERROR fires forever and
+  `--unmetered` cannot tell "invoiced by hand" from "not yet". **Shipped:**
+  `--create` now refuses any window with metered rows in it and prints the
+  breakdown under the refusal (`metered_refusal()`, mutation `R1`); the
+  arithmetic is untouched and August still invoices. **Escalated:** how a
+  refused-only invoice is priced against an allowance the meter has partly
+  consumed, and how it is recorded so the refusal stops — `decisions/012`,
+  open, escalation items 1 and 10. The ERROR line now points at both.
+- **A database lock during the mark is a second, likelier way into the
+  lost-commit window, and a status flip made it a double bill.** `_mark()` ran
+  outside the per-batch handler; a lock under a delivery-webhook storm would
+  escape to the job with Stripe holding the event and the rows unmarked. The
+  first version then recomputed the identifier from the rows on the next pass,
+  so one delivered-to-undelivered flip in the batch changed it and the
+  survivors were billed twice. **Shipped:** the batch is **staged** — written
+  to `app_settings` and committed — before the Stripe call, and cleared in the
+  same commit as the mark. Every way out is now accounted for: Stripe fails,
+  nothing marked, the batch stays staged; the mark fails or the process dies,
+  the next pass re-offers *exactly the staged rows under exactly the staged
+  identifier*, which Stripe dedupes. A batch staged longer than Stripe's
+  24-hour window is refused at ERROR until a person answers from Stripe's
+  event summary (`resolve_pending_batch()`). Mutations `R2`-`R5`, `R8`; the
+  lost-commit test now flips a row between the two passes.
+- **Post-commit N+1.** `expire_on_commit` expired every loaded row at the mark's
+  commit, and `batch.summary()` then re-read each: 1,204 SELECTs for a
+  1,200-row batch. `Batch` now computes its figures once, from the rows, and
+  keeps ids only.
+- **Three tests reached less than they said.** The job test's Stripe-down half
+  ran on the real clock, so the 2021 row was refused as too old and the fake
+  was never reached (`metering_pass_job` takes `now` for tests now, and the
+  test asserts the call); the empty-customer mutation `B9` was caught one
+  guard down, by a reason string that had nothing to do with it (the
+  arrangement in which it is the only thing deciding — start stored, customer
+  absent — has its own test); the real-send test selected across the whole
+  database and would have failed on a neighbour's leftover row.
+- **Guards with no test.** A key removed after checkout was a silent hourly
+  skip until every row aged out — now an ERROR (`R6`); an unreadable stored
+  start; a NULL `sent_at`; a dry run that posts (`R7`).
+- **Wording.** The model said `delivered` is "the carrier's final word" while
+  the webhook admits a later failure on a delivered row; the migration claimed
+  five index names are asserted where the test names four; "in the same
+  transaction as the successful report" described an HTTP call.
+
+Recorded, not fixed: `break` on any per-batch error is head-of-line blocking
+for a rejection specific to one batch (a timestamp crossing the 35-day edge
+between our string check and Stripe's epoch check — a one-hour window at DST
+fall-back), and sends in the repeated fall-back hour are stamped 3,600 s early
+because `isoformat()` drops `fold`; both self-heal and matter only if that
+hour straddles a Stripe period boundary. The cycle-boundary test proves the
+app's date cycle, not Stripe's instant (below). `backfill_unreported(since=…)`
+before the subscription start re-meters balance-settled rows; the dry run is
+the only guard and the docstring says so.
+
+### Found while working
+
+- **`record_delivery_status()` writes `undelivered` over a row that has a
+  handset receipt.** The guard on the auto-block reads `delivered_at is None`;
+  the status write above it does not, so the delivered-then-failed sequence
+  the webhook's own comment calls "a carrier retry, a duplicate, or a race"
+  moves a row the carrier confirmed delivered out of the billable set. For the
+  meter that is the one case a `delivered` row changes after settling; for the
+  client it is a delivered message reported as not delivered. 5d/5g's file.
+- **The subscription's anchor is an instant; the cycle here is a date.** Rows
+  sent on the anchor day *before* the checkout moment are in scope (the bound
+  is a date) and are timestamped before Stripe's period start. What Stripe
+  does with an event before the first period cannot be verified offline; Part
+  B's first dry run should look at the meter's event summary for the anchor
+  day.
+- **Invoice finalisation versus the settle window.** Usage from the last day
+  of a cycle is metered up to ~25 hours after the cycle closes, backdated
+  into it. Stripe finalises a subscription invoice about an hour after the
+  period ends by default; whether a backdated event arriving after that is
+  added to the closed invoice or carried to the next one is server behaviour
+  the SDK cannot answer. Exactly-once is unaffected either way. Part B: check
+  the account's invoice finalisation delay, or accept next-invoice billing for
+  the last day's sends.
+- **`idx_sms_status` is the plan's choice** for the pass's selection; see
+  "Cost" above. Not a defect today.
+
+### Deliberately not built
+
+- **Any change to what is billable.** `BILLABLE_STATUSES` is untouched;
+  `SETTLED_STATUSES` answers a different question and says so.
+- **A `/health` field for refused usage.** The refusal is an ERROR log line
+  every pass and a row in the reconciliation view. `/health` is unauthenticated
+  and every field it gains is published; a count of unmetered segments is a
+  commercial figure. If a monitor needs it, it belongs behind auth on
+  `/api/billing/status`.
+- **An index on `metered_at`.** Escalation item 8, and not needed at the
+  measured scale.
+- **A second identifier shape, a delta path, negative events.** Option 2 of
+  `decisions/011`, as decided.

@@ -762,6 +762,54 @@ change to a live table.
   known-answer check has to distinguish two outcomes it did not itself produce.
   Sixth measurement script in this project to be wrong before the code was.
 
+- **An idempotency key you do not store has somebody else's lifetime.** B1's
+  entire exactly-once story was Stripe's meter-event `identifier`, and Stripe
+  keeps it for "a rolling period of at least 24 hours" — it exists for the
+  same-minute retry, and `backfill_unreported()`, whose whole purpose was
+  replaying an older period, billed that period twice. B1b put the ledger in
+  our own database (`sms_messages.metered_at`) and demoted the identifier to
+  what it is: a second line of defence for a process dying between Stripe's
+  acceptance and our commit. Before leaning on a third party's dedupe, read its
+  retention window in the SDK, and ask what your retry looks like *after* it.
+- **Billable is not settled.** A `sent` row is billable and can still leave the
+  billable set — the delivery webhook moves it to `undelivered` minutes to
+  days later — so metering it at send time meters a guess, and the guess was
+  wrong for 30% of this account's traffic, permanently, in our favour.
+  `SETTLED_STATUSES` answers a different question from `BILLABLE_STATUSES`
+  ("can this status still change?" against "do we invoice for this?"), lives
+  beside it, and is read through the model module for the same reason. When a
+  figure is reported to somebody who cannot take a correction, ask whether it
+  is *final* at the moment you report it, not whether it is right.
+- **A mutation is reachable in one arrangement, and its sibling may not be.**
+  B1b's bound mutation — `bound = … or date(1970, 1, 1)` — was caught, by
+  exactly one test, and reading *which* test showed it only decided anything
+  when no subscription start was stored; with a start stored the original
+  expression still won. The pre-subscription test, the one that names the
+  double bill the bound exists to prevent, never saw it. The sibling that
+  ignores a stored start outright is `B1b`, and it is caught by that test.
+  Read the caught-by list for each mutation and ask what arrangement made the
+  patch matter; write the mutation for the other arrangement.
+- **A remedy named in a spec is a mechanism clause, and nobody had run it.**
+  B1b's refusal for usage older than 35 days said "invoice it with
+  `tools/bill_period.py`", as the spec did. That tool prices a window through
+  `compute_usage()`, which counts every billable row whether or not the meter
+  already reported it — right for August, before a meter existed, and a
+  double bill with the allowance applied twice for any window the meter has
+  touched. Measured by the reviewer at $210.00 against a correct $180.00. When
+  a guard refuses and points somewhere, run the thing it points at against the
+  state the guard produces; the tool now refuses a partly-metered window, and
+  the design of the refused-only invoice is `decisions/012`.
+- **An intent you write down before a call is worth more than an identifier
+  you recompute after it.** The first staged-batch design recomputed the meter
+  identifier from the rows on retry, so a delivery-status flip between two
+  passes changed it and billed the survivors twice — and the likelier way
+  into that retry was not a process death but a database lock during the
+  mark, under the same webhook storm that does the flipping. The batch is now
+  written to `app_settings` before the Stripe call and cleared with the mark;
+  the retry sends what was staged, never what the rows say now. If a step
+  between an external call and your commit can fail, record the call's
+  arguments before making it.
+
 ## Where things live
 
 - `A4A_BUILD_PLAN.md` — the full project plan and reasoning

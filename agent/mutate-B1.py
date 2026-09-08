@@ -35,6 +35,16 @@ naming:
     said otherwise.
   - `A6f` unbounds the backfill, which re-meters the period the one-time balance
     already settled.
+  - **Session B1b moved the meter** off the send path onto a scheduled,
+    ledgered pass (`decisions/011`), and thirteen of this file's mutations
+    went with it, each to a named successor in `agent/mutate-B1b.py`:
+    `A1a`/`A1b` -> `B2`, `A1c` -> `S8`/`S8c`, `A1d`/`R1` -> `B3`,
+    `A6a`/`A6a2` -> `S1` (inverted: the send path metering is now the
+    defect), `A6b` -> `B4`, `A6c` -> `S9`/`S9b`, `A6d` -> `B9`, `A6e` -> `S5`,
+    `A6f`/`R6` -> `B1`. Retired here rather than re-anchored: two harnesses on
+    one line drift, and B1b's is the one that names the property the line
+    serves. `A7a` stays, re-pointed to `stripe_reconcile.py`, where
+    `period_usage()` moved.
   - `R1`-`R8` are the defects a fresh-context review found after the first 38
     were all green. None of them was caught by anything above, which is the
     argument for running both: the harness proves a rule cannot be reverted,
@@ -67,6 +77,7 @@ PY = sys.argv[2]
 REPO = pathlib.Path(__file__).resolve().parent.parent
 TARGETS = [
     "tests/test_stripe_billing.py",
+    "tests/test_metering_pass.py",
     "tests/test_stripe_contract.py",
     "tests/test_billing.py",
     "tests/test_whitelabel.py",
@@ -74,39 +85,7 @@ TARGETS = [
 
 MUTATIONS = {
  # ── A1: the allowance is applied once, and it is applied in Stripe ─────────
- "A1a the meter is sent billable_segments() instead of the raw count — the "
- "allowance is subtracted twice and a 15,000-segment month bills $0": [
-   ("app/services/stripe_meter.py",
-    "    return report_segments(campaign_segments(db, campaign_id), campaign_id, db)",
-    "    return report_segments(\n"
-    "        billing_service.billable_segments(campaign_segments(db, campaign_id)),\n"
-    "        campaign_id, db)")],
-
- "A1b the backfill applies the allowance on the way out, so a replayed "
- "campaign bills less than the one that was reported live": [
-   ("app/services/stripe_meter.py",
-    "        segments = campaign_segments(db, campaign_id)\n"
-    "        if segments <= 0:",
-    "        segments = billing_service.billable_segments(\n"
-    "            campaign_segments(db, campaign_id))\n"
-    "        if segments <= 0:")],
-
- "A1c BILLABLE_STATUSES is restated locally instead of read from the model — "
- "identical today, and deaf to any commercial change to the set": [
-   ("app/services/stripe_meter.py",
-    "from app.models import sms_message as message_model\n"
-    "from app.models.sms_message import SMSMessage",
-    "from app.models.sms_message import SMSMessage\n\n\n"
-    "class message_model:\n"
-    '    BILLABLE_STATUSES = ("sent", "delivered")')],
-
- "A1d a row with no segment count is dropped entirely, so the meter and "
- "/usage disagree about legacy rows": [
-   ("app/services/stripe_meter.py",
-    "    return sum(int(segments) if segments\n"
-    "               else billing_service.legacy_segment_count(message)\n"
-    "               for segments, message in rows)",
-    "    return sum(int(segments or 0) for segments, _ in rows)")],
+ # (moved to agent/mutate-B1b.py — see the docstring)
 
  # ── A2: the tier and the plan must prove they agree ────────────────────────
  "A2a the tier-drift check always reports agreement": [
@@ -298,80 +277,12 @@ MUTATIONS = {
     '        event = {"type": "checkout.session.completed"}')],
 
  # ── A6: metering that cannot stop a send and cannot double-bill ────────────
- "A6a the Send button's path never reports what it sent": [
-   ("app/services/campaign_dispatch.py",
-    "        await CampaignService(db).send_campaign(campaign_id)\n"
-    "        report_usage(db, campaign_id)",
-    "        await CampaignService(db).send_campaign(campaign_id)")],
-
- "A6a2 the scheduler's path never reports what it sent — the same hook, the "
- "other entry point": [
-   ("app/services/campaign_dispatch.py",
-    "                await service.send_campaign(campaign_id)\n"
-    "                report_usage(db, campaign_id)",
-    "                await service.send_campaign(campaign_id)")],
-
- "A6b the meter identifier is non-deterministic — every retry, redeploy and "
- "backfill bills the same campaign again": [
-   ("app/services/stripe_meter.py",
-    '    identifier = f"campaign_{campaign_id}"',
-    '    identifier = f"campaign_{campaign_id}_{date.today().isoformat()}_"\\\n'
-    "                 f\"{len(str(segments))}{segments}\"")],
-
- "A6c the reporting error escapes into the send loop — BOTH wrappers, because "
- "either alone still catches and reverting one proves nothing": [
-   ("app/services/stripe_meter.py",
-    "    except Exception as exc:\n"
-    "        # Logged and swallowed. The caller is on the send path and a carrier\n"
-    "        # that worked must not be undone by a payment processor that did not;\n"
-    "        # `backfill_unreported()` is the recovery, and it is safe because of the\n"
-    "        # identifier above.\n"
-    '        logger.error("Meter event %s (%s segments) failed: %s",\n'
-    "                     identifier, segments, exc)\n"
-    '        return {"reported": False, "reason": "stripe call failed",\n'
-    '                "segments": segments, "error": str(exc)}',
-    "    except ZeroDivisionError as exc:\n"
-    '        logger.error("Meter event %s (%s segments) failed: %s",\n'
-    "                     identifier, segments, exc)\n"
-    '        return {"reported": False, "reason": "stripe call failed",\n'
-    '                "segments": segments, "error": str(exc)}'),
-   ("app/services/campaign_dispatch.py",
-    "    except Exception as e:\n"
-    '        logger.error(f"Campaign {campaign_id} usage reporting failed: {e}")',
-    "    except ZeroDivisionError as e:\n"
-    '        logger.error(f"Campaign {campaign_id} usage reporting failed: {e}")')],
-
- "A6d a campaign the client never subscribed for is metered against nothing, "
- "so the payload carries an empty customer": [
-   ("app/services/stripe_meter.py",
-    "    if not customer:\n"
-    '        return {"reported": False, "reason": "no subscription yet",\n'
-    '                "segments": segments}',
-    "    if not customer:\n"
-    "        customer = \"\"")],
-
- "A6e the backfill re-offers campaigns the ledger already records, so a "
- "dry run reads as work outstanding forever": [
-   ("app/services/stripe_meter.py",
-    "        if already_reported(db, campaign_id):\n"
-    "            skipped += 1\n"
-    "            continue",
-    "        if False:\n"
-    "            skipped += 1\n"
-    "            continue")],
-
- "A6f the backfill is unbounded, so it re-meters the period the one-time "
- "balance already settled — on top of a charge he has paid": [
-   ("app/services/stripe_meter.py",
-    "    bound = since or subscription_start(db)\n"
-    "    if bound is None:",
-    "    bound = since or date(1970, 1, 1)\n"
-    "    if False:")],
+ # (moved to agent/mutate-B1b.py — see the docstring)
 
  # ── A7: the back-bill tool, and the arithmetic it must not re-invent ───────
  "A7a the back-bill tool does its own arithmetic instead of billing_service's, "
  "so the invoice and the dashboard can disagree": [
-   ("app/services/stripe_meter.py",
+   ("app/services/stripe_reconcile.py",
     "    messages, segments = billing_service.compute_usage(db, start, end)\n"
     "    exact = billing_service.cost_for_segments(segments)",
     "    messages, segments = billing_service.compute_usage(db, start, end)\n"
@@ -389,14 +300,6 @@ MUTATIONS = {
  # Every one of these was live in the first version of this session and none was
  # caught by the 38 mutations above — which is the argument for the review as
  # well as for the harness. They are here so the next edit cannot put them back.
-
- "R1 the meter prices a legacy row as 1 segment while /usage prices it by "
- "length — the same row, two answers, invoice against dashboard": [
-   ("app/services/stripe_meter.py",
-    "    return sum(int(segments) if segments\n"
-    "               else billing_service.legacy_segment_count(message)\n"
-    "               for segments, message in rows)",
-    "    return sum(int(segments or 1) for segments, _ in rows)")],
 
  "R2 the legacy rule is restated in billing_service instead of shared, so the "
  "two can drift again": [
@@ -432,21 +335,6 @@ MUTATIONS = {
    ("app/routers/pages.py",
     '        "pricing_issues": stripe_tiers.public_pricing_issues(pricing),',
     '        "pricing_issues": pricing.get("issues") or [],')],
-
- "R6 the backfill is bounded on when the campaign row was created rather than "
- "on when its segments were sent — a September send from an August draft is "
- "outside the window forever": [
-   ("app/services/stripe_meter.py",
-    "    query = (db.query(SMSMessage.campaign_id)\n"
-    "             .filter(SMSMessage.campaign_id.isnot(None),\n"
-    "                     SMSMessage.status.in_(message_model.BILLABLE_STATUSES),\n"
-    "                     SMSMessage.sent_at >= bound.isoformat())\n"
-    "             .distinct()\n"
-    "             .order_by(SMSMessage.campaign_id))",
-    "    from app.models.campaign import Campaign\n"
-    "    query = (db.query(Campaign.id)\n"
-    "             .filter(Campaign.created_at >= bound.isoformat())\n"
-    "             .order_by(Campaign.id))")],
 
  "R7 the back-bill tool stops saying when its window is not a billing cycle, "
  "so half a month gets its own free allowance and the invoice looks right": [

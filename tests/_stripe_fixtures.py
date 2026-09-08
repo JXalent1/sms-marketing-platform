@@ -114,7 +114,8 @@ class FakeStripe:
 
     def __init__(self, *, price=None, session_prices=(METERED_PRICE,),
                  subscription_obj=None, checkout_url="https://checkout.example/x",
-                 fail_with=None, event=None):
+                 fail_with=None, event=None, dedupe=True):
+        self.dedupe = dedupe
         self.price = price
         self.session_prices = tuple(session_prices)
         self.subscription_obj = subscription_obj
@@ -157,12 +158,16 @@ class FakeStripe:
     def create_meter_event(self, **params):
         self.calls.append(("create_meter_event", params))
         self._maybe_fail()
-        # Stripe records the first event under an identifier and ignores the
-        # rest. The fake models the *record*, so a test can assert that a
-        # repeated identifier bills once instead of asserting on our own code
-        # having chosen not to call.
+        # Stripe records the first event under an identifier and ignores a
+        # repeat — for a rolling 24 hours, which is the same-minute retry the
+        # identifier exists for and nothing more (`decisions/011`). The fake
+        # models that record. B1b's tests therefore never rely on it: the
+        # property "a second pass reports nothing" is asserted on the *call
+        # count*, and `dedupe=False` makes the fake bill every call so a test
+        # can prove the mark is what stopped a double report, not this line.
         identifier = params.get("identifier")
-        if identifier not in {event.get("identifier") for event in self.meter_events}:
+        if (not self.dedupe or identifier not in
+                {event.get("identifier") for event in self.meter_events}):
             self.meter_events.append(params)
         return Obj(id="mbe_test", identifier=identifier)
 
@@ -252,12 +257,14 @@ def clear_billing_rows(db):
     from app.services import stripe_meter, stripe_tiers
     from app.services.billing_service import CYCLE_ANCHOR_DAY_KEY
 
+    # The staged meter batch too: a test that leaves Stripe "down" leaves one
+    # behind, and the next test's first pass would replay it against rows the
+    # earlier test has already deleted — found the first time this ran.
     keys = (stripe_billing.CUSTOMER_ID_KEY, stripe_billing.SUBSCRIPTION_ID_KEY,
             stripe_billing.CYCLE_ANCHOR_AT_KEY, CYCLE_ANCHOR_DAY_KEY,
-            stripe_tiers.TIER_CHECK_KEY)
+            stripe_tiers.TIER_CHECK_KEY, stripe_meter.PENDING_BATCH_KEY)
     db.query(AppSetting).filter(AppSetting.key.in_(keys)).delete(
         synchronize_session=False)
-    db.query(AppSetting).filter(
-        AppSetting.key.like(f"{stripe_meter.REPORTED_KEY_PREFIX}%")).delete(
-        synchronize_session=False)
+    # No per-campaign ledger rows to clear any more: B1b moved the ledger to
+    # `sms_messages.metered_at`, and a test's rows leave with the test.
     db.commit()

@@ -91,6 +91,7 @@ import pytest
 raise SystemExit(pytest.main([
     "tests/test_stripe_billing.py", "tests/test_stripe_contract.py",
     "tests/test_whitelabel.py", "tests/test_billing.py",
+    "tests/test_metering_pass.py",
     "-q", "-p", "no:cacheprovider",
 ]))
 PY
@@ -162,12 +163,12 @@ fi
 # needs its neighbours proves nothing about the criterion it is named for.
 step "2-9. the behaviour each criterion names, in isolation"
 declare -a CRITERIA=(
-  "2|the meter receives RAW billable-status segments, not billable_segments()|tests/test_stripe_billing.py::test_a_fifteen_thousand_segment_month_reports_fifteen_thousand tests/test_stripe_billing.py::test_the_meter_gets_the_raw_count_for_one_campaign tests/test_stripe_billing.py::test_only_billable_statuses_reach_the_meter tests/test_stripe_billing.py::test_the_meter_follows_the_models_definition_of_billable tests/test_stripe_billing.py::test_a_row_with_no_segment_count_is_billed_as_one tests/test_stripe_billing.py::test_the_button_press_path_reports_what_it_sent"
+  "2|the meter receives RAW billable-status segments, not billable_segments() (B1b moved these to the pass)|tests/test_metering_pass.py::test_the_meter_receives_the_raw_count_not_billable_segments tests/test_metering_pass.py::test_only_billable_statuses_reach_the_meter tests/test_metering_pass.py::test_the_pass_follows_the_models_definition_of_billable tests/test_metering_pass.py::test_a_legacy_row_is_priced_as_usage_prices_it tests/test_metering_pass.py::test_a_real_send_meters_nothing_and_the_pass_meters_it_later"
   "3|the tier-drift check fails on a mismatched tier, and /health still answers 200|tests/test_stripe_billing.py::test_the_tier_check_reports_agreement_on_a_matching_price tests/test_stripe_billing.py::test_the_tier_check_fails_on_a_first_tier_of_five_thousand tests/test_stripe_billing.py::test_the_tier_check_fails_on_a_mispriced_second_tier tests/test_stripe_billing.py::test_a_sub_cent_rate_is_compared_as_a_decimal_number_of_cents tests/test_stripe_billing.py::test_a_stripe_outage_is_neither_agreement_nor_disagreement tests/test_stripe_billing.py::test_a_configured_box_that_has_never_checked_is_not_ok tests/test_stripe_billing.py::test_a_box_with_no_stripe_reports_nothing_to_disagree_about tests/test_stripe_billing.py::test_health_stays_200_while_the_tier_disagrees tests/test_stripe_billing.py::test_health_makes_no_stripe_call tests/test_stripe_contract.py::test_the_price_is_always_fetched_with_its_tiers_expanded"
   "4|/usage's cycle and the subscription's cycle are the same two dates|tests/test_stripe_billing.py::test_usages_cycle_and_the_subscriptions_cycle_are_the_same_two_dates tests/test_stripe_billing.py::test_the_cycle_falls_back_to_config_when_nothing_is_stored tests/test_stripe_billing.py::test_the_stored_anchor_wins_over_the_configured_day tests/test_stripe_billing.py::test_an_anchor_on_the_31st_is_not_flattened_by_a_short_month tests/test_stripe_billing.py::test_the_two_windows_agree_across_a_month_too_short_for_the_anchor tests/test_stripe_contract.py::test_the_billing_period_is_on_the_subscription_item_not_the_subscription"
   "5|session_is_ours() rejects another product, on the webhook and on the success page|tests/test_stripe_billing.py::test_a_session_for_another_product_is_not_ours tests/test_stripe_billing.py::test_the_guard_fails_closed_when_stripe_cannot_be_read tests/test_stripe_billing.py::test_the_webhook_stores_nothing_for_another_clients_checkout tests/test_stripe_billing.py::test_the_webhook_stores_the_customer_for_our_own_checkout tests/test_stripe_billing.py::test_the_success_page_applies_the_same_guard_as_the_webhook"
   "6|an unsigned webhook stores nothing, and an unconfigured secret ignores the payload|tests/test_stripe_billing.py::test_an_unsigned_webhook_is_ignored tests/test_stripe_billing.py::test_an_unconfigured_signing_secret_ignores_the_payload_rather_than_trusting_it tests/test_stripe_billing.py::test_a_correctly_signed_webhook_is_accepted tests/test_stripe_billing.py::test_the_webhook_route_rejects_an_unsigned_payload"
-  "7|a repeated meter event with the same identifier bills once|tests/test_stripe_billing.py::test_a_repeated_meter_event_bills_once tests/test_stripe_billing.py::test_a_backfill_replays_only_what_was_never_reported tests/test_stripe_billing.py::test_a_backfill_will_not_re_meter_the_period_the_balance_already_settled tests/test_stripe_contract.py::test_a_meter_event_takes_a_deterministic_identifier tests/test_stripe_contract.py::test_the_meter_event_payload_uses_the_meters_own_field_names"
+  "7|a segment is metered once: the ledger, with the identifier behind it (B1b superseded the identifier-only claim)|tests/test_metering_pass.py::test_a_second_pass_over_the_same_rows_makes_no_call_at_all tests/test_metering_pass.py::test_a_lost_commit_is_re_offered_under_the_same_identifier tests/test_metering_pass.py::test_the_backfill_meters_what_was_missed_and_only_that tests/test_metering_pass.py::test_rows_sent_before_the_subscription_are_not_the_meters_business tests/test_stripe_contract.py::test_a_meter_event_takes_an_identifier_and_a_timestamp tests/test_stripe_contract.py::test_the_meter_event_payload_uses_the_meters_own_field_names"
   "8|the back-bill arithmetic is billing_service's own|tests/test_stripe_billing.py::test_the_back_bill_tool_prices_august_from_billing_services_own_functions tests/test_stripe_billing.py::test_the_invoice_amount_is_cents_rounded_once"
   "9|with no Stripe keys, /subscribe says so and the checkout endpoint answers 503|tests/test_stripe_billing.py::test_subscribe_renders_a_notice_and_the_endpoint_answers_503 tests/test_whitelabel.py::test_the_billing_routes_are_discovered_by_the_scan_above tests/test_whitelabel.py::test_no_state_of_the_subscribe_page_carries_one_of_our_own_costs tests/test_whitelabel.py::test_the_billing_status_payload_is_walked_field_by_field tests/test_whitelabel.py::test_a_checkout_failure_tells_the_client_nothing_the_sdk_said"
 )
@@ -211,7 +212,7 @@ from fastapi.testclient import TestClient
 from app.core.config import settings
 from app.core.database import SessionLocal
 from app.main import app
-from app.services import stripe_meter, stripe_tiers
+from app.services import stripe_tiers
 from tests import _stripe_fixtures as fx
 
 db = SessionLocal()
