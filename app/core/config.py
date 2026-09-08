@@ -262,6 +262,53 @@ class Settings(BaseSettings):
     # nothing" true of the Google meter as well as the carrier one.
     GOOGLE_PLACES_QUERY_REPEAT_DAYS: int = 30
 
+    # ─── Stripe (the payment processor, not the SMS carrier) ────────────────
+    # The white-label rule covers the carrier. Stripe is deliberately NOT
+    # scrubbed: it appears on the client's card statement, it renders the
+    # checkout page he types his card into, and hiding it would break the one
+    # flow this configuration exists for. See sessions/session-B1.md A8.
+    #
+    # Every value below is blank by default and blank is a *supported* state,
+    # not a broken one — `/subscribe` says the plan is not connected yet and
+    # the checkout endpoint answers 503. The page is safe to deploy before the
+    # Stripe account exists, which is the order these two things happen in.
+    STRIPE_SECRET_KEY: str = ""
+
+    # The graduated tiered usage price: tier 1 is `BILLING_SEGMENTS_INCLUDED`
+    # units at $0, tier 2 is `BILLING_PRICE_PER_SEGMENT` per unit thereafter.
+    #
+    # **The allowance lives in the tier, and therefore in two systems.** This
+    # repo holds one copy and Stripe's dashboard holds the other, under nobody's
+    # version control. `stripe_tiers.check_tier_drift()` exists to make them
+    # prove they still agree, because a mispriced invoice is the one artefact
+    # the client audits. Two definitions of one number is the defect this
+    # codebase has hit four times.
+    STRIPE_PRICE_METERED: str = ""
+
+    # A one-time price for the outstanding balance, charged on the first
+    # invoice as a second line item on the same Checkout Session.
+    #
+    # A line item and not `subscription_data.add_invoice_items`: that parameter
+    # does not exist on `checkout.Session.create` in the pinned SDK — it is a
+    # Subscription and SubscriptionSchedule parameter and always has been. See
+    # `tests/test_stripe_contract.py`, which asserts the shape rather than
+    # trusting this comment.
+    #
+    # Blank is supported: without it checkout still opens, still takes a card
+    # and still starts the meter — it simply settles nothing. That is the right
+    # degradation, because the balance is a one-off and the metering is not.
+    STRIPE_PRICE_BALANCE: str = ""
+
+    # The meter's event name, from Billing -> Meters. Sum aggregation, customer
+    # mapping `stripe_customer_id`, value key `value`.
+    STRIPE_METER_EVENT_NAME: str = "sms_segments"
+
+    # `whsec_…` from Developers -> Webhooks. **Unset means every webhook payload
+    # is ignored**, not trusted: an unsigned event is an event anybody on the
+    # internet can post, and what it would write is the customer id we meter
+    # this client's segments against. A guard that is switched off refuses.
+    STRIPE_WEBHOOK_SECRET: str = ""
+
     # ─── Alerting ───────────────────────────────────────────────────────────
     ALERT_PHONE: str = ""                        # your number, for balance/scrape alerts
     BALANCE_ALERT_THRESHOLD: float = 50.0

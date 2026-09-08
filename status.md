@@ -3960,3 +3960,260 @@ worker rather than an index.
 - **Enrichment, registries and marketplaces.** P3.
 - **A "promote anything unscreened" path.** Unchanged from P1, and still the
   cheap error.
+
+## Module B1 Part A — Stripe: settle August, then auto-bill usage (2026-09-07)
+
+One checkout that does two things: it charges the balance outstanding from before
+billing was automated, and it attaches the card every month afterwards is billed
+against. The client does it once and is never invoiced by hand again.
+
+`bash agent/gate.sh` passes, twice. **764 tests** (696 + 68 new).
+`bash agent/accept-B1.sh` is the stop condition; criteria 1-11 pass locally,
+criterion 12 is `--with-stripe` and needs Part B and a test-mode key.
+`agent/mutate-B1.py`: **47 mutations, 0 survived, 0 failed to apply**, identical
+on two consecutive invocations, each on a tree verified byte-identical to the
+repo. Nine of the forty-seven (`R1`-`R8`, `R4b`) exist because a fresh-context
+review found defects in a tree where the first thirty-eight were all green.
+
+### A1 — the allowance is subtracted once, and it is subtracted in Stripe
+
+The requirement that under-bills silently when it is wrong, and the reason it is
+worth naming twice. `billable_segments()` is `max(0, segments - 10,000)`, which
+is precisely what a graduated tiered price does. So the meter receives the **raw
+count of segments in `BILLABLE_STATUSES`** and the tier applies the allowance.
+Report `billable_segments()` and a 15,000-segment month invoices $0 instead of
+$75 — while `/usage` goes on showing 15,000 used and $75 due, which is why
+nothing on any screen would look wrong.
+
+`campaign_segments()` reads `BILLABLE_STATUSES` **through the model module**
+rather than binding it at import. That is not style. A local restatement of the
+tuple is behaviourally identical today, so no assertion about its *contents*
+could ever tell the two apart — 5i's lesson, arrived at the hard way when
+`SENT_STATUSES is not BILLABLE_STATUSES` failed for a reason that had nothing to
+do with this codebase. Late binding is what lets
+`test_the_meter_follows_the_models_definition_of_billable` change what the
+constant *means* and require the metered figure to follow.
+
+### Three spec clauses named fields the pinned SDK does not have
+
+`decisions/010`, open. All three were checked against `stripe==15.6.1` before a
+line of code was written, and each check now runs on every suite invocation in
+`tests/test_stripe_contract.py`:
+
+- **A3's `subscription_data.add_invoice_items` is not a Checkout parameter** and
+  never was — it belongs to `Subscription` and `SubscriptionSchedule` (confirmed
+  against `stripe==11.6.0` too, so this is not a removal). The August balance
+  therefore rides as a **second line item** with `quantity=1`. A3 asked for this
+  verification rather than a memory, so nothing is superseded; Part B item 3 does
+  need a one-time price (`STRIPE_PRICE_BALANCE`).
+- **A2's `unit_amount` is an integer number of cents**, and $0.015 is one and a
+  half of them. A check written to the letter would report disagreement on a
+  correctly configured price — and the tempting repair, hit on a live box, is to
+  relax it until it agreed. `unit_amount_decimal` first, `unit_amount` as the
+  whole-cent fallback, compared in `Decimal` because `0.015 * 100` is
+  `1.4999999999999998`.
+- **A4's `subscription.current_period_start` was moved onto the subscription's
+  items.** Written to the letter it reads `None`, no anchor is ever stored, and
+  `/usage` silently keeps reporting `BILLING_CYCLE_DAY` — the exact 1st-versus-9th
+  disagreement A4 exists to prevent, arrived at *through* the fix. The window
+  comes from the item's period; the day comes from `billing_cycle_anchor`, which
+  is also what stops a February period start flattening an anchor of the 31st to
+  the 28th for good.
+
+Third consecutive session to hit "a spec clause that names a mechanism is a guess
+wearing a spec's authority" (`decisions/007`, `008`). What B1 adds is where to
+look: **a pinned SDK's declared parameter types are checkable offline, on every
+run**, and they settled all three before any code existed.
+
+### What is where, and why the file list is wider than `modules.md` carried
+
+- `app/services/stripe_billing.py` — the account's link to Stripe: the one object
+  that touches the SDK, checkout, `session_is_ours()`, the webhook, the anchor.
+- `app/services/stripe_meter.py` and `app/services/stripe_tiers.py` — **both
+  new and neither in the spec's list.** One session's subject split into three
+  files by the 500-line rule, each time along a boundary the code already had:
+  `stripe_billing` owns *this account's link to Stripe* (checkout, the ownership
+  guard, the webhook, the cycle anchor); `stripe_meter` owns *what Stripe is
+  told* (the meter, the backfill, `period_usage()`); `stripe_tiers` owns
+  *whether Stripe is configured to price it the way we are* (A2's drift check,
+  the five states, `/health`'s wording). The dependencies run one way and
+  nothing imports back. `stripe_tiers` came out last, when the review's fixes
+  pushed `stripe_meter` to 533 lines.
+- `app/templates/base.html` — **not in the spec's list.** One nav tuple and one
+  icon arm, under Account beside Usage. A page the client cannot reach from the
+  nav is a page he does not have, and `base.html`'s own comment documents this
+  exact operation for restoring an absent entry.
+- `tests/conftest.py` — blanks the four Stripe settings for the whole suite, the
+  same rule that forces `SMS_PROVIDER=console`.
+- `tests/_stripe_fixtures.py`, `tests/test_stripe_billing.py`,
+  `tests/test_stripe_contract.py`, additions to `tests/test_whitelabel.py`.
+- `tools/` did not exist. It does now, holding `bill_period.py`.
+- `app/services/link_service.py` — **not in the spec's list**, added after the
+  review: `RESERVED_SLUGS` must name `subscribe` and `billing`, on exactly the
+  precedent its own comment sets for `prospects`.
+- `app/services/{report_service,preflight_totals}.py` — one line each, passing
+  the session they already hold to `get_billing_cycle()`. Not a drive-by: this
+  session introduced the second-session-per-call cost and `preflight_totals` is
+  on the composer's polled path.
+
+### Nothing in the suite can reach Stripe, and it is asserted three ways
+
+1. Every Stripe call goes through one replaceable object (`StripeAPI`), so a test
+   that forgot to replace it gets `StripeNotConfigured` rather than a request.
+2. `conftest.py` blanks the credentials, so there is nothing to authenticate with.
+3. `accept-B1.sh` check 1 runs the four billing modules with `socket.connect`,
+   `connect_ex` and `create_connection` raising. Check 1b then proves the guard
+   can fire, against a connection to `api.stripe.com` whose answer is known —
+   the fifth measurement script in this repo to need its own self-check.
+
+The live verification A3 asks for is check 12, `--with-stripe`, opt-in, and it
+**refuses anything but an `sk_test_` key**. It has not been run: Part B is not
+done and there are no keys on this machine.
+
+### The bound the identifier cannot supply
+
+`report_segments()`'s deterministic `campaign_<id>` makes a *repeat* free. It
+does nothing about *history*. Every campaign this client has ever sent predates
+the subscription, and August's 28,002 segments are settled by the one-time price
+on the first invoice — so an unbounded `backfill_unreported()` would meter them a
+second time, into the current period, on top of a charge he has paid. The default
+bound is the stored subscription start; with none stored it replays nothing and
+says so. A subtraction needs a time bound, and that one is worth half a session.
+
+### `/health` gained a third signal, and it does not call Stripe
+
+`pricing_ok`, `pricing_state`, `pricing_issues`, `pricing_checked_at`. The
+comparison runs on demand (`POST /api/billing/tier-check`, and automatically once
+a checkout completes) and stores its verdict; `/health` reads the row without
+`Depends(get_db)`, for the reason `active_config_alerts()` does. An endpoint an
+uptime monitor polls every minute must not become a Stripe request every minute —
+`test_health_makes_no_stripe_call` asserts the call count is zero.
+
+Five states, not two: `agree`, `disagree`, `unavailable` (Stripe could not be
+read — a degraded answer must not read as a chosen one), `never_checked` (a check
+nobody has run is indistinguishable from one that would fail, so it is **not**
+ok), and `not_configured` (no second definition exists here, so no alarm).
+Still HTTP 200 throughout: a 503 rolls back every deploy, including the one that
+fixes it.
+
+### The fresh-context review, and what it found
+
+One synchronous reviewer, five lenses from the spec plus the standing structural
+checks. It cleared lenses 1, 3 and 4 outright — the allowance is subtracted
+exactly once and in Stripe; nothing is written before the ownership guard on
+either path; no degraded state is described as a chosen one — and found **twelve
+defects**, two of them serious. Every one was live in a tree where the gate was
+green twice and 38 of 38 mutations were caught, which is the argument for running
+both: **the harness proves a rule cannot be reverted, and only a reader notices a
+rule that was written slightly wrong in the first place.**
+
+Fixed this session, each with a mutation (`R1`-`R8`) so it cannot come back:
+
+- **The meter priced a legacy row as 1 segment while `/usage` priced it by
+  length.** A 480-character row with `segments` NULL metered as **1** and
+  appeared on the dashboard as **3** — and the docstring in between asserted the
+  two agreed. Two similar arithmetics with a comment claiming equivalence is
+  worse than two obviously different ones. `legacy_segment_count()` is now the
+  one implementation and both call it; the test sweeps nine lengths across the
+  160-character boundary, because the original used a two-character message and
+  could not see the divergence at all.
+- **`tools/bill_period.py` gave any window its own free allowance.** July's
+  18,000 segments price at $120.00 as one window and **$0.00 + $0.00** as two
+  half-months — two runs, $150 given away, every figure on both correct. The tool
+  now computes the cycle containing `--start` and says loudly when the window is
+  not it. It warns rather than refuses, and that is decision 002's own test
+  applied honestly: 002 refuses on the composer *because the operator there is
+  the client*, and a back-bill is run by us, from a terminal, after a mandatory
+  dry run.
+- **The tier check ran once, at checkout, and `/health` reported that verdict
+  forever.** A tier edited in Stripe six months later would never have been
+  detected — the exact failure A2 exists to prevent, reached *through* the check
+  rather than through its absence. There is now a daily scheduler job, and
+  `tier_verdict()` ages an unrefreshed agreement into its own `stale` state, so a
+  box whose scheduler died says so instead of quoting September's answer. Only
+  agreement ages; a disagreement is still true until somebody fixes it.
+- **`/health` published the commercial terms to anyone who asked.** It has no
+  login and no rate limit, and the stored issues read "Stripe's first tier
+  includes 5000 segments; this account is configured for 10000".
+  `public_pricing_issues()` now says which state without saying what the numbers
+  are; the figures go to the log at ERROR and to the two authenticated billing
+  routes. `config_issues` had set that precedent one field up and B1 did not
+  follow it.
+- **`/subscribe` was not in `RESERVED_SLUGS`** — protected only by being nine
+  characters, which is precisely why `prospects` (also nine) is in the set. Added
+  with `billing`.
+- **The backfill was bounded on `Campaign.created_at`**, so an August draft sent
+  in September fell outside the window forever. Bounded on `sms_messages.sent_at`
+  now, which is also the column `compute_usage()` filters on.
+- **`_first_item()` carried a branch nothing could reach.** Driven against the
+  pinned SDK, `Subscription.items` is a `ListObject` and `callable()` is False on
+  every path either caller can produce. Deleted rather than left to be defended.
+- **`cycle_day()`'s docstring misattributed its own cost.** It claimed three
+  outside callers had no session; two of them had one in scope and handed it to
+  `compute_usage()` on the next line. Both now pass it — `preflight_totals` above
+  all, which is a synchronous call inside an async route on the composer's
+  *polled* path, and a second connection per poll is 5i's event-loop incident in
+  miniature.
+- **Check 1b could only ever pass.** It reassigned `socket.create_connection`,
+  then called `socket.create_connection`, and reported that the guard worked — a
+  tautology, and it exercised the one patch of three that does not matter, since
+  an HTTP stack builds its own `socket.socket`. It now drives a real HTTP request
+  at a closed local port and distinguishes the guard's exception from a
+  connection refusal. Criterion 1 itself was sound; its self-check was not.
+- Smaller: a bare `assert` guarding a field `/health` publishes (stripped under
+  `-O`); a hardcoded `"sms_segments"` in a test that should read the setting; a
+  config comment naming the wrong module; and "Your month runs from the
+  2026-09-09 onwards" on the subscribe page.
+
+**Not fixed — escalated.** `decisions/011`. See below.
+
+### Found while working
+
+- **A campaign's metered figure is written once and can never be corrected, and
+  it is wrong in both directions.** `decisions/011`, open, escalation item 1.
+  A6's `identifier=campaign_<id>` is what makes a retry free and it is the same
+  property that discards a revision.
+  - **Over-bill.** The meter fires the instant the send loop returns, when every
+    row is `sent`. The delivery webhook then writes `undelivered`, which is
+    outside `BILLABLE_STATUSES`. Measured: 12,000 metered, `/usage` reports
+    8,000, the correction is discarded. The client is billed for segments his own
+    dashboard says he did not use, **in our favour**, and this account's corpus
+    is 3,037 failures.
+  - **Under-bill.** `campaign_topup.top_up_background` is the third path that
+    writes `sent` rows, it is not in B1's file list, and `campaign_<id>` is spent
+    for that campaign anyway.
+  Neither costs anything until Part B lands and the client subscribes. The
+  recommendation is a follow-on session that meters once, on a schedule, after
+  delivery receipts have settled — one event, one identifier, right the first
+  time rather than right after a correction.
+- **`app/routers/usage.py:46` still reads `WHOLESALE_COST_PER_SEGMENT`.**
+  Unchanged since module 4's note. Not a leak — neither the rate nor the balance
+  is in the response — but the literal grep is a structural rule the runtime test
+  cannot replace. `usage.py` is module 8's file.
+- **`docs/API.md` documents none of B1**, nor P1/P2's prospects API, nor 5f's
+  reports and links routes. `/subscribe`, `/billing/success`,
+  `/api/billing/{status,checkout,tier-check}` and `POST /webhooks/stripe` are all
+  new. Module 8's, and now three sessions deep.
+- **`pricing_table()` gained an optional `db`,** and `app/routers/usage.py` calls
+  it without one, so `/api/usage/pricing` opens a second short-lived session to
+  read the anchor. Correct but wasteful; passing `Depends(get_db)` through is a
+  two-line change in module 8's file.
+- **The suite's login budget is one tighter.** `test_stripe_billing.py` has a
+  module-scoped login and resets the limiter around itself, as
+  `test_provider_status.py` does. `POST /login` is 10/minute per IP and the whole
+  suite runs from one address inside one window.
+
+### Deliberately not built
+
+- **Any real Stripe call, from anywhere but check 12.** Refunds, proration, plan
+  changes and dunning beyond Stripe's own retries are out of scope by the spec.
+- **A scheduled tier check.** A2 says on demand. It runs from the endpoint and
+  once automatically after a completed checkout, which is the one moment it is
+  guaranteed both to matter and not to be on a hot path. A configured box that has
+  never run it reports `pricing_ok: false`, which is the loud behaviour A2 asks
+  for.
+- **The August figure anywhere in a template.** `$270.03` lives in a Stripe price
+  and in `tools/bill_period.py`'s output, and Stripe's own checkout page shows it
+  before the client confirms. A second copy in `subscribe.html` would be a second
+  number to keep true, and the page already renders every other figure from
+  `pricing_table()`.

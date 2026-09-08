@@ -43,10 +43,55 @@ client sending real campaigns.
 | P1b | **Lookup provider & gate flake** | Done · deployed 2026-09-01 | P1 | `app/sms/providers/telnyx_lookup.py`, `app/sms/lookup.py`, `app/services/lookup_service.py`, `app/core/config.py`, `.env.example`, `docs/API.md`, `CLAUDE.md`, `tests/{test_lookup_provider,test_wholesale_scan,_wholesale_scan}.py`, `tests/fixtures/number_lookup_responses.json`, `tests/{test_campaign_reports,test_whitelabel,test_campaign_preflight,test_capacity_rounding,test_degraded_send_path,test_prospect_review,test_prospect_pipeline}.py`, `agent/{accept-P1b.sh,mutate-P1b.py,accept-P1.sh}` |
 | P2 | **Google Places source** | **Part A NOT complete** · accept-P2 criterion 9 fails (D2 survived) · deployed but inert without a key | P1b | `app/sources/{google_places,taxonomy,exclusions,__init__,prospect_base}.py`, `app/services/{prospect_ingest,prospect_service,api_budget,scrape_runner}.py`, `app/models/scrape.py`, `app/core/config.py`, `.env.example`, `alembic/versions/`, `agent/{accept-P2.sh,mutate-P2.py,mutate-{5e,5f,5g,5h,P1}.py}`, `tests/` |
 | P2b | **Close D2; make the mutation harness reproducible** | Specced · next | P2 | `app/services/scrape_runner.py`, `app/sources/google_places.py`, `tests/`, `agent/{mutate-P2.py,accept-P2.sh}` |
-| B1 | **Stripe: settle August, then auto-bill usage** | Specced · next | — | `app/services/stripe_billing.py`, `app/routers/billing.py`, `app/templates/subscribe.html`, `app/services/{billing_service,campaign_dispatch}.py`, `app/routers/pages.py`, `app/core/config.py`, `app/main.py`, `tools/bill_period.py`, `requirements.txt`, `.env.example`, `tests/`, `agent/{accept-B1.sh,mutate-B1.py}` |
+| B1 | **Stripe: settle August, then auto-bill usage** | **Part A done 2026-09-07** · accept 1-11 + gate twice + 47/0 mutations · reviewed · **Part B is Jordan's** | — | `app/services/{stripe_billing,stripe_meter,stripe_tiers}.py`, `app/routers/billing.py`, `app/templates/{subscribe,base}.html`, `app/services/{billing_service,campaign_dispatch}.py`, `app/routers/pages.py`, `app/core/config.py`, `app/main.py`, `tools/bill_period.py`, `requirements.txt`, `.env.example`, `tests/`, `agent/{accept-B1.sh,mutate-B1.py}` |
+| B1b | **Meter once, late, and correctly** | Specced · next · blocks Part B | B1 | `app/models/sms_message.py`, `app/services/{stripe_meter,campaign_dispatch,campaign_topup}.py`, `app/main.py`, `app/core/config.py`, `tools/bill_period.py`, `alembic/versions/`, `tests/`, `agent/{accept-B1b.sh,mutate-B1b.py}` |
 | P3 | **Registries, marketplaces & enrichment** | After P2 | P1 | `app/sources/dbpr.py`, `app/sources/sunbiz.py`, `tests/` |
 
 **That's the launch — six sessions, but only four waves. See "Parallel plan" below.**
+
+**B1's file list above is wider than the one this table carried before the
+session, in three places and each for a stated reason.**
+`stripe_meter.py` and `stripe_tiers.py` are both new, and both exist because of
+the 500-line rule rather than because the spec asked for them. Each split runs
+along a boundary the code already had: `stripe_billing` owns *this account's
+link to Stripe* (checkout, the ownership guard, the webhook, the cycle anchor),
+`stripe_meter` owns *what Stripe is told* (the meter, the backfill,
+`period_usage()`), and `stripe_tiers` owns *whether Stripe is configured to
+price it the way we are* (A2's drift check and its five states). Dependencies
+run one way and nothing imports back. `app/templates/base.html` gains one nav
+tuple and one icon arm, because `/subscribe` is the one screen in this product
+the client has to reach on purpose and a page absent from the nav is a page he
+does not have — `base.html`'s own comment documents that exact operation.
+`tools/` did not exist before this session.
+
+**Three of B1's spec clauses named Stripe fields the pinned SDK does not have**
+— `subscription_data.add_invoice_items`, a tier's `unit_amount` for a sub-cent
+rate, and `subscription.current_period_start`. All three were checked against
+`stripe==15.6.1` before any code was written and all three now have a running
+assertion in `tests/test_stripe_contract.py`. `decisions/010` records them and
+asks for a ruling superseding two of the clauses; the third (A3) asked for the
+verification and got it. Third consecutive session to hit the mechanism-clause
+pattern after `decisions/007` and `008`.
+
+**One escalation is open and it is not blocking:** `decisions/011` — a
+campaign's metered figure is written once and can never be corrected, so we
+over-bill a campaign with delivery failures (the webhook moves rows out of
+`BILLABLE_STATUSES` after the meter has already fired) and under-bill every
+top-up. Both are consequences of `identifier=campaign_<id>`, which is what makes
+a retry free. Neither costs anything until Part B lands and the client
+subscribes.
+
+**The fresh-context review found twelve defects in a tree that was green twice
+with 38 of 38 mutations caught.** Eight became mutations `R1`-`R8`. That is the
+clearest evidence this project has for running a reviewer *and* a harness: the
+harness proves a rule cannot be reverted, and only a reader notices a rule that
+was written slightly wrong to begin with. The sharpest finding was two similar
+arithmetics for one question with a docstring between them asserting they
+agreed — they disagreed by a factor of three on any legacy row over 160
+characters. B1's file list also gained `app/services/link_service.py`
+(`RESERVED_SLUGS` must name `subscribe`, on the `prospects` precedent) and one
+line each in `report_service.py` and `preflight_totals.py`, which had a session
+in scope and were opening a second one per call.
 
 5c was not in the original breakdown. It exists because flipping the provider to live
 revealed that `requirements.txt` pinned a telnyx SDK major version the provider was not
@@ -1101,3 +1146,30 @@ cannot name a file that is not there.
    (mutation R12b, the one survivor on the repaired `mutate-P1`). Its justification moved
    into `line_type_for()` in P1b. The filter still avoids a query and a rescore loop — a
    real reason and a different one — and the comment should say that. P1's scope.
+
+### B1 — Part A done 2026-09-07, and why Part B waits
+
+`agent/accept-B1.sh` ACCEPT PASS, gate green twice at **764 tests**, 47 mutations 0
+survived on two consecutive runs. The back-bill dry run prices August at **$270.03** —
+28,002 segments, 18,002 billable — from `billing_service`'s own functions.
+
+The review found twelve defects in a tree that was green twice with 38 of 38 mutations
+caught, and the sharpest is worth carrying: `stripe_meter` priced a legacy row as 1 segment
+while `/usage` priced it by length — 480 characters metered as 1, rendered as 3 — **with a
+docstring between them asserting they agreed.**
+
+**`decisions/011` blocks Part B.** Three measured billing defects: an over-bill on every
+campaign with delivery failures, an under-bill on every top-up, and — the largest, from a
+clause in B1's own spec — a **double-bill on any backfill older than 24 hours**, because
+Stripe enforces meter-identifier uniqueness only over a rolling day. `sessions/session-B1b.md`
+fixes all three by marking rows in our own database rather than trusting that identifier,
+metering on a schedule once receipts settle, and stamping each event with the send time
+(Stripe backdates up to 35 days) so a late pass still bills the right cycle.
+
+None of it is exposed today: nothing meters until a customer id exists and Part B has not
+run. **Do not do the Stripe dashboard setup and drop the keys in until B1b is green.**
+
+`decisions/010` is also resolved — three spec clauses named SDK fields that do not exist.
+That plus 007, 008 and 011 is four consecutive sessions departing from a mechanism I wrote
+from memory, and `RULES.md` now carries the rule that follows: a spec clause naming a
+third-party field is a hypothesis until the session verifies it.

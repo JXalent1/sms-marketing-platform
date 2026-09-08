@@ -212,7 +212,7 @@ def campaign_cost(db: Session, campaign: Campaign, own_segments: int) -> dict:
     remains the one number that is billed.
     """
     cycle_start, cycle_end, _, label = billing_service.get_billing_cycle(
-        _cycle_date(campaign))
+        _cycle_date(campaign), db=db)
     _, cycle_segments = billing_service.compute_usage(db, cycle_start, cycle_end)
     before = max(0, cycle_segments - max(0, own_segments))
     added = (billing_service.cost_for_segments(cycle_segments)

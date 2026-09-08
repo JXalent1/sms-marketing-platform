@@ -19,6 +19,7 @@ from app.core.database import get_db
 from app.core import branding
 from app.services import (
     billing_service, contact_query_service, link_service, monitoring_service,
+    stripe_tiers,
 )
 from app.sms.factory import send_mode, active_sender_number
 import os
@@ -121,13 +122,42 @@ async def health():
     anything going wrong, so a database this endpoint cannot reach costs the
     configuration signal and nothing else.
 
+    `pricing_ok` is the third, and it is here for the same argument one more
+    time. The included-segment allowance now lives in two systems — this repo
+    and a tier in Stripe's dashboard, which is under nobody's version control —
+    and when they disagree the result is a mispriced invoice, which is the one
+    artefact the client audits. It cannot be paged over SMS either, so it is
+    raised as a row and reported beside the two signals a monitor already reads.
+
+    **The comparison is not made here.** `stripe_tiers.check_tier_drift()` calls
+    Stripe on demand and stores its verdict; this reads the row. An endpoint an
+    uptime monitor polls every minute must not become a Stripe request every
+    minute, and `tier_verdict()` opens its own session and swallows its own
+    errors for `active_config_alerts()`'s reason.
+
+    `pricing_state` names *which* of the states produced the boolean, because a
+    check that has never run and a check that agreed must not read the same. On
+    a box with no Stripe there is no second definition to disagree with, so the
+    state is `not_configured` and `pricing_ok` is true — a signal about a
+    subsystem that does not exist here would be a permanent false alarm.
+
     White-label: `reason` is send_mode().detail, `config_issues` are wordings
     owned by `compliance.CONFIGURATION_ALERT_DETAIL`, and both name no carrier.
-    The SDK exception behind either stays in the log.
+    The SDK exception behind either stays in the log. `pricing_issues` names
+    Stripe, which is correct — Stripe is the payment processor, not the carrier.
+
+    **It names no figure, though, and that is a separate rule.** This endpoint
+    has no login and no rate limit. The stored verdict's own issues quote this
+    account's allowance and per-segment rate, which are commercial terms and not
+    a scanner's business; `public_pricing_issues()` says which state without
+    saying what the numbers are. The figures go to the log at ERROR and to the
+    two authenticated billing routes. `config_issues` sets the same precedent
+    one field up: fixed wordings, no account data.
     """
     mode = send_mode()
     degraded = mode.key == "unavailable"
     alerts = monitoring_service.active_config_alerts()
+    pricing = stripe_tiers.tier_verdict()
     return {
         "status": "degraded" if degraded else "healthy",
         "sending_ok": not degraded,
@@ -135,6 +165,10 @@ async def health():
         "reason": mode.detail if degraded else None,
         "config_ok": not alerts,
         "config_issues": alerts,
+        "pricing_ok": stripe_tiers.pricing_ok(pricing),
+        "pricing_state": pricing.get("state"),
+        "pricing_issues": stripe_tiers.public_pricing_issues(pricing),
+        "pricing_checked_at": pricing.get("checked_at"),
     }
 
 
@@ -170,7 +204,7 @@ def shell_context(db: Session) -> dict:
     places to update when the shell gains a figure, and the reason the prior
     build's nav counts disagreed with its own dashboard.
     """
-    cycle_start, cycle_end, _, _ = billing_service.get_billing_cycle()
+    cycle_start, cycle_end, _, _ = billing_service.get_billing_cycle(db=db)
     _, segments = billing_service.compute_usage(db, cycle_start, cycle_end)
 
     # Read from the live provider, not from settings: get_provider() falls back

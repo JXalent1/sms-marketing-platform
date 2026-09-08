@@ -94,7 +94,10 @@ def marginal_cost(db: Session, added_segments: int) -> float:
     boundary is still intact when `to_money()` sees it. The monthly fee is in
     both terms and cancels, which is correct: a campaign does not re-charge it.
     """
-    cycle_start, cycle_end, _, _ = billing_service.get_billing_cycle()
+    # `db=db` rather than letting it open its own session: this runs on the
+    # composer's polled quote path, inside an async route, and a second
+    # connection per poll is 5i's event-loop lesson in miniature.
+    cycle_start, cycle_end, _, _ = billing_service.get_billing_cycle(db=db)
     _, used = billing_service.compute_usage(db, cycle_start, cycle_end)
 
     before: Decimal = billing_service.cost_for_segments(used)

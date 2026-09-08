@@ -84,10 +84,13 @@ SLUG_RE = re.compile(rf"^[{SLUG_ALPHABET}]{{{SLUG_LENGTH}}}$")
 # pages a slug must never spell, and leaving a page out because today's slug
 # length happens to protect it is how the intent dies the day that number
 # changes.
+# `subscribe` and `billing` are session B1's, and they are here for exactly the
+# reason `prospects` is: both are longer than SLUG_LENGTH today, and "today's
+# slug length happens to protect it" is not a reason to leave a root page out.
 RESERVED_SLUGS = frozenset({
     "login", "logout", "health", "dashboard", "campaigns", "contacts",
     "usage", "blocklist", "settings", "history", "prospects", "static",
-    "favicon", "robots",
+    "favicon", "robots", "subscribe", "billing",
 })
 
 # What the composer says when the tag is used and the domain is not configured.

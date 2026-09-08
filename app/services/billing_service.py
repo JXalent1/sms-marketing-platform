@@ -28,14 +28,28 @@ Three rules that took real money to learn:
 
 from sqlalchemy.orm import Session
 from app.core.config import settings
+from app.models.app_setting import get_setting
 from app.models.sms_message import SMSMessage, BILLABLE_STATUSES
 from datetime import date
 from calendar import monthrange
 from decimal import Decimal, ROUND_HALF_UP
-from typing import Tuple
+from typing import Optional, Tuple
+import logging
+
+logger = logging.getLogger("billing")
 
 MONTH_NAMES = ["", "January", "February", "March", "April", "May", "June",
                "July", "August", "September", "October", "November", "December"]
+
+# The day of the month Stripe anchors the subscription's billing cycle to,
+# written once by `stripe_billing` when checkout completes.
+#
+# It lives here rather than in stripe_billing because **this module is the
+# reader and the reader owns the name**: `stripe_billing` imports it from here,
+# so there is one spelling and the dependency runs one way. A literal in each
+# file is how a screen ends up looking for a row nothing writes — the mistake
+# `HELD_BACK_STATUS` was extracted to prevent.
+CYCLE_ANCHOR_DAY_KEY = "billing_cycle_anchor_day"
 
 
 def _clamp_day(year: int, month: int, day: int) -> date:
@@ -43,10 +57,74 @@ def _clamp_day(year: int, month: int, day: int) -> date:
     return date(year, month, min(day, monthrange(year, month)[1]))
 
 
-def get_billing_cycle(for_date: date = None) -> Tuple[date, date, date, str]:
-    """Return (cycle_start, cycle_end, next_reset, label) for the cycle containing for_date."""
+def cycle_day(db: Optional[Session] = None) -> int:
+    """The day of the month the allowance resets.
+
+    The stored Stripe anchor wins over `BILLING_CYCLE_DAY`, and that ordering is
+    the whole point. Stripe anchors the cycle to the moment checkout completes,
+    which is what Jordan wants — billing runs from the day the client pays. The
+    trap is on our side: `BILLING_CYCLE_DAY` defaults to 1, so a client who
+    subscribes on the 9th would read a 1st-to-1st cycle on `/usage` while Stripe
+    invoiced him 9th to 9th. He would be right to distrust both numbers.
+
+    Config stays the fallback, for a box that has never subscribed — and for
+    every box before Stripe exists at all, which is most of this project's life
+    so far.
+
+    `db` is optional, and the honest reason is narrower than the first version
+    of this comment claimed. It said three outside callers had no session to
+    hand; two of them — `preflight_totals` and `report_service` — have one in
+    scope and pass it to `compute_usage()` on the very next line, and both now
+    pass it here too. `preflight_totals` matters most: it is a synchronous call
+    inside an async route on the composer's *polled* quote path, which is where
+    5i's ten-minute join held the event loop and made the scheduler miss its
+    tick. A second `SessionLocal()` per poll is a smaller version of the same
+    mistake and there was no reason to take it.
+
+    The parameter stays optional for `/api/usage/pricing`, which genuinely has
+    no session, and for any future caller in the same position.
+
+    A missing or unreadable row falls back to config rather than raising: an
+    anchor is a refinement of a cycle that already worked, and a database hiccup
+    must not take out the page that renders it. The fallback is logged, never
+    silent.
+    """
+    own_session = db is None
+    if own_session:
+        from app.core.database import SessionLocal
+        db = SessionLocal()
+    try:
+        stored = get_setting(db, CYCLE_ANCHOR_DAY_KEY)
+        if stored is None:
+            return settings.BILLING_CYCLE_DAY
+        day = int(stored)
+        if not 1 <= day <= 31:
+            raise ValueError(f"anchor day {day} is not a day of the month")
+        return day
+    except Exception as exc:
+        logger.error("Stored billing-cycle anchor unusable (%s); falling back to "
+                     "BILLING_CYCLE_DAY=%s", exc, settings.BILLING_CYCLE_DAY)
+        return settings.BILLING_CYCLE_DAY
+    finally:
+        # In a `finally` with every return above it, not on each way out: the
+        # unknown-slug leak in `links.py` was one `return` that skipped the
+        # close, and forty requests left seven connections checked out.
+        if own_session:
+            db.close()
+
+
+def get_billing_cycle(for_date: date = None,
+                      db: Optional[Session] = None) -> Tuple[date, date, date, str]:
+    """Return (cycle_start, cycle_end, next_reset, label) for the cycle containing for_date.
+
+    `cycle_end` is the last day **in** the cycle, one day before `next_reset`.
+    `stripe_billing.subscription_cycle()` converts Stripe's own period, whose
+    end is the instant the next cycle begins, to the same convention — one
+    function each, so the two windows are comparable by construction rather
+    than by two authors agreeing about an off-by-one.
+    """
     for_date = for_date or date.today()
-    day = settings.BILLING_CYCLE_DAY
+    day = cycle_day(db)
 
     if for_date.day >= day:
         cycle_start = _clamp_day(for_date.year, for_date.month, day)
@@ -111,6 +189,23 @@ def cost_for_segments(segments: int) -> Decimal:
     return fee + billable_segments(segments) * rate
 
 
+def legacy_segment_count(message: str) -> int:
+    """Segments for a row written before per-message segment tracking.
+
+    The old 160-character basis, kept so closed cycles are never silently
+    re-priced. Extracted from `compute_usage()` because session B1 needed the
+    same rule for the Stripe meter and wrote a second, *similar* one instead:
+    `segments or 1`, which is right for a short message and wrong for every
+    legacy row over 160 characters. The two figures then disagreed by a factor
+    of three on the same row, with a docstring in between asserting they agreed.
+
+    One implementation, two callers. The dashboard and the invoice cannot
+    describe the same message differently.
+    """
+    length = len(message) if message else 0
+    return max(1, -(-length // 160))
+
+
 def compute_usage(db: Session, cycle_start: date, cycle_end: date) -> Tuple[int, int]:
     """Return (message_count, segment_count) billable in the window.
 
@@ -129,20 +224,15 @@ def compute_usage(db: Session, cycle_start: date, cycle_end: date) -> Tuple[int,
     count = 0
     segments = 0
     for stored_segments, message in rows:
-        if stored_segments:
-            segments += stored_segments
-        else:
-            # Legacy rows from before per-message segment tracking. Keep the old
-            # 160-char basis so closed cycles are never silently re-priced.
-            length = len(message) if message else 0
-            segments += max(1, -(-length // 160))
+        segments += (stored_segments if stored_segments
+                     else legacy_segment_count(message))
         count += 1
     return count, segments
 
 
 def current_usage(db: Session) -> dict:
     """Everything the usage dashboard needs for the open cycle."""
-    cycle_start, cycle_end, next_reset, label = get_billing_cycle()
+    cycle_start, cycle_end, next_reset, label = get_billing_cycle(db=db)
     count, segments = compute_usage(db, cycle_start, cycle_end)
 
     included = settings.BILLING_SEGMENTS_INCLUDED
@@ -168,9 +258,9 @@ def usage_history(db: Session, cycles: int = 6) -> list:
     """Closed cycles, most recent first."""
     out = []
     cursor = date.today()
-    current_start = get_billing_cycle()[0]
+    current_start = get_billing_cycle(db=db)[0]
     for _ in range(cycles):
-        cycle_start, cycle_end, _, label = get_billing_cycle(cursor)
+        cycle_start, cycle_end, _, label = get_billing_cycle(cursor, db=db)
         count, segments = compute_usage(db, cycle_start, cycle_end)
 
         out.append({
@@ -187,11 +277,15 @@ def usage_history(db: Session, cycles: int = 6) -> list:
     return out
 
 
-def pricing_table() -> dict:
+def pricing_table(db: Optional[Session] = None) -> dict:
     """The plan, for display. One source of truth — the UI renders this."""
     return {
         "monthly_fee": to_money(settings.BILLING_MONTHLY_FEE),
         "included_segments": settings.BILLING_SEGMENTS_INCLUDED,
         "price_per_segment": settings.BILLING_PRICE_PER_SEGMENT,
-        "cycle_day": settings.BILLING_CYCLE_DAY,
+        # The day actually in force, not the configured default. This table is
+        # what the UI renders, and a page that showed the 1st while the invoice
+        # ran from the 9th is exactly the disagreement `cycle_day()` exists to
+        # remove — showing config here would put it back one layer up.
+        "cycle_day": cycle_day(db),
     }

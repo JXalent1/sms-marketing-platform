@@ -60,6 +60,9 @@
    History landed in 5f and is no longer absent. Prospects landed in P1: the
    review queue exists, so the entry is a route rather than a promise. It sits
    under Audience because promoting a prospect is how the audience grows.
+   Subscription landed in B1, under Account beside Usage: the two answer "what
+   have I used" and "how am I paying for it", and a page the client cannot
+   reach from the nav is a page he does not have.
 
    Deliberately absent, and what restores it:
      Categories — the admin screen for the category tables added in module 2
@@ -80,6 +83,7 @@
     ]),
     ('Account', [
         ('/usage',     'usage',     'Usage & billing', 'usage'),
+        ('/subscribe', 'subscribe', 'Subscription',    'card'),
         ('/settings',  'settings',  'Settings',        'settings'),
     ])
 ] %}
@@ -104,6 +108,8 @@
     <circle cx="12" cy="12" r="8.5"/><path d="M6 6l12 12"/>
   {%- elif name == 'usage' -%}
     <path d="M3.5 16.5l5-5 3.5 3.5 6.5-7"/><path d="M14.5 8h4.5v4.5"/>
+  {%- elif name == 'card' -%}
+    <rect x="2.6" y="5" width="18.8" height="14" rx="2.4"/><path d="M2.6 10h18.8"/>
   {%- elif name == 'settings' -%}
     <circle cx="12" cy="12" r="3.2"/>
     <path d="M12 2.6v2.4M12 19v2.4M21.4 12H19M5 12H2.6M18.7 5.3l-1.7 1.7M7 17l-1.7 1.7M18.7 18.7L17 17M7 7L5.3 5.3"/>

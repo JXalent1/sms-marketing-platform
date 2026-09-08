@@ -1,0 +1,122 @@
+{% extends "base.html" %}
+{% block title %}Subscription{% endblock %}
+
+{# No figure in this file. Every number comes from `billing.plan`, which is
+   `billing_service.pricing_table()` — the same function `/usage` renders from,
+   so this page cannot quote a rate the code does not charge. The outstanding
+   balance is deliberately *not* rendered here either: it lives in a Stripe
+   price, Stripe shows it on the checkout page, and a second copy in this
+   template is a second number to keep true.
+
+   Nothing on this page is built by JavaScript. The composer needed `attr()`
+   because it interpolates a name the client typed into a quoted attribute;
+   here every value is server-rendered through Jinja's autoescape, which is the
+   cheaper way to be right about the same thing. #}
+
+{% block content %}
+<div class="mx-auto max-w-2xl space-y-6">
+
+  {% if checkout_message %}
+  <div id="checkoutResult"
+       class="rounded-xl border-l-4 px-4 py-3 text-sm leading-relaxed text-ink
+              {% if checkout_confirmed %}border-good bg-good-soft{% else %}border-warn-ink bg-warn-soft{% endif %}">
+    {{ checkout_message }}
+  </div>
+  {% endif %}
+
+  <div class="rounded-xl border border-line bg-surface px-6 py-6">
+    <h2 class="font-semibold text-ink">Your plan</h2>
+
+    <dl class="mt-5 grid grid-cols-1 gap-4 sm:grid-cols-3">
+      <div class="rounded-xl bg-surface-2 p-4">
+        <dt class="text-xs font-medium uppercase text-ink-3">Monthly fee</dt>
+        <dd class="mt-1 text-2xl font-bold text-ink">
+          {% if billing.plan.monthly_fee %}${{ billing.plan.monthly_fee }}{% else %}None{% endif %}
+        </dd>
+      </div>
+      <div class="rounded-xl bg-surface-2 p-4">
+        <dt class="text-xs font-medium uppercase text-ink-3">Included each month</dt>
+        <dd class="mt-1 text-2xl font-bold text-ink">
+          {{ "{:,}".format(billing.plan.included_segments) }}
+        </dd>
+        <dd class="text-xs text-ink-3">segments</dd>
+      </div>
+      <div class="rounded-xl bg-surface-2 p-4">
+        <dt class="text-xs font-medium uppercase text-ink-3">After that</dt>
+        <dd class="mt-1 text-2xl font-bold text-ink">${{ billing.plan.price_per_segment }}</dd>
+        <dd class="text-xs text-ink-3">per segment</dd>
+      </div>
+    </dl>
+
+    <p class="mt-5 text-sm leading-relaxed text-ink-2">
+      A short text is one segment; a long one is several, and the composer shows the
+      count before you send. Nothing is charged for a month that stays inside the
+      allowance.
+      {% if billing.cycle_anchor %}
+      Your billing month starts on the {{ billing.cycle_anchor_day }}
+      {{- billing.cycle_anchor_ordinal }} — the day you subscribed —
+      and <a class="text-brand hover:underline" href="/usage">Usage &amp; billing</a>
+      reports the same window your invoice is drawn on.
+      {% endif %}
+    </p>
+  </div>
+
+  <div class="rounded-xl border border-line bg-surface px-6 py-6">
+    {% if not billing.available %}
+    {# The supported, un-set-up state. A sentence, not a stack trace — this page
+       ships before the payment account exists, and a client reading it has done
+       nothing wrong. #}
+    <h2 class="font-semibold text-ink">Payment</h2>
+    <p id="notAvailable" class="mt-2 text-sm leading-relaxed text-ink-2">
+      {{ billing.unavailable_notice }}
+    </p>
+
+    {% elif billing.subscribed %}
+    <h2 class="font-semibold text-ink">Payment method</h2>
+    <p id="alreadySubscribed" class="mt-2 text-sm leading-relaxed text-ink-2">
+      Your card is on file and billing is running. You will receive one invoice a
+      month by email, for the segments above the allowance and nothing else.
+    </p>
+
+    {% else %}
+    <h2 class="font-semibold text-ink">Set up payment</h2>
+    <p class="mt-2 text-sm leading-relaxed text-ink-2">
+      One step, once. The first invoice settles the balance outstanding from before
+      billing was automated — the amount is shown on the payment page before you
+      confirm — and the card you add covers every month afterwards. No invoice is
+      raised by hand again.
+    </p>
+    <button type="button" id="subscribeBtn"
+            class="mt-5 rounded-lg bg-brand px-5 py-2.5 text-sm font-medium text-on-brand hover:opacity-90 disabled:opacity-60">
+      Continue to payment
+    </button>
+    <p class="mt-3 text-xs text-ink-3">
+      Payments are handled by Stripe. Card details are entered on Stripe's own page
+      and never reach this application.
+    </p>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// One fetch and one redirect. Nothing here writes markup, so nothing here needs
+// escaping — the whole page is rendered server-side above.
+const subscribeBtn = document.getElementById('subscribeBtn');
+if (subscribeBtn) {
+    subscribeBtn.addEventListener('click', async () => {
+        subscribeBtn.disabled = true;
+        try {
+            const res = await fetch('/api/billing/checkout', { method: 'POST' });
+            const data = await res.json();
+            if (res.ok && data.url) { window.location = data.url; return; }
+            showToast(data.error || 'The payment page could not be opened.', 'error');
+        } catch (err) {
+            showToast('The payment page could not be opened.', 'error');
+        }
+        subscribeBtn.disabled = false;
+    });
+}
+</script>
+{% endblock %}

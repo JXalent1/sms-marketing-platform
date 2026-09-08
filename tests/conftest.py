@@ -32,6 +32,21 @@ os.environ["DATABASE_URL"] = f"sqlite:///{_DB_PATH}"
 # never let the suite reach a real handset. Dry run is the only acceptable mode.
 os.environ["SMS_PROVIDER"] = "console"
 
+# Same rule, one vendor along. A developer with a live Stripe key exported would
+# otherwise have a suite that could open a real Checkout Session and post real
+# meter events against a real customer.
+#
+# This is the second of two independent guards and neither is the whole story.
+# Every Stripe call in the codebase goes through one replaceable object
+# (`stripe_billing.StripeAPI`), so a test that forgets to replace it gets
+# `StripeNotConfigured` from these blanks rather than a network call — and
+# `agent/accept-B1.sh` check 1 runs the billing modules with `socket.connect`
+# disabled, which is the proof rather than the promise.
+os.environ["STRIPE_SECRET_KEY"] = ""
+os.environ["STRIPE_PRICE_METERED"] = ""
+os.environ["STRIPE_PRICE_BALANCE"] = ""
+os.environ["STRIPE_WEBHOOK_SECRET"] = ""
+
 os.environ.setdefault("SECRET_KEY", "test-secret-key")
 os.environ.setdefault("ADMIN_PASSWORD", "devpassword123")
 os.environ.setdefault("COOKIE_SECURE", "false")

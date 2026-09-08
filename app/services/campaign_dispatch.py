@@ -12,6 +12,14 @@ suppression exactly as an on-demand one does. Scheduling decides *when*, never
 Both functions own their own DB session. A request-scoped session is closed the
 moment the HTTP response is returned, and an APScheduler job has no request to
 borrow one from.
+
+Session B1 adds one thing to both: after the messages have gone out, the
+campaign's segments are reported to the usage meter. It is the last thing either
+function does, it is wrapped, and it cannot raise — a Stripe outage that aborted
+a send would turn a billing problem into an empty saleroom, and `decisions/002`
+already settled which of those two costs more. The recovery is
+`stripe_meter.backfill_unreported()`, which is safe to run because the meter
+event's identifier is derived from the campaign id.
 """
 
 from datetime import datetime
@@ -32,10 +40,38 @@ async def send_campaign_background(campaign_id: int):
     db = SessionLocal()
     try:
         await CampaignService(db).send_campaign(campaign_id)
+        report_usage(db, campaign_id)
     except Exception as e:
         logger.error(f"Campaign {campaign_id} background send failed: {e}")
     finally:
         db.close()
+
+
+def report_usage(db: Session, campaign_id: int) -> None:
+    """Meter what this campaign sent. Fire and forget, in both directions.
+
+    Imported here rather than at module scope so a box with no Stripe package
+    installed still schedules and sends campaigns — this file is on the send
+    path and the send path owes nothing to a payment processor.
+
+    `report_campaign()` already swallows its own errors; this second wrapper is
+    not redundant, because "already swallows" is a property of today's
+    implementation and the rule is about this call site. The rule: nothing here
+    may raise into the send loop.
+
+    **What the meter receives is the raw segment count**, not
+    `billable_segments()`. The allowance is applied by the Stripe tier; applying
+    it here as well would bill $0 for a 15,000-segment month while `/usage` went
+    on showing $75 due. See `app/services/stripe_meter.py`.
+    """
+    try:
+        from app.services import stripe_meter
+        outcome = stripe_meter.report_campaign(db, campaign_id)
+        if not outcome["reported"] and outcome["segments"]:
+            logger.info(f"Campaign {campaign_id}: {outcome['segments']} segment(s) "
+                        f"not metered — {outcome['reason']}")
+    except Exception as e:
+        logger.error(f"Campaign {campaign_id} usage reporting failed: {e}")
 
 
 # ─── Scheduled send ─────────────────────────────────────────────────────────
@@ -74,6 +110,7 @@ async def run_due_campaigns() -> List[int]:
         for campaign_id in campaign_ids:
             try:
                 await service.send_campaign(campaign_id)
+                report_usage(db, campaign_id)
             except Exception as e:
                 # One bad campaign must not stop the rest of tonight's schedule.
                 logger.error(f"Scheduled campaign {campaign_id} failed: {e}")

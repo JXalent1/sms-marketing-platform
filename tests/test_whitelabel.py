@@ -470,3 +470,96 @@ def test_the_zero_send_reasons_name_no_carrier_and_quote_no_money():
         assert not CARRIER_RE.search(reason), reason
         assert "$" not in reason, reason
         assert rate not in reason, reason
+
+
+# ─── B1's new client-facing surfaces ────────────────────────────────────────
+#
+# Stripe is NOT scrubbed — it is the payment processor, it renders the page the
+# client types his card into and it appears on his statement, so hiding it would
+# be a defect. `WHOLESALE_COST_PER_SEGMENT` is a different question and the
+# answer is unchanged: it reaches none of these.
+
+
+def test_the_billing_routes_are_discovered_by_the_scan_above(client):
+    """A8's "confirm that", asserted rather than assumed.
+
+    The sweep discovers routes from the app's own table, so a new GET route is
+    covered the moment it exists — but "structurally covered" is a claim about
+    code that was never run against these particular paths. This names them.
+    """
+    routes = set(_get_routes())
+    for path in ("/subscribe", "/billing/success", "/api/billing/status"):
+        assert path in routes, f"{path} is not in the scanned set: {sorted(routes)}"
+
+
+def test_no_state_of_the_subscribe_page_carries_one_of_our_own_costs(client):
+    """Three renderings, because the sweep above only ever sees one of them.
+
+    In the suite Stripe is unconfigured, so the discovery scan walks the "not
+    switched on yet" body and nothing else. The configured and the subscribed
+    bodies are different markup with a different context dict, and the plan
+    figures — which is where a wholesale rate would plausibly be pasted in — only
+    render on those. A surface the scan cannot reach is a surface the scan does
+    not cover.
+    """
+    from app.core.database import SessionLocal
+    from app.models.app_setting import set_setting
+    from app.services import stripe_billing
+    from tests import _stripe_fixtures as fx
+
+    bodies = {"unconfigured": client.get("/subscribe").text}
+
+    db = SessionLocal()
+    try:
+        fx.clear_billing_rows(db)
+        with fx.stripe_configured(), fx.replaced_api(fx.FakeStripe()):
+            bodies["configured"] = client.get("/subscribe").text
+            set_setting(db, stripe_billing.CUSTOMER_ID_KEY, fx.CUSTOMER)
+            bodies["subscribed"] = client.get("/subscribe").text
+    finally:
+        fx.clear_billing_rows(db)
+        db.close()
+
+    # The three really are different pages, or this test is one page scanned
+    # three times — the "green check wired to nothing" failure, again.
+    assert 'id="notAvailable"' in bodies["unconfigured"]
+    assert 'id="subscribeBtn"' in bodies["configured"]
+    assert 'id="alreadySubscribed"' in bodies["subscribed"]
+
+    for state, body in bodies.items():
+        scan.assert_no_wholesale_figure(body, where=f"/subscribe ({state})")
+        assert not CARRIER_RE.search(body), state
+        # His rate, on the other hand, must be there: the page's whole job is to
+        # say what he is signing up for, and a scan that would pass on an empty
+        # page proves nothing.
+        assert str(settings.BILLING_PRICE_PER_SEGMENT) in body, state
+
+
+def test_the_billing_status_payload_is_walked_field_by_field(client):
+    """The strongest form of the assertion: no declared field holds our cost."""
+    from app.services import stripe_billing
+    from tests import _stripe_fixtures as fx
+
+    with fx.stripe_configured(), fx.replaced_api(fx.FakeStripe()):
+        payload = client.get("/api/billing/status").json()
+    assert payload["plan"]["price_per_segment"] == settings.BILLING_PRICE_PER_SEGMENT
+    scan.assert_no_wholesale_field(payload, where="/api/billing/status")
+    assert stripe_billing.NOT_CONNECTED  # the wording exists and is ours
+
+
+def test_a_checkout_failure_tells_the_client_nothing_the_sdk_said(client):
+    """The refusal is our sentence; the SDK's text stays in the log.
+
+    A payment error carries request ids, parameter names and price ids. The
+    client can act on none of it, and one of those ids is another client's if the
+    account is shared.
+    """
+    from tests import _stripe_fixtures as fx
+
+    fake = fx.FakeStripe(fail_with=RuntimeError(
+        "Invalid price: price_someone_elses_product (req_abc123)"))
+    with fx.stripe_configured(), fx.replaced_api(fake):
+        response = client.post("/api/billing/checkout")
+    assert response.status_code == 502
+    assert "req_abc123" not in response.text
+    assert "price_" not in response.text

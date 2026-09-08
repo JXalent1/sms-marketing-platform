@@ -26,7 +26,7 @@ import app.models                                    # noqa: F401 — registers 
 
 from app.routers import (pages, dashboard, campaigns, campaign_uploads, contacts,
                          categories, imports, blocklist, usage, reports, links,
-                         prospects, settings as settings_router)
+                         prospects, billing, settings as settings_router)
 from app.routers.webhooks import telnyx as telnyx_webhooks, twilio as twilio_webhooks
 
 logger = logging.getLogger("app")
@@ -127,6 +127,27 @@ async def lifespan(app: FastAPI):
         logger.info("SHORT_LINK_DOMAIN is unset | short links are off and the "
                     "host guard is a no-op")
 
+    # One line about Stripe on every boot, for the host guard's reason: its bad
+    # state is silent on every screen. A box with a secret key and no webhook
+    # secret takes payments and stores **nothing** — `verify_webhook()` fails
+    # closed, deliberately, because an unsigned payload writes the customer id
+    # this client's segments are billed to. That is the right refusal and the
+    # wrong thing to discover from an invoice, so it is loud here.
+    from app.services import stripe_billing
+    if stripe_billing.configured() and not settings.STRIPE_WEBHOOK_SECRET:
+        logger.error(
+            "STRIPE_SECRET_KEY is set and STRIPE_WEBHOOK_SECRET is not. Every "
+            "Stripe webhook will be IGNORED, so a completed checkout records no "
+            "customer and no usage is ever metered. Set the whsec_… value from "
+            "Developers -> Webhooks and restart."
+        )
+    elif stripe_billing.configured():
+        logger.info("Stripe billing active | metered price %s | webhook "
+                    "signature required", settings.STRIPE_PRICE_METERED)
+    else:
+        logger.info("Stripe is not configured | /subscribe says so and the "
+                    "checkout endpoint answers 503")
+
     # Register scheduled jobs here. Give every job an explicit id and
     # replace_existing=True, or a reload quietly stacks duplicates that all fire
     # at once.
@@ -145,6 +166,7 @@ async def lifespan(app: FastAPI):
     from apscheduler.triggers.interval import IntervalTrigger
     from app.services.campaign_dispatch import run_due_campaigns
     from app.services import monitoring_service
+    from app.services import stripe_tiers as billing_tiers
 
     scheduler.add_job(
         run_due_campaigns,
@@ -174,6 +196,27 @@ async def lifespan(app: FastAPI):
         monitoring_service.failure_digest_job,
         CronTrigger(hour=7, minute=0),
         id="daily_failure_digest", replace_existing=True, max_instances=1,
+        coalesce=True,
+    )
+
+    # The billing tier, once a day. The allowance lives in two systems — this
+    # repo and a tier in Stripe's dashboard — and a disagreement is a mispriced
+    # invoice, which is the one artefact the client audits.
+    #
+    # Session B1 first ran this check only at checkout, which meant a tier
+    # edited six months later was never detected: the exact failure the check
+    # exists to prevent, arrived at through the check rather than through its
+    # absence. Daily rather than hourly because a price in a dashboard moves at
+    # the speed of a person, and `tier_verdict()` ages an unrefreshed agreement
+    # into `stale` on its own, so a box whose scheduler died says so rather than
+    # quoting the answer it got in September.
+    #
+    # 06:00, before the failure digest, so an operator reading one signal at
+    # breakfast has both. coalesce so a laptop waking from sleep runs one check.
+    scheduler.add_job(
+        billing_tiers.daily_tier_check,
+        CronTrigger(hour=6, minute=0),
+        id="daily_tier_check", replace_existing=True, max_instances=1,
         coalesce=True,
     )
 
@@ -260,6 +303,9 @@ app.include_router(categories.router)
 app.include_router(imports.router)
 app.include_router(blocklist.router)
 app.include_router(usage.router)
+# Subscribe, the checkout return and Stripe's webhook. Registered before
+# `links.router` like every other page — `/subscribe` is a page, not a slug.
+app.include_router(billing.router)
 app.include_router(reports.router)
 app.include_router(prospects.router)
 app.include_router(settings_router.router)

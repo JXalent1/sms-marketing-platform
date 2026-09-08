@@ -704,6 +704,64 @@ change to a live table.
   <br>Both ways round: when you copy a guard, ask what makes it reachable *here*;
   when you add a lower guard, re-read the comment on the upper one.
 
+- **A pinned SDK's declared parameter types settle a spec's guesses offline, on
+  every run.** Three of session B1's clauses named Stripe fields the pinned SDK
+  does not have: `subscription_data.add_invoice_items` (a Subscription
+  parameter, never a Checkout one), a tier's `unit_amount` (an **integer** number
+  of cents, and this client's rate is one and a half of them), and
+  `subscription.current_period_start` (moved onto the subscription's items).
+  Written to the letter, the second reports disagreement on a *correct* price and
+  the third silently stores no anchor at all — which is the 1st-versus-9th
+  disagreement A4 exists to prevent, reached **through** the fix. All three were
+  caught by reading `stripe.params.…`'s TypedDicts before any code was written,
+  and all three now have a running assertion in `tests/test_stripe_contract.py`.
+  This is `test_provider_status.py`'s rule with the timing fixed: read the shape
+  *before* the code, not after the outage. `decisions/010`.
+- **A deterministic identifier makes a retry free and a correction impossible,
+  and those are the same property.** The Stripe meter dedupes on
+  `identifier=campaign_<id>`, which is exactly what a redeploy or a backfill
+  needs. It also means the figure can never be revised — so a campaign metered
+  when every row is `sent` stays metered at that number after the delivery
+  webhook moves rows to `undelivered`, which is outside `BILLABLE_STATUSES`.
+  Measured: 12,000 metered, `/usage` reports 8,000, the correction discarded, **in
+  our favour**. Before choosing an idempotency key, ask whether the quantity it
+  keys is final at the moment you report it. `decisions/011`.
+- **A guard placed one unit away from the invoice saves nothing, and a bound is
+  not the same thing as a dedupe.** `backfill_unreported()`'s identifier makes a
+  *repeat* free and does nothing about *history*: every campaign predating the
+  subscription would have been metered a second time, on top of the one-time
+  price that already settled it. Bound it — and bound it on `sms_messages.sent_at`
+  rather than `campaigns.created_at`, because a draft written in August and sent
+  in September belongs to September.
+- **A function that prices a window will price any window it is handed.**
+  `cost_for_segments()` subtracts the allowance from whatever it is given,
+  because it prices a cycle and cannot know whether it got one.
+  `tools/bill_period.py --start 2026-07-01 --end 2026-07-15` therefore gives half
+  a month its own free 10,000 segments: $120.00 as one run, **$0.00 + $0.00** as
+  two, every figure on both correct. When a tool takes arbitrary dates and the
+  arithmetic assumes a period, the tool owns the check.
+- **A check that runs once reports its answer forever.** B1's tier-drift check
+  first ran only at checkout, and `/health` quoted that verdict indefinitely — so
+  a price edited in Stripe six months later was never detected, which is the
+  failure the check exists to prevent, reached through the check. A verdict is a
+  claim about a thing *at a moment*: give it an age, and let an unrefreshed
+  agreement decay into its own state. Only agreement decays — a disagreement is
+  still true until somebody fixes it.
+- **`/health` is unauthenticated, and every field added to it is published.** It
+  has no login and no rate limit. B1 first put the tier-drift issues there
+  verbatim — "Stripe's first tier includes 5000 segments; this account is
+  configured for 10000" — which publishes the commercial terms to any scanner.
+  `config_issues` had already set the precedent: fixed generic wordings, no
+  account figures. The figures belong in the log and behind auth. Ask what a
+  stranger learns from every new field.
+- **A self-check that calls the thing it just replaced cannot fail.**
+  `accept-B1.sh` check 1b reassigned `socket.create_connection`, called
+  `socket.create_connection`, and reported that the no-network guard worked. It
+  was also testing the one patch of three that an HTTP client does not take — a
+  real request builds its own `socket.socket` and calls `.connect()`. A
+  known-answer check has to distinguish two outcomes it did not itself produce.
+  Sixth measurement script in this project to be wrong before the code was.
+
 ## Where things live
 
 - `A4A_BUILD_PLAN.md` — the full project plan and reasoning
@@ -885,6 +943,31 @@ and 004 were both settled by dumping the real strings and running the classifier
 them, which reordered the work and killed one proposed rule outright. Carrier
 documentation describes what a carrier *can* emit; the traffic says what it *does*.
 
+### The harness and the reviewer catch different things, and B1 measured it
+
+Session B1 ran `agent/mutate-B1.py` to 38 caught / 0 survived, on a verified
+pristine tree, with the gate green twice — and one synchronous fresh-context
+review then found **twelve defects**, two of them serious enough to move money.
+Eight became mutations `R1`-`R8`.
+
+The division is not luck and it generalises:
+
+- **A mutation harness proves a rule cannot be reverted.** It is the only tool
+  that catches a guard nobody tests, and it caught several in this repo.
+- **It cannot see a rule that was written slightly wrong in the first place**,
+  because the rule and its test agree with each other. B1's sharpest finding was
+  two *similar* arithmetics for one question — "how many segments is a row with
+  no stored count" — sitting in two modules with a docstring between them
+  asserting they agreed. They disagreed by a factor of three on any legacy row
+  over 160 characters, and every mutation and every test passed.
+- Nor can it see what a check *fails to cover*: that `/health` had become an
+  unauthenticated publisher of the account's commercial terms, that a check
+  which runs once reports its answer forever, or that a tool which prices a
+  window will price any window it is handed.
+
+So run both, and read a green mutation run as "these rules are nailed down",
+never as "this code is right".
+
 ### One synchronous reviewer, not a fan-out
 
 Session 5g ran four fresh-context reviewers. Three produced nothing across roughly a
@@ -948,6 +1031,17 @@ A harness that does not verify its preconditions is a green light wired to nothi
 run now checks the scratch tree is byte-identical to the repo first and prints
 `SCRATCH VERIFIED PRISTINE`. Do the same in every future harness — and treat "a test
 failed for a mutation unrelated to it" as evidence the harness is broken, not the test.
+
+**B1 added the second precondition: every anchor must resolve before the first
+patch is applied.** Splitting a module on the 500-line rule moved seven
+mutations into a new file, and the rewrite bled across one mutation's boundary.
+The harness reported that honestly — but only after spending a pytest run on
+every mutation ahead of it, and only one stale anchor per run, so a harness with
+five would take five runs to tell you. Resolving all of them up front costs
+milliseconds and prints `ANCHORS VERIFIED`. The general form: **a "did not
+apply" that is discovered lazily is a slow drip; check the whole set first.**
+And note which way this failure points — a mutation whose patch does not apply
+proves nothing and must never read as a pass.
 
 ### Unanchored substrings match numbers that happen to appear — three times now
 

@@ -1,6 +1,6 @@
 # Handoff
 
-_Last updated: 2026-09-04 (session P2). Sections append; the bottom is current._
+_Last updated: 2026-09-07 (session B1). Sections append; the bottom is current._
 
 ## What just happened
 
@@ -181,6 +181,26 @@ load-bearing:
   one address, and four creates here starved test_smoke and test_whitelabel of theirs.
   The cap is not weakened; the module gives back what it spends, and everything not
   testing the HTTP contract goes through the service instead.
+
+## What the review changed
+
+Twelve findings, all fixed except the escalation. The ones with a lesson in them:
+
+- **Two similar arithmetics beat two different ones, and a comment asserting
+  they agree is not an assertion.** `stripe_meter` priced a legacy row as 1
+  segment; `billing_service` priced it by length. A 480-character row metered as
+  1 and rendered as 3. `legacy_segment_count()` is now the one implementation.
+  The original test used a two-character message, so it could not see it.
+- **A tool that prices a window will price any window.** `bill_period.py` gave
+  half of July its own free 10,000 allowance — $120.00 as one run, $0.00 + $0.00
+  as two. It now names the cycle containing `--start` when the window is not it.
+- **A check that runs once reports its answer forever.** The tier check only ran
+  at checkout. Now: daily on the scheduler, and an unrefreshed agreement ages
+  into `stale` so a box whose scheduler died says so.
+- **A self-check that calls the function it just replaced cannot fail.** Check
+  1b did exactly that, and tested the one socket patch of three that an HTTP
+  client does not take. Fifth measurement script in this project to need fixing
+  before the code did.
 
 ## Verified this session
 
@@ -1391,3 +1411,158 @@ re-reads it from the table.
    the volume and the conversion — and which sweep runs first is yours.
 5. **Watch the carrier balance.** Lookups and sends draw on the same pot, so a
    large scrape can fail the next morning's campaign pre-flight.
+
+---
+
+# Session B1 — Stripe: settle August, then auto-bill usage (2026-09-07)
+
+## Where this leaves things
+
+One checkout that does two things: it charges the balance outstanding from
+before billing was automated, and it attaches the card every month afterwards is
+billed against. After that the client is never invoiced by hand again.
+
+**Nothing bills anybody yet.** There are no Stripe keys on this machine or in the
+repo's `.env`, so `/subscribe` renders "card payments are not switched on for
+this account yet", `POST /api/billing/checkout` answers 503, and the meter
+records nothing. That is a supported state, not a broken one, and it is the state
+the box will be in until Part B is done.
+
+`bash agent/gate.sh` green twice, 764 tests. `bash agent/accept-B1.sh` exits 0 on
+criteria 1-11. `agent/mutate-B1.py`: 47 mutations, 0 survived, identical on two
+consecutive invocations.
+
+**Nine of those forty-seven exist because of the review, not because of the
+build.** One synchronous fresh-context pass found twelve defects in a tree where
+the gate was green twice and the first thirty-eight mutations were all caught.
+That is the clearest evidence this project has produced for running both: a
+mutation harness proves a rule cannot be reverted, and only a reader notices a
+rule that was written slightly wrong in the first place. The sharpest was two
+*similar* arithmetics for the same question — how many segments is a row with no
+stored count — with a docstring between them asserting they agreed. They
+disagreed by a factor of three.
+
+## What landed
+
+- **`app/services/stripe_billing.py`** — the one object in the codebase that
+  touches the Stripe SDK (`StripeAPI`), the Checkout Session, `session_is_ours()`,
+  webhook verification, and the stored cycle anchor.
+- **`app/services/stripe_meter.py`** — what Stripe is *told*: `report_segments()`,
+  `backfill_unreported()`, and `period_usage()`, which the back-bill tool and
+  `/usage` both price from.
+- **`app/services/stripe_tiers.py`** — whether Stripe is *configured* to price
+  it the way we are: A2's drift check, its five states, and the wording
+  `/health` renders.
+- **`app/routers/billing.py`** — `/subscribe`, `/billing/success`,
+  `/api/billing/{status,checkout,tier-check}`, `POST /webhooks/stripe`.
+- **`tools/bill_period.py`** — the back-bill tool. Its August dry run prints
+  $270.03, from `billing_service`'s own functions.
+- **`/health` gained `pricing_ok`, `pricing_state`, `pricing_issues`,
+  `pricing_checked_at`.** Point the uptime monitor at `pricing_ok` as well as
+  `sending_ok`.
+
+## Six things worth knowing before you touch any of it
+
+1. **The meter gets the RAW segment count.** `billable_segments()` and the Stripe
+   tier both subtract 10,000; sending the first to the second subtracts it twice
+   and a 15,000-segment month invoices $0 while `/usage` still says $75 due. This
+   is the single most valuable line in the session and it has three tests and two
+   mutations on it.
+2. **Three of the spec's clauses named fields the pinned SDK does not have** —
+   `subscription_data.add_invoice_items`, a tier's `unit_amount` for a sub-cent
+   rate, and `subscription.current_period_start`. `decisions/010` records all
+   three with the evidence. If you change any of that code, read
+   `tests/test_stripe_contract.py` first: it asserts the shapes against the
+   installed package, so a bad pin fails at `pip install` rather than on the
+   morning the client tries to pay.
+3. **A campaign's metered figure is written once and can never be corrected.**
+   `decisions/011`, open, an escalation on billing item 1, and the one thing on
+   this list that costs real money. `identifier=campaign_<id>` is what makes a
+   retry free and it is the same property that discards a revision.
+   - We **over-bill** when a campaign has delivery failures: the meter fires
+     when every row is `sent`, the webhook later writes `undelivered`, and the
+     correction is discarded. Measured: 12,000 metered, `/usage` says 8,000.
+   - We **under-bill** every top-up: `campaign_topup.top_up_background` is the
+     third path that writes `sent` rows and nothing meters it.
+   Neither bites until the client subscribes. Do not "just add the hook" — the
+   identifier is spent. The recommendation is to meter once, on a schedule,
+   after delivery receipts have settled.
+4. **`backfill_unreported()` is bounded by the subscription start**, and that
+   bound is load-bearing. The identifier makes a *repeat* free; it does nothing
+   about *history*, and August's segments are already settled by the one-time
+   price. With no subscription stored it replays nothing and says so.
+5. **`billing_service.get_billing_cycle()` and `cycle_day()` take an optional
+   `db`.** With none they open a short-lived session to read the stored anchor
+   and fall back to `BILLING_CYCLE_DAY` on anything going wrong. Three callers
+   outside the module pass nothing (`report_service`, `preflight_totals`,
+   `usage.py`) and that costs one indexed single-row read each.
+6. **`/health` never calls Stripe, and never names a figure.** The tier check
+   runs daily on the scheduler and on demand, and stores a row; `/health` reads
+   the row without `Depends(get_db)`, for the reason `active_config_alerts()`
+   does. `test_health_makes_no_stripe_call` asserts the call count is zero.
+   The endpoint has no login and no rate limit, so `pricing_issues` says which
+   *state* and never what this account's allowance or rate is — the figures go
+   to the log and to the two authenticated billing routes. And an agreement
+   nobody has re-checked for a week reports as `stale`, not `agree`: a verdict
+   is a claim about a price at a moment.
+
+## Not done, and deliberately
+
+- **A3's live verification against a real Checkout Session.** It is
+  `bash agent/accept-B1.sh --with-stripe`, it refuses anything but an `sk_test_`
+  key, and it cannot run until Part B produces one. The offline half — reading
+  the SDK's own declared parameters — ran on every invocation and is what settled
+  the mechanism.
+- **A scheduled tier check.** A2 says on demand. It runs from
+  `POST /api/billing/tier-check` and once automatically after a completed
+  checkout.
+- **Refunds, proration, plan changes, dunning, the customer portal beyond
+  enabling it.** Out of scope by the spec.
+- **The deploy.** Unchanged from every session since 5c: the box is behind.
+
+## Verified this session
+
+- `bash agent/accept-B1.sh` — criteria 1-11 pass; 12 skipped for want of keys.
+- The back-bill tool's window warning, both ways: silent on a whole cycle,
+  loud on half of one, naming the cycle it should have been given.
+- The suite run with `socket.connect`, `connect_ex` and `create_connection`
+  raising: 85 passed across the four billing modules. The guard's own ability to
+  fire is proved separately against `api.stripe.com`.
+- The drift check printed against three prices — one correct, one with a
+  5,000-segment first tier, one at 2 cents — with `/health` answering 200 and
+  `sending_ok: true` on all three.
+- `tools/bill_period.py --start 2026-08-01 --end 2026-08-31` against a database
+  seeded with 28,002 August segments plus 15,000 that must not count (a failed
+  send, a held-back row, a September row): **$270.03**.
+- `--charge` without `--create` refused.
+
+## Part B — Jordan's, in the Stripe dashboard
+
+Unchanged from `sessions/session-B1.md` except item 3, which is now settled:
+
+1. **Billing → Meters → Create meter.** Event name `sms_segments`, aggregation
+   **Sum**, customer mapping `stripe_customer_id`, value key `value`. Those two
+   payload keys are asserted in
+   `test_the_meter_event_payload_uses_the_meters_own_field_names` — a payload
+   spelling either differently is accepted by the API and aggregates to nothing,
+   and a meter that reads zero looks exactly like a quiet month.
+2. **Product → one price: usage-based, graduated tiers, monthly, linked to the
+   meter** — up to 10,000 → $0, thereafter → $0.015 per unit. No flat price.
+3. **A one-time price of $270.03 is required**, not optional.
+   `subscription_data.add_invoice_items` does not exist on a Checkout Session in
+   this API version, so the balance rides as a second line item. Put its id in
+   `STRIPE_PRICE_BALANCE`.
+4. **Developers → Webhooks** → `{PUBLIC_BASE_URL}/webhooks/stripe`, event
+   `checkout.session.completed`. Copy the `whsec_…`. **Until it is set, every
+   webhook payload is ignored** — deliberately: what a trusted payload writes is
+   the customer id this client's segments are billed to.
+5. **Settings → Billing → Customer portal → enable.**
+6. Put `STRIPE_SECRET_KEY`, `STRIPE_PRICE_METERED`, `STRIPE_PRICE_BALANCE`,
+   `STRIPE_METER_EVENT_NAME`, `STRIPE_WEBHOOK_SECRET` and `PUBLIC_BASE_URL` in
+   `/home/appuser/app/.env` and restart.
+7. **Then run the tier check once** — `POST /api/billing/tier-check`, or just
+   complete the checkout, which runs it — and confirm `/health` reports
+   `pricing_ok: true`. Until it has run, a configured box reports
+   `pricing_state: "never_checked"` and `pricing_ok: false`, on purpose.
+8. **Then, once, with the test-mode key:**
+   `STRIPE_SECRET_KEY=sk_test_… STRIPE_PRICE_METERED=price_… bash agent/accept-B1.sh --with-stripe`

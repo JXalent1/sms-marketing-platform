@@ -38,3 +38,16 @@ httpx==0.26.0
 # said 2.1.2 for the whole of module 5b and nothing failed loudly.
 telnyx==4.175.0
 twilio==9.0.4
+
+# Payments — NOT the SMS carrier, and deliberately not white-labelled. Stripe
+# renders the page the client types his card into and appears on his statement.
+#
+# Pinned, and the pin is a runtime contract rather than a version number — the
+# lesson `telnyx==2.1.2` cost a launch. `tests/test_stripe_contract.py` asserts
+# the shapes this codebase actually drives against the installed package:
+# `checkout.Session.create`'s parameters (including that `subscription_data`
+# does NOT accept `add_invoice_items`, which is why the August balance is a
+# second line item), `Price.Tier`'s fields, and `billing.MeterEvent.create`'s
+# `identifier`. A pin that moves the shape fails at `pip install`, not on the
+# morning the client tries to pay.
+stripe==15.6.1

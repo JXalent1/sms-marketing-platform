@@ -41,6 +41,23 @@ Session specs are not edited after the fact — except when a resolved decision 
 worse than editing it. Strike the old text through, state which decision superseded it
 and why, and never silently swap. Precedent: 5g criterion 3, superseded by decision 004.
 
+### A spec clause naming a third-party field is unverified until the session checks it
+
+Four consecutive sessions have departed from a clause because it named an API field,
+parameter or return shape that does not exist as written — `decisions/007`, `008`, `010`,
+and the identifier lifetime in `011`. The common factor is not Stripe or FastAPI. It is
+that the name was written from memory and handed over with a spec's authority.
+
+So: **when a spec names something a third party owns — a parameter, a field, a limit, a
+guarantee — it is a hypothesis.** Cowork marks it as unverified when writing it. The
+session confirms it against the SDK or the reference *before* building on it, and a
+mismatch is a finding to record in `status.md`, not a departure to justify afterwards.
+
+State the **property** the clause exists to guarantee; let the session choose and prove the
+mechanism. The clause that cost the most so far claimed Stripe's meter identifier deduped
+backfills. It deduplicates over a rolling 24 hours, and the tool built on that claim would
+have billed a client twice.
+
 ### File size
 - No source file exceeds 500 lines. Hard rule.
 
