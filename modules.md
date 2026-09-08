@@ -39,6 +39,7 @@ client sending real campaigns.
 | 5i | **Named lists replace categories** | Part A done 2026-09-04 · deploy pending | 5h, P1b | `app/models/{contact_list,sms_message}.py`, `app/services/{contact_service,dashboard_service,campaign_builder,campaign_service,import_service,report_service,history_service}.py`, `app/routers/{campaigns,contacts,dashboard,imports}.py`, `app/templates/{campaigns,contacts,today}.html`, `app/templates/_composer-{script,upload}.html`, `alembic/versions/`, `tests/`, `agent/{accept-5i.sh,mutate-5i.py}` |
 | 5j | **Index migration, cost guard & list archive/rename** | **Part A done 2026-09-04** · accept + gate + mutation green · **deployed 2026-09-04** | 5i | `app/models/{contact_list,sms_message}.py`, `app/services/{contact_service,dashboard_service}.py`, `app/routers/contacts.py`, `app/services/list_admin.py` (new), `app/templates/{campaigns}.html`, `app/templates/_composer-{lists,script}.html`, `alembic/versions/`, `tests/`, `agent/{accept-5j.sh,mutate-5j.py}` |
 | 5k | **Close the attribute-escaping class** | Specced · small, run before or beside P2 | 5j | `app/templates/{base,_composer-script,blocklist,contact-history,settings}.html`, `tests/test_attribute_escaping.py`, `agent/accept-5k.sh` |
+| 5m | **Composer audience panel; time in Eastern** | **Specced · URGENT · ahead of everything** | 5j | `app/templates/{_composer-script,campaigns,today,history,campaign-report}.html`, `app/services/{campaign_dispatch,campaign_builder,suppression_service,dashboard_service}.py`, `app/routers/campaigns.py`, `app/core/config.py`, `alembic/versions/`, `tests/`, `agent/{accept-5m.sh,mutate-5m.py}` |
 | P1 | **Prospect pipeline** | Done · deployed 2026-09-01 | 5f | `app/models/{prospect,scrape}.py`, `app/models/__init__.py`, `app/sms/lookup.py`, `app/sources/prospect_base.py`, `app/sources/__init__.py`, `app/services/{prospect_service,prospect_queue,prospect_scoring,lookup_service,scrape_runner,link_service}.py`, `app/routers/prospects.py`, `app/routers/pages.py`, `app/templates/{prospects,base}.html`, `app/core/config.py`, `app/main.py`, `alembic/versions/`, `tests/`, `agent/{accept-P1.sh,mutate-P1.py}` |
 | P1b | **Lookup provider & gate flake** | Done · deployed 2026-09-01 | P1 | `app/sms/providers/telnyx_lookup.py`, `app/sms/lookup.py`, `app/services/lookup_service.py`, `app/core/config.py`, `.env.example`, `docs/API.md`, `CLAUDE.md`, `tests/{test_lookup_provider,test_wholesale_scan,_wholesale_scan}.py`, `tests/fixtures/number_lookup_responses.json`, `tests/{test_campaign_reports,test_whitelabel,test_campaign_preflight,test_capacity_rounding,test_degraded_send_path,test_prospect_review,test_prospect_pipeline}.py`, `agent/{accept-P1b.sh,mutate-P1b.py,accept-P1.sh}` |
 | P2 | **Google Places source** | **Part A NOT complete** · accept-P2 criterion 9 fails (D2 survived) · deployed but inert without a key | P1b | `app/sources/{google_places,taxonomy,exclusions,__init__,prospect_base}.py`, `app/services/{prospect_ingest,prospect_service,api_budget,scrape_runner}.py`, `app/models/scrape.py`, `app/core/config.py`, `.env.example`, `alembic/versions/`, `agent/{accept-P2.sh,mutate-P2.py,mutate-{5e,5f,5g,5h,P1}.py}`, `tests/` |
@@ -1251,3 +1252,26 @@ cycle*. Step 5 of `sessions/session-B1.md` Part B.
 **And a standing billing rule:** never change the metered price mid-cycle — Stripe drops
 grace-period usage from the current *and* subsequent invoices when a subscription item's
 price changes during a cycle. Rate changes wait for a boundary.
+
+## Found in production 2026-09-08 — two live defects, `sessions/session-5m.md`
+
+Both reported by the client's own operator while building a campaign. **5m runs ahead of
+P2b, 5k and B1c.**
+
+**1. The composer's summary panel describes two audiences at once.** With a 443-contact
+list selected, the panel read `Audience: ⭐ ALL BIDDERS — MAIN LIST`, `Recipients 10,146`,
+`Segments 443`. Three claims, three different audiences. `sumSegments` has two writers —
+`refreshPreview()` and the pre-flight report path — and nothing sequences the debounced
+preview responses, so a slow reply for a large audience can overwrite a fast one for a
+small one. The obvious explanation (a missing repaint) is **not** it: `paintAudienceSummary()`
+is wired to the select's `change` event. Whether a send would have gone to 443 or 10,146 is
+the first thing 5m must establish.
+
+**2. There is no timezone anywhere, and the droplet runs UTC.** `due_campaign_ids()`
+compares `scheduled_at` — a naive wall-clock from a `datetime-local` input — against a naive
+`datetime.now()`. No `TZ`, `tzinfo`, `ZoneInfo` or `utcnow` exists in `config.py`,
+`main.py` or `campaign_dispatch.py`. **A campaign scheduled for 6:00 PM Eastern dispatches
+at 2:00 PM Eastern**, four hours early in EDT and five in EST. For an auction house selling
+"the sale is tonight", an afternoon blast is worse than none. This is the third
+two-clocks-one-column defect in this codebase — after `contact_list_members.added_at` and
+`contact_lists.created_at` — and the first one that decides when a real person is texted.
