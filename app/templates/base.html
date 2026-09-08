@@ -237,6 +237,98 @@
 
 <div id="toastContainer" class="fixed bottom-4 right-4 z-50 space-y-2"></div>
 
+{# The client's clock, in its own block on purpose.
+
+   `tests/test_timezone.py` extracts exactly this script and runs it in node
+   under a deliberately wrong browser zone, which is the only way to prove that
+   a timestamp on screen is the client's wall clock rather than the viewer's.
+   That test finds the block by these markers, so keep them, and keep this block
+   free of anything that needs the DOM — it has no dependency beyond the zone
+   name below and it must stay that way. #}
+<script>
+/* app-time:start */
+// ─── Time, in the client's zone ─────────────────────────────────────────────
+//
+// Every timestamp this API returns is already the client's own wall clock:
+// APP_TIMEZONE is a setting, the process runs in it, and `app/core/clock.py`
+// states the rule. So `2026-09-09T18:00:00` means six in the evening in Fort
+// Lauderdale and nothing else.
+//
+// Be exact about what was wrong, because most of the old formatter was
+// accidentally right. **The four hours on screen were the stored value**: on a
+// UTC droplet a send at 6:00 PM Eastern was written as 22:00, and any formatter
+// printing those digits says "10:00 PM". The process zone is what fixes that.
+//
+// What `new Date(iso)` itself gets wrong is narrower and just as live. It reads
+// the digits in the **viewer's** zone, which round-trips for a datetime and
+// fails in two places: a date-only value is parsed as midnight **UTC**, so west
+// of UTC it renders the day before — /usage's reset date, every cycle, on the
+// client's own screen — and a wall clock inside the viewer's own DST gap does
+// not exist, so `Date` moves it (2:30 AM on 8 March renders as 3:30 AM).
+//
+// These parse the components and format them. No `Date`, no offset, no
+// arithmetic — and therefore nothing that can be wrong twice a year, and the
+// same answer on a laptop in California as on the one in the office.
+const APP_TIMEZONE = '{{ app_timezone }}';
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+                'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+function appTime(iso) {
+    const match = /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2}))?/.exec(String(iso ?? ''));
+    if (!match) return null;
+    const [, year, month, day, hour, minute] = match;
+    if (+month < 1 || +month > 12) return null;
+    return { year: +year, month: +month, day: +day,
+             hour: hour === undefined ? null : +hour,
+             minute: minute === undefined ? null : +minute,
+             date: `${year}-${month}-${day}` };
+}
+
+// "today" is the client's today, which is the one question here that the
+// viewer's own clock cannot answer on its own — so this is the single place a
+// zone name is used, and it is the app's, never the browser's.
+function appToday() {
+    try {
+        return new Date().toLocaleDateString('en-CA', { timeZone: APP_TIMEZONE });
+    } catch (e) {
+        return new Date().toLocaleDateString('en-CA');
+    }
+}
+
+function clockOf(t) {
+    const hour = t.hour % 12 || 12;
+    return `${hour}:${String(t.minute).padStart(2, '0')} ${t.hour < 12 ? 'AM' : 'PM'}`;
+}
+
+// "Sep 9, 2026, 6:00 PM" — the same shape this printed before, and the shape
+// every screen was built around. A date with no time prints as a date.
+function fmtDate(iso) {
+    if (!iso) return '—';
+    const t = appTime(iso);
+    if (!t) return String(iso);
+    const day = `${MONTHS[t.month - 1]} ${t.day}, ${t.year}`;
+    return t.hour === null ? day : `${day}, ${clockOf(t)}`;
+}
+
+// "9 Sep", for a rail that has no room for more.
+function fmtDay(iso) {
+    const t = appTime(iso);
+    return t ? `${t.day} ${MONTHS[t.month - 1]}` : String(iso);
+}
+
+// "6:00pm", or "6:00pm on 9 Sep" when it is not today. Deliberately the same
+// wording as the server's `clock.clock_time()`, which renders the same fact in
+// the pre-flight checklist and the abort reason — two renderings of one moment
+// must not read as two different moments.
+function fmtClock(iso) {
+    const t = appTime(iso);
+    if (!t || t.hour === null) return null;
+    const time = clockOf(t).replace(' ', '').toLowerCase();
+    return t.date === appToday() ? time : `${time} on ${t.day} ${MONTHS[t.month - 1]}`;
+}
+/* app-time:end */
+</script>
+
 <script>
 (function () {
     const sidebar  = document.getElementById('sidebar');
@@ -289,13 +381,6 @@ function esc(value) {
     const div = document.createElement('div');
     div.textContent = value == null ? '' : String(value);
     return div.innerHTML;
-}
-
-function fmtDate(iso) {
-    if (!iso) return '—';
-    const d = new Date(iso);
-    return isNaN(d) ? iso : d.toLocaleString('en-US',
-        { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' });
 }
 
 async function api(url, options) {

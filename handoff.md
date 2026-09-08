@@ -1662,3 +1662,103 @@ could not settle offline:
 - usage from a cycle's last day is metered up to ~25 hours after the cycle
   closes, backdated; check the account's invoice finalisation delay, or accept
   that those segments bill on the next invoice.
+
+**Added by session 5m — read `decisions/013` before doing any of the above.**
+5m put the application in the client's timezone, which changes what
+`stripe_billing._local_date()` computes: a subscription created at 02:00 UTC on
+the 1st anchors to day **1** on a UTC box and day **31** on an Eastern one. The
+anchor is derived once, at checkout, and nothing is anchored yet — so this is a
+question to answer *before* item 2 above, not a correction to make afterwards.
+It is the one piece of 5m's work a later session can get wrong for free.
+
+---
+
+# Session 5m — the composer's audience panel, and time in Eastern
+
+_2026-09-08. Two live defects, both found by the client's own operator._
+
+## What just happened
+
+**A1.** The composer's summary panel described three audiences at once —
+`⭐ ALL BIDDERS`, 10,146 recipients, and 443 segments — with a 443-contact list
+selected. Reproduced exactly, character for character, before anything was
+changed, against a database at the production shape; the write-up is in
+`status.md` under "A1 — what actually happened, reproduced". Three mechanisms,
+none of them the obvious one:
+
+1. assigning `select.value` fires no `change` event, so the Audience row was
+   never repainted after the upload flow moved the dropdown;
+2. nothing sequenced the `/preview` replies, and the reply about the audience he
+   had left behind is **twelve times slower** at this client's shape (237.9 ms
+   against 20.3 ms, measured), so it landed last;
+3. `runPreflight()` wrote two of the panel's six rows.
+
+**A send would have gone to 443, not 10,146** — established on both sides of the
+wire and written up. The panel is a description; the submit handler reads the
+dropdown, and `create_campaign()` resolves the selector itself.
+
+**A2.** The application had no timezone and the droplet runs UTC, so a campaign
+scheduled for 6:00 PM Eastern was dispatched at 2:00 PM. Every naive timestamp
+now means wall clock in `APP_TIMEZONE` (`America/New_York`), `clock.now()` asks
+`zoneinfo`, and the process sets itself to the client's zone at import so the
+sixty ambient `datetime.now()` writers agree without sixty edits.
+
+## State of the code
+
+`bash agent/gate.sh` green twice. **835 tests**, up from 788 at B1b.
+`bash agent/accept-5m.sh` exits 0 on checks 0-10. `agent/mutate-5m.py` reports
+**18 caught / 0 survived** on two consecutive invocations, both on a
+verified-pristine tree.
+
+## Read this before touching either area
+
+1. **The panel has one writer and one gate per response.** `paintSummary()` in
+   `_composer-summary.html` writes all six rows; `refreshPreview()` and
+   `runPreflight()` each take a ticket from `panelSequence` and return early if a
+   newer one exists. `paintSummary()` deliberately does not re-check the ticket —
+   with both callers gating it would be a guard no arrangement can reach, and
+   this project has shipped one of those already.
+2. **`node` is now a dependency of the test suite.** The panel is JavaScript and
+   `paintAudienceSummary()` *was* correctly wired, so no shape test over the
+   template could have found the defect. `tests/js/` runs the real partials in a
+   `vm`; `tests/test_composer_panel.py` feeds them response bodies from the real
+   endpoints in the same process. Absent node the tests **fail**, they do not
+   skip.
+3. **`scheduled_at` is wall clock, not an instant, and that is a ruling.**
+   `app/core/clock.py` carries the three reasons. Do not "fix" it by converting
+   to UTC: the values in the database were typed as Eastern wall clock, and
+   converting them would move the 6:00 PM campaign to 10:00 PM. Migration
+   `b7d43f0c9a15` is the adjudication and it converts only offset-bearing values,
+   which nothing in this application writes.
+4. **The repeated hour is safe because of the draft filter.** 1:30 AM happens
+   twice on 1 November; the campaign is dispatched on the first and is no longer
+   a draft on the second. `due_campaign_ids()` filters `status == "draft"` and
+   that filter is now load-bearing for a second reason. Do not weaken it.
+5. **Times render from one formatter, and it never builds a `Date` from a stored
+   value.** `fmtDate`/`fmtDay`/`fmtClock` in `base.html`, `clock.clock_time()` on
+   the server. A sweep fails the suite if any template constructs a `Date` from
+   a value again.
+6. **The panel says nothing while it waits, and that is deliberate.** Picking an
+   audience clears every figure to `…` until an answer about *that* audience
+   arrives. A self-consistent stale panel is harder to notice than the
+   contradictory one this session started with, and Create reads the dropdown.
+7. **`decisions/013` is open and it is about money.** Putting the process in the
+   client's zone moves which billing cycle an evening send lands in, and changes
+   the cycle anchor that will be derived from Stripe's subscription. Measured; no
+   billing file was edited. **Answer it before B1 Part B runs** — the anchor is
+   computed once, and nothing is metered or anchored yet.
+
+## For the deploy
+
+- The droplet needs **no `.env` edit**: `APP_TIMEZONE` defaults to the client's
+  zone. `.env` and `.env.production` were not touched, per the spec.
+- The box's own `TZ` no longer matters to this application. It still matters to
+  cron, to `scripts/backup.sh` and to the systemd journal's timestamps.
+- `alembic upgrade head` prints the adjudication of `campaigns.scheduled_at`:
+  how many rows were left as wall clock, how many converted, how many it could
+  not read and their ids. **That line is the record** — the development database
+  has no scheduled campaign at all, so the deploy is where this is answered.
+  Run `scripts/backup.sh` first, as with any migration that touches data.
+- There is at least one pending scheduled draft on the box
+  (`09/09, 6:00 PM Private Record Collection`). After this deploy it goes out at
+  6:00 PM Eastern. Before it, it would have gone out at 2:00 PM.

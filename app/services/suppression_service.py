@@ -29,6 +29,7 @@ from typing import List, Optional, Sequence, Tuple
 
 from sqlalchemy.orm import Session
 
+from app.core import clock
 from app.core.config import settings
 from app.models.app_setting import get_setting, set_setting
 
@@ -172,18 +173,17 @@ def clears_at_clock(stamp: Optional[str]) -> str:
     no setting, it converts a string this module produced into the words a
     client reads.
 
-    Server-local, like every other time this product prints. **Never raises** —
-    it is decoration on a sentence whose job is to explain a failure, and a
-    malformed timestamp must not take that sentence down with it.
+    In the client's zone, like every other time this product prints — and by
+    delegation rather than by a second copy of the arithmetic. 5m made that a
+    rule with teeth: `clock.clock_time()` is the one server-side renderer and
+    `fmtClock()` in `base.html` is its browser-side twin, so a stored timestamp
+    is spelled the same way whichever surface says it. This function stays
+    because two callers name it and because the reasoning above belongs beside
+    the function that computes the moment.
+
+    **Never raises** — it is decoration on a sentence whose job is to explain a
+    failure, and a malformed timestamp must not take that sentence down with it.
     """
-    try:
-        when = datetime.fromisoformat(stamp)
-    except (TypeError, ValueError):
-        return str(stamp)
-    hour = when.hour % 12 or 12
-    stamped = f"{hour}:{when.minute:02d}{'am' if when.hour < 12 else 'pm'}"
-    if when.date() == datetime.now().date():
-        return stamped
-    return f"{stamped} on {when.day} {when.strftime('%b')}"
+    return clock.clock_time(stamp)
 
 

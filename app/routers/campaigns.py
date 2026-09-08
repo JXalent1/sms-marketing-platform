@@ -22,10 +22,9 @@ from app.services.campaign_service import (
 )
 from app.services.campaign_dispatch import send_campaign_background
 from app.services import (
-    campaign_topup, contact_service, link_service, preflight_service,
-    suppression_service,
+    audience_split, campaign_topup, contact_service, link_service,
+    preflight_service,
 )
-from app.services.blocklist_service import load_blocked_set
 from app.sms.factory import get_provider, send_path_assessment
 from app.sms.segments import describe
 from app.sms.phone import normalize, scrub_provider_text, find_risky_links
@@ -65,6 +64,13 @@ class TestSMSRequest(BaseModel):
 class PreviewRequest(BaseModel):
     message_template: str
     audience: Optional[str] = None
+    # Sent since 5m. The composer had a batch-size field wired to re-run this
+    # preview and never sent the value, so the summary panel quoted 443
+    # recipients for a send capped at 50 while the checklist beside it — which
+    # does pass the cap — quoted 50. Two answers to "how many people does this
+    # send reach", on one screen. `create_campaign()` applies the cap, so the
+    # capped figure is the true one and both surfaces now ask the same question.
+    batch_size: Optional[int] = None
 
 
 class PreflightRequest(BaseModel):
@@ -81,59 +87,23 @@ async def audiences(db: Session = Depends(get_db), user: str = Depends(require_a
     return {"audiences": contact_service.list_summaries(db)}
 
 
-def _audience_split(db: Session, audience: Optional[str],
-                    batch_size: Optional[int] = None) -> dict:
-    """What an audience selector actually resolves to, before anything is sent.
-
-    Returns the counts the composer's summary panel shows and one sample contact
-    for the phone preview. The partition is the same call `create_campaign()`
-    makes, so the composer's numbers and the draft's numbers cannot disagree.
-
-    A bad selector reports zeros rather than raising: this runs on every
-    keystroke and a half-typed selector is not an error worth a 500.
-    """
-    days = suppression_service.suppression_days(db)
-    empty = {"recipients": 0, "suppressed": 0, "opted_out": 0, "sample": None,
-             "suppression_days": days, "suppression_clears_at": None,
-             "sendable": []}
-    if not audience:
-        return empty
-    try:
-        resolved = contact_service.resolve_audience(db, audience)
-    except ValueError:
-        return empty
-
-    sendable, suppressed = suppression_service.partition_recent(db, resolved)
-    if batch_size and batch_size > 0:
-        sendable = sendable[:batch_size]
-
-    # Opted-out numbers are counted, not removed: the send loop is what refuses
-    # them, and the count belongs on screen beforehand rather than in the
-    # post-mortem. One query for the whole set, not one per contact.
-    blocked = load_blocked_set(db)
-    return {
-        "recipients": len(sendable),
-        "suppressed": len(suppressed),
-        "opted_out": sum(1 for c in resolved if c.phone in blocked),
-        "sample": sendable[0] if sendable else None,
-        # A6: the held-back count already existed and was only ever shown as a
-        # bare number. When it clears is the half that decides whether he waits
-        # or re-cuts the audience, and it is computable from the set we are
-        # already holding — so it is computed here, once, rather than left to a
-        # screen to work out from a window it would have to look up separately.
-        "suppression_days": days,
-        "suppression_clears_at": suppression_service.suppression_clears_at(
-            suppressed, days),
-        # The resolved audience itself, for pre-flight's per-recipient render.
-        # /preview ignores it: that runs on every keystroke and must stay cheap.
-        "sendable": sendable,
-    }
-
-
 @router.post("/preview")
-async def preview(payload: PreviewRequest, db: Session = Depends(get_db),
-                  user: str = Depends(require_auth)):
+def preview(payload: PreviewRequest, db: Session = Depends(get_db),
+            user: str = Depends(require_auth)):
     """Cost and deliverability preview — call this before every send.
+
+    **`def`, not `async def`, and that is 5j's lesson rather than a style.**
+    Nothing in here awaits: it is synchronous SQLAlchemy, and on an `async def`
+    route it therefore runs *on the event loop*. `audience_split.resolve(db,
+    "all")` materialises every active contact, partitions 10,146 of them and
+    loads a 3,460-row blocklist — 237.9 ms measured, on a machine an order of
+    magnitude faster than the client's one-vCPU droplet — and `run_due_campaigns`
+    ticks on that same loop every minute while the rail polls every five seconds.
+    5j watched a reporting query hold the loop and make the scheduler miss its
+    tick by 38 seconds. Session 5m gave this endpoint one more caller (the panel
+    is fetched before a message is typed), which is the wrong direction to move
+    while it is on the loop. FastAPI runs a `def` path operation in a worker
+    thread.
 
     Shows the real segment count (so an emoji's 2.4x cost is visible before the
     blast, not on the invoice) and flags shortener links carriers will drop.
@@ -150,8 +120,19 @@ async def preview(payload: PreviewRequest, db: Session = Depends(get_db),
     # segment figure on screen next to a phone preview that contradicts it.
     counted = link_service.for_counting(payload.message_template)
     breakdown = describe(counted)
-    split = _audience_split(db, payload.audience)
+    split = audience_split.resolve(db, payload.audience, payload.batch_size)
     recipients = split["recipients"]
+
+    # A message that does not exist is not a one-segment message. `describe("")`
+    # answers 1, because it answers about text, and since 5m this endpoint is
+    # also how the composer fills its summary panel *before* anything is typed —
+    # so that 1 would quote the client 10,146 segments and $2.19 for an empty
+    # box. The audience half of the answer is the same either way; only the
+    # message half is zeroed, and it is zeroed here rather than in
+    # `count_sms_segments()`, which is correct and is not being asked this
+    # question.
+    written = bool(payload.message_template)
+    priced_for = recipients if written else 0
 
     # Rendered against a real contact, not a made-up "Jane Doe". A merge tag
     # that is empty for half the list — the contact with no name, the attribute
@@ -167,6 +148,12 @@ async def preview(payload: PreviewRequest, db: Session = Depends(get_db),
 
     return {
         **breakdown,
+        "segments": breakdown["segments"] if written else 0,
+        # Which audience this whole answer is about. The composer's panel paints
+        # every row from one response, and it names the audience from this
+        # rather than from the control it happens to be sitting next to.
+        "audience": split["audience"],
+        "audience_label": split["audience_label"],
         "recipients": recipients,
         "suppressed": split["suppressed"],
         # A6. The composer draws these; it does not decide when the hold clears
@@ -177,14 +164,14 @@ async def preview(payload: PreviewRequest, db: Session = Depends(get_db),
         "opted_out": split["opted_out"],
         "preview_text": preview_text,
         "sample_name": sample.display_name() if sample else None,
-        "total_segments": breakdown["segments"] * recipients,
+        "total_segments": breakdown["segments"] * priced_for,
         "risky_links": find_risky_links(payload.message_template),
         # The composer needs both facts and must not derive either: whether the
         # message uses the tag, and whether this box can mint a link at all.
         "link_tag": link_service.LINK_TAG,
         "link_in_message": link_service.has_link_tag(payload.message_template),
         "link_available": link_service.configured(),
-        **preflight_service.cost_estimates(db, counted, recipients),
+        **preflight_service.cost_estimates(db, counted, priced_for),
     }
 
 
@@ -206,7 +193,7 @@ async def preflight(payload: PreflightRequest, db: Session = Depends(get_db),
     if payload.category_id and category is None:
         raise HTTPException(status_code=404, detail="Category not found")
 
-    split = _audience_split(db, payload.audience, payload.batch_size)
+    split = audience_split.resolve(db, payload.audience, payload.batch_size)
     service = CampaignService(db)
 
     # Rendered per recipient, not counted off the raw template. `create_campaign`
@@ -251,6 +238,12 @@ async def preflight(payload: PreflightRequest, db: Session = Depends(get_db),
         link_target_url=payload.link_target_url,
     )
     report["counts"]["opted_out"] = split["opted_out"]
+    # Same two keys /preview carries, for the same reason: the composer's panel
+    # is painted from whichever of the two responses is newest, and a panel row
+    # that named its audience from anywhere but the response is how three
+    # audiences ended up on one screen.
+    report["audience"] = split["audience"]
+    report["audience_label"] = split["audience_label"]
     return report
 
 

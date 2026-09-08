@@ -15,10 +15,16 @@ from contextlib import asynccontextmanager
 import os
 import logging
 
+# The process zone first, and before `setup_logging()`: `logging_config` names
+# the day's log file from `datetime.now()`, so on a UTC droplet a boot between
+# 8 PM and midnight Eastern would open tomorrow's file. Importing config is what
+# applies the zone — it is the one module every entry point imports, which is why
+# it owns that side effect.
+from app.core import clock                            # noqa: F401 — applies the zone
+from app.core.config import settings
+
 from app.core.logging_config import setup_logging
 setup_logging()
-
-from app.core.config import settings
 from app.core.database import engine
 from app.services import link_service
 from app.sms.factory import get_provider
@@ -95,7 +101,17 @@ def _ensure_schema() -> None:
 
 _ensure_schema()
 
-scheduler = AsyncIOScheduler()
+# The client's zone, passed rather than inherited — and this is **not** a guard,
+# which the mutation harness is what established. `app.core.config` sets the
+# process timezone at import, long before this line runs, so a bare
+# `AsyncIOScheduler()` would infer the same zone and no test can tell the two
+# apart. It is here for two smaller reasons, and the comment says so rather than
+# reading as a rule somebody would later defend: a reader of this file can see
+# what zone the scheduler keeps without knowing about a side effect in another
+# module, and `apply_process_timezone()` is a no-op on a platform without
+# `time.tzset()`, where this argument would be the only thing left saying it.
+# What the zone fixes here is the log — every job time printed as UTC.
+scheduler = AsyncIOScheduler(timezone=clock.ZONE)
 
 
 @asynccontextmanager

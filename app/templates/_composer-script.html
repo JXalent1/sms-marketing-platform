@@ -64,7 +64,7 @@ let composerMode = 'upload';
 // summary panel below can echo the selected option verbatim instead of holding a
 // second spelling of the same words.
 
-async function loadAudiences() {
+async function loadAudiences(preferred) {
     const data = await api('/api/campaigns/audiences');
     const select = el('audience');
     // What he had picked, so a reload does not move it. This ran once on page
@@ -74,30 +74,29 @@ async function loadAudiences() {
     const chosen = select.value;
     if (!data.audiences?.length) {
         select.innerHTML = '<option value="">No contacts yet</option>';
-        paintAudienceSummary();
+        await refreshPreview();
         return;
     }
     select.innerHTML = data.audiences
         .map(a => `<option value="${attr(a.selector)}" data-label="${attr(a.label)}">`
                 + `${esc(a.label)} — ${a.count.toLocaleString()} contacts</option>`)
         .join('');
+    // `preferred` is a selector the caller has just created and wants selected —
+    // the list an upload made. It is passed in rather than assigned by the
+    // caller afterwards because assigning `select.value` fires no `change`
+    // event, so the panel would keep describing the audience this function left
+    // it on; that is one of the three defects behind 5m's three-audience panel.
+    // Selecting *before* the refresh below is also what makes it one request
+    // instead of two, the first of them about the wrong audience.
+    const wanted = [preferred, chosen].find(
+        v => v && data.audiences.some(a => a.selector === v));
     // Only when it survived. An archived list is gone from this payload on
     // purpose, and the browser then falls back to the first option — which is
     // the honest outcome, and the summary panel below follows it.
-    if (chosen && data.audiences.some(a => a.selector === chosen)) select.value = chosen;
-    paintAudienceSummary();
-    refreshPreview();
-}
-
-// The summary panel's Audience row. It echoes the label the server sent, carried
-// on the option as a data attribute rather than parsed back out of the option's
-// text: the pinned entry's own wording contains an em dash, so splitting the
-// visible text on one would truncate exactly the label this row exists to show.
-// The em dash here is for the state where nothing is selected at all.
-function paintAudienceSummary() {
-    const chosen = el('audience').selectedOptions[0];
-    el('sumAudience').textContent =
-        (chosen && chosen.value && chosen.dataset.label) ? chosen.dataset.label : '—';
+    if (wanted) select.value = wanted;
+    // Awaited, so a caller that goes on to run pre-flight cannot have the two
+    // replies race each other.
+    await refreshPreview();
 }
 
 // ─── Step 2: live metering ──────────────────────────────────────────────────
@@ -120,27 +119,41 @@ function schedulePreview() {
 }
 
 async function refreshPreview() {
+    // An immediate refresh supersedes a queued one: they would ask the identical
+    // question, and the queued one arriving later is a second answer nobody
+    // needs. `setMode('existing')` arms one 300 ms before the upload flow calls
+    // this directly, and on a fast box that late duplicate is what used to hide
+    // the stale-reply defect in development.
+    clearTimeout(previewTimer);
+
     const template = el('message').value;
     const audience = el('audience').value;
-    if (!template) { return; }
     // In upload mode the audience does not exist yet, and the dropdown still
     // holds whatever the other tab was pointing at. Counting that would put one
-    // audience's numbers on screen while he commits to another.
+    // audience's numbers on screen while he commits to another. `setMode()`
+    // paints the empty panel; nothing here may leave a figure behind.
     if (composerMode === 'upload') { return; }
 
+    // Taken after the guard above, and before the request: it is the request's
+    // ticket, and a reply holding anything but the newest ticket is discarded.
+    // No early return for an empty message — the panel's audience, recipients
+    // and opted-out figures are true before a word is typed, and this response
+    // is the only thing allowed to supply them. /preview reports zero segments
+    // and zero cost for an empty template, because a message that does not
+    // exist is not a one-segment message.
+    const token = panelRequest();
     const data = await api('/api/campaigns/preview', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message_template: template, audience }),
+        body: JSON.stringify({ message_template: template, audience,
+                               batch_size: batchSize() }),
     });
+    if (panelStale(token)) { return; }
     lastPreview = data;
 
     el('pvChars').textContent = data.characters;
     el('pvEncoding').textContent = data.encoding;
     el('pvSegments').textContent = data.segments;
-    el('pvRecipients').textContent = data.recipients.toLocaleString();
-    el('pvTotal').textContent = data.total_segments.toLocaleString();
-    el('pvCost').textContent = money(data.estimated_cost);
 
     el('pvText').textContent = data.preview_text || 'Your message appears here…';
     el('previewWho').textContent = data.sample_name
@@ -149,47 +162,19 @@ async function refreshPreview() {
     el('pvSegmentNote').textContent =
         `${data.segments} segment${data.segments === 1 ? '' : 's'} · ${data.encoding}`;
 
-    el('sumRecipients').textContent = data.recipients.toLocaleString();
-    el('sumSuppressed').textContent = (data.suppressed || 0).toLocaleString();
-    el('sumOptedOut').textContent = (data.opted_out || 0).toLocaleString();
-    el('sumSegments').textContent = data.total_segments.toLocaleString();
-    el('sumCost').textContent = money(data.estimated_cost);
-
-    paintSuppression(data);
+    paintSummary(previewSummary(data));
     paintUnicodeWarning(data);
     paintLinkWarning(data);
     paintLink(data);
 }
 
-// A6 — what the hold-back rule is doing to this audience, before it is queued.
-// Silent at a window of 0: nothing is held back, and explaining a rule that is
-// not running is noise. Silent with nothing held back for the same reason.
-function paintSuppression(data) {
-    const note = el('sumSuppressedNote');
-    const days = data.suppression_days ?? 0;
-    const held = data.suppressed || 0;
-    if (days <= 0 || !held) { note.classList.add('hidden'); note.textContent = ''; return; }
-
-    const when = data.suppression_clears_at ? clockTime(data.suppression_clears_at) : null;
-    note.textContent =
-        `${held.toLocaleString()} held back — texted in the last ${days} day` +
-        `${days === 1 ? '' : 's'}` +
-        (when ? `, clears ${when}.` : '.');
-    note.classList.remove('hidden');
-}
-
-// "10:11am", or "10:11am on 29 Aug" when it is not today. Deliberately the same
-// shape as the server's own wording in the pre-flight row — two renderings of
-// one fact should not read as two different facts.
-function clockTime(iso) {
-    const when = new Date(iso);
-    if (isNaN(when)) return null;
-    const time = when.toLocaleTimeString('en-US',
-        { hour: 'numeric', minute: '2-digit' }).replace(' ', '').toLowerCase();
-    const today = new Date();
-    return when.toDateString() === today.toDateString()
-        ? time
-        : `${time} on ${when.getDate()} ${when.toLocaleString('en-US', { month: 'short' })}`;
+// The cap, read the same way by both requests and by the create. It is sent to
+// /preview since 5m: the field was wired to re-run this preview and the value
+// was never in the body, so the panel answered "how many people does this send
+// reach" without the cap while the checklist beside it answered with one.
+function batchSize() {
+    const batch = parseInt(el('batchSize').value, 10);
+    return Number.isFinite(batch) ? batch : null;
 }
 
 function paintUnicodeWarning(data) {
@@ -225,7 +210,21 @@ function paintLinkWarning(data) {
 }
 
 el('message').addEventListener('input', schedulePreview);
-el('audience').addEventListener('change', () => { paintAudienceSummary(); schedulePreview(); });
+// No separate repaint of the Audience row — the panel is painted from the
+// response `schedulePreview()` is about to fetch, which is what stops the row
+// and the figures beside it describing two different audiences.
+//
+// What the change handler does instead is **clear** the panel. The reply is 300
+// ms of debounce plus a request away — 237.9 ms for the whole database at this
+// client's shape, more on his box — and until it lands the panel would describe
+// the audience he just moved off, every row of it agreeing with every other,
+// while the dropdown beside it named a different one and the Create button sent
+// to that one. The ordering guard fixes which reply wins; it cannot make a reply
+// arrive. Saying nothing is the only honest thing to say in that window.
+el('audience').addEventListener('change', () => {
+    paintSummary(pendingSummary());
+    schedulePreview();
+});
 el('batchSize').addEventListener('input', schedulePreview);
 
 // ─── Step 3: pre-flight ─────────────────────────────────────────────────────
@@ -258,17 +257,33 @@ async function runPreflight() {
     }
 
     list.innerHTML = '<li class="px-5 py-4 text-[13px] text-ink-3">Running checks…</li>';
-    const batch = parseInt(el('batchSize').value, 10);
+    // The same ticket the preview takes, from the same counter. Either response
+    // can fill the panel, so either can arrive too late to be true — and a
+    // checklist about a superseded audience is worse than a preview about one,
+    // because this is the screen whose whole job is to stop a bad send.
+    const token = panelRequest();
     const report = await api('/api/campaigns/preflight', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
             message_template: message,
             audience,
-            batch_size: Number.isFinite(batch) ? batch : null,
+            batch_size: batchSize(),
             link_target_url: linkTarget(),
         }),
     });
+    // A superseded report must not paint — but the list is already showing
+    // "Running checks…", and returning here left that spinner up forever: the
+    // one screen whose job is to stop a bad send, stuck, with nothing saying
+    // why. Decision 006's rule is that a refusal owes a cause and a remedy, and
+    // this is a refusal this session added.
+    if (panelStale(token)) {
+        list.innerHTML = '<li class="px-5 py-4 text-[13px] text-ink-3">'
+            + 'The audience or the message changed while the checks were '
+            + 'running, so this report is about a different send. '
+            + 'Press “Run checks” again.</li>';
+        return;
+    }
 
     // The server decides what each check says. This only draws it — a check
     // whose wording lived here would say one thing on screen and another over
@@ -288,11 +303,10 @@ async function runPreflight() {
     // Pre-flight measured the template against every resolved recipient, so its
     // total supersedes the keystroke estimate the summary panel was carrying.
     // Leaving the estimate up next to a checklist that says otherwise is how a
-    // quote and an invoice end up disagreeing.
-    if (report.counts?.segments_measured) {
-        el('sumSegments').textContent = report.counts.total_segments.toLocaleString();
-        el('sumCost').textContent = money(report.estimated_cost);
-    }
+    // quote and an invoice end up disagreeing — but it supersedes it as a whole
+    // answer about one audience. Writing two of the six rows and leaving the
+    // other four describing a different audience is the defect itself.
+    paintSummary(preflightSummary(report));
 }
 
 // ─── Commit ─────────────────────────────────────────────────────────────────
@@ -310,8 +324,13 @@ el('composer').addEventListener('submit', async function (e) {
 
     if (!name || !audience || !message) { showToast('Fill in every field', 'error'); return; }
 
-    const batch = parseInt(el('batchSize').value, 10);
-    const when = el('scheduledAt').value;      // "2026-08-20T09:00", already local
+    // The same reader the two previews use. A second `parseInt` here is how the
+    // cap the panel quoted and the cap the campaign was built with come to
+    // differ by an empty string.
+    const batch = batchSize();
+    // "2026-08-20T09:00" — the wall clock he typed, in the client's zone, which
+    // is what `campaigns.scheduled_at` means. See app/core/clock.py.
+    const when = el('scheduledAt').value;
     const button = this.querySelector('button[type=submit]');
     button.disabled = true;
     try {
@@ -322,7 +341,7 @@ el('composer').addEventListener('submit', async function (e) {
                 name,
                 message_template: message,
                 audience,
-                batch_size: Number.isFinite(batch) ? batch : null,
+                batch_size: batch,
                 scheduled_at: when ? `${when}:00` : null,
                 link_target_url: linkTarget(),
             }),
@@ -419,11 +438,9 @@ function recipientLine(c) {
     return `${(total - added).toLocaleString()} + ${parts.join(' + ')}`;
 }
 
-function shortDate(iso) {
-    const when = new Date(iso);
-    if (isNaN(when)) return iso;
-    return `${when.getDate()} ${when.toLocaleString('en-US', { month: 'short' })}`;
-}
+// `fmtDay` in base.html. This was its own `new Date(iso)`, which read a stored
+// wall clock in the viewer's zone; there is one formatter now.
+const shortDate = (iso) => fmtDay(iso);
 
 async function sendCampaign(id) {
     if (!confirm('Send this campaign now? This spends real money and cannot be undone.')) return;

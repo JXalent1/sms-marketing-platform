@@ -34,12 +34,14 @@ function setMode(mode) {
     if (mode === 'upload') { resetSummary(); } else { schedulePreview(); }
 }
 
+// Through the panel's one writer, with a fresh ticket — which is what makes it
+// stick. Before 5m this zeroed the rows directly, and a /preview already in
+// flight for the previous tab's audience landed a moment later and filled them
+// back in, underneath an upload composer. Taking a ticket retires every reply
+// still on its way.
 function resetSummary() {
-    ['sumRecipients', 'sumSuppressed', 'sumOptedOut', 'sumSegments']
-        .forEach(id => { el(id).textContent = '0'; });
-    el('sumCost').textContent = '—';
-    el('sumSuppressedNote').classList.add('hidden');
-    el('sumAudience').textContent = '—';
+    panelRequest();          // retires every reply still on its way
+    paintSummary(EMPTY_SUMMARY);
 }
 
 document.querySelectorAll('.audience-mode').forEach(tab => {
@@ -119,8 +121,8 @@ async function createFromUpload(name, message) {
 
     form.append('name', name);
     form.append('message_template', message);
-    const batch = parseInt(el('batchSize').value, 10);
-    if (Number.isFinite(batch)) { form.append('batch_size', batch); }
+    const batch = batchSize();       // one reader, shared with both previews
+    if (batch !== null) { form.append('batch_size', batch); }
     const when = el('scheduledAt').value;
     if (when) { form.append('scheduled_at', `${when}:00`); }
     // The upload path takes the link destination too. Leaving it off here would
@@ -152,14 +154,18 @@ async function createFromUpload(name, message) {
         // Switching the form to that list is what makes "Run checks" and a
         // second send do the right thing without him re-uploading.
         //
-        // The audience is set *after* the dropdown is repopulated: assigning a
-        // value for an <option> that does not exist yet silently leaves the
-        // select on its previous choice, and the checks would then describe the
-        // wrong list.
+        // The new list is handed to `loadAudiences()` rather than assigned
+        // afterwards. Two reasons, and 5m found both the hard way. Assigning
+        // `select.value` fires no `change` event, so the panel kept describing
+        // whatever audience the reload had left the control on — the pinned "all
+        // bidders" entry — while every figure beside it described the upload's
+        // list. And the assignment could only happen *after* the dropdown was
+        // repopulated, by which point `loadAudiences()` had already dispatched a
+        // preview for the wrong audience; at this client's shape that reply is
+        // the slowest thing in flight and it landed last, painting 10,146
+        // recipients under a 443-contact list.
         setMode('existing');
-        await loadAudiences();
-        el('audience').value = `list:${data.import.list_id}`;
-        await refreshPreview();
+        await loadAudiences(`list:${data.import.list_id}`);
         await runPreflight();
     } finally {
         button.disabled = false;

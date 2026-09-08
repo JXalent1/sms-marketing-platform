@@ -26,6 +26,7 @@ from typing import List, Optional
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app.core import clock
 from app.core.config import settings
 from app.models.campaign import Campaign
 from app.models.blocked_number import BlockedNumber
@@ -165,7 +166,11 @@ def next_up(db: Session, cards: List[dict]) -> Optional[dict]:
     if scheduled_at is not None:
         campaign = (db.query(Campaign)
                     .filter(scheduled_at.isnot(None),
-                            scheduled_at >= datetime.now().isoformat(),
+                            # The client's wall clock, not the box's. Same
+                            # comparison the scheduler makes and it has to use
+                            # the same "now": on a UTC droplet this listed a
+                            # 6:00 PM campaign as past four hours before it was.
+                            scheduled_at >= clock.now_iso(),
                             Campaign.status.notin_(("completed", "aborted", "failed")))
                     .order_by(scheduled_at.asc())
                     .first())

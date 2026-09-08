@@ -7,7 +7,7 @@ an .env edit.
 
 import re
 
-from app.core.config import settings
+from app.core.config import APP_ZONE_NAME, settings
 
 # Matches --brand / --accent for the dark (default) theme in
 # app/assets/tailwind.css. Kept in sync by hand — there is no build step that
@@ -59,3 +59,9 @@ def install(templates):
     """Attach brand + a few feature flags to every template render."""
     templates.env.globals["brand"] = brand_context()
     templates.env.globals["billing_enabled"] = settings.BILLING_ENABLED
+    # The client's zone, for `base.html`'s date helpers. Not branding, and here
+    # anyway because this is the one function every template renderer calls and
+    # a second install hook would be a second place to forget. It is the
+    # *resolved* name rather than the raw setting, so a template can never print
+    # a zone the application is not actually keeping — see `_resolve_zone()`.
+    templates.env.globals["app_timezone"] = APP_ZONE_NAME

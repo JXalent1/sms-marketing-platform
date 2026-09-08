@@ -1,0 +1,145 @@
+{# The composer's summary panel — the "This send" box, and the one function
+   that writes every row of it.
+
+   Split out of `_composer-script.html` in session 5m, which put that file at 538
+   lines against a 500-line rule. The boundary is not arbitrary: this is the
+   panel's *whole* writer, and the session's finding was that the panel had
+   three of them. A partial containing exactly one function that may touch those
+   rows is the shape of the fix as much as the code is.
+
+   Included **before** `_composer-script.html` so that `panelSequence` and
+   `EMPTY_SUMMARY` — top-level `const`s, which live in the shared global lexical
+   environment and are in their temporal dead zone until this block runs — are
+   initialised before anything can reach them. `setMode('upload')` at the bottom
+   of `_composer-upload.html` calls `paintSummary()` synchronously at parse time,
+   and that is the call this ordering exists for.
+
+   It uses `el()` and `money()` from `_composer-script.html`, and only ever from
+   inside a function body, so those resolve at call time and the order is safe in
+   that direction too.
+
+   A .html partial rather than a file under app/static/ for its siblings'
+   reason — Tailwind's content scan is `./app/templates/**/*.html`. This file
+   happens to build no class names today; keeping it here means it can, and
+   means the composer is one set of files rather than one set and an exception. #}
+<script>
+// ─── The summary panel ──────────────────────────────────────────────────────
+//
+// One function writes every row of "This send", and it is the only thing that
+// writes any of them. Session 5m found that panel naming three audiences at
+// once: the Audience row from a dropdown the code had moved without firing a
+// `change` event, Recipients and Opted out from a superseded /preview reply
+// about the audience he had left behind, and Segments and Estimated cost from
+// a pre-flight report about the one he had chosen. Every figure now arrives in
+// one response that also names the audience it is about.
+//
+// `panelSequence` is the other half of that fix. Both endpoints are asked about
+// whatever the dropdown holds when the request is dispatched, and nothing
+// sequences the replies: measured at this client's shape, /preview for the
+// whole database takes twelve times as long as /preview for a 443-contact list,
+// so the reply about an abandoned audience routinely lands last. A reply
+// carrying a token older than the newest request is discarded — a panel
+// describing a send nobody is about to make is worse than a blank one.
+//
+// Taking a ticket also *retires* everything in flight, which is what makes
+// `resetSummary()` stick: it used to zero the rows directly and a reply already
+// on its way filled them straight back in, under an upload composer.
+let panelSequence = 0;
+const panelRequest = () => ++panelSequence;
+const panelStale = (token) => token !== panelSequence;
+
+const EMPTY_SUMMARY = {
+    audience_label: null, recipients: 0, suppressed: 0, opted_out: 0,
+    total_segments: 0, estimated_cost: null,
+    suppression_days: 0, suppression_clears_at: null,
+};
+
+// The panel between picking an audience and hearing about it. Zeros would be a
+// different lie — "0 recipients" is a claim — so every figure reads as an
+// ellipsis and the audience as an em dash: nothing is asserted. It takes a
+// ticket, so the reply for the audience he moved off can never fill it in.
+function pendingSummary() {
+    panelRequest();
+    return { ...EMPTY_SUMMARY, pending: true };
+}
+
+// One writer for the panel's six rows. It does **not** re-check the token: each
+// response handler gates on it before painting anything, because each of them
+// also paints rows this function does not own — the character count, the phone
+// preview, the checklist. A second check here would be a guard no arrangement
+// can reach, which this project has shipped once already and had to delete.
+function paintSummary(view) {
+    const figure = (value) => view.pending ? '…' : (value || 0).toLocaleString();
+    const cost = view.pending ? '…' : money(view.estimated_cost);
+
+    el('sumAudience').textContent = view.audience_label || '—';
+    el('sumRecipients').textContent = figure(view.recipients);
+    el('sumSuppressed').textContent = figure(view.suppressed);
+    el('sumOptedOut').textContent = figure(view.opted_out);
+    el('sumSegments').textContent = figure(view.total_segments);
+    el('sumCost').textContent = cost;
+
+    // Step 2's metering strip keeps its own copy of three of these figures, and
+    // until 5m the pre-flight path wrote the panel's and not the strip's: two
+    // boxes on one screen quoting different segment totals and different money.
+    // One writer, one instant, or they disagree again.
+    el('pvRecipients').textContent = figure(view.recipients);
+    el('pvTotal').textContent = figure(view.total_segments);
+    el('pvCost').textContent = cost;
+
+    paintSuppression(view);
+}
+
+// The two responses that can fill the panel, each reduced to the same shape.
+// Neither writes a row itself — that is the point of the function above.
+const previewSummary = (data) => ({
+    audience_label: data.audience_label,
+    recipients: data.recipients,
+    suppressed: data.suppressed,
+    opted_out: data.opted_out,
+    total_segments: data.total_segments,
+    estimated_cost: data.estimated_cost,
+    suppression_days: data.suppression_days,
+    suppression_clears_at: data.suppression_clears_at,
+});
+
+// Pre-flight rendered the template against every resolved recipient, so its
+// total supersedes the keystroke estimate — and it reports the whole audience,
+// not two rows to bolt onto somebody else's answer, which is what it used to
+// contribute. No `segments_measured` guard: with no recipients its total is 0,
+// and 0 is the true answer for an audience nobody is in.
+const preflightSummary = (report) => ({
+    audience_label: report.audience_label,
+    recipients: report.counts?.recipients,
+    suppressed: report.counts?.suppressed,
+    opted_out: report.counts?.opted_out,
+    total_segments: report.counts?.total_segments,
+    estimated_cost: report.estimated_cost,
+    suppression_days: report.counts?.suppression_days,
+    suppression_clears_at: report.counts?.suppression_clears_at,
+});
+
+// A6 — what the hold-back rule is doing to this audience, before it is queued.
+// Silent at a window of 0: nothing is held back, and explaining a rule that is
+// not running is noise. Silent with nothing held back for the same reason.
+function paintSuppression(view) {
+    const note = el('sumSuppressedNote');
+    const days = view.suppression_days ?? 0;
+    const held = view.suppressed || 0;
+    if (days <= 0 || !held) { note.classList.add('hidden'); note.textContent = ''; return; }
+
+    const when = view.suppression_clears_at ? clockTime(view.suppression_clears_at) : null;
+    note.textContent =
+        `${held.toLocaleString()} held back — texted in the last ${days} day` +
+        `${days === 1 ? '' : 's'}` +
+        (when ? `, clears ${when}.` : '.');
+    note.classList.remove('hidden');
+}
+
+// `fmtClock` in base.html, which is the browser-side twin of the server's
+// `clock.clock_time()`. It was its own `new Date(iso)` and its own "is it
+// today", both of which answered in the viewer's zone rather than the client's:
+// a hold that clears at 6:00pm read as 10:00pm, and on the wrong day either
+// side of midnight. Two renderings of one moment must not read as two moments.
+const clockTime = (iso) => fmtClock(iso);
+</script>

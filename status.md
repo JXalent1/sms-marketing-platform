@@ -4515,3 +4515,435 @@ the only guard and the docstring says so.
   measured scale.
 - **A second identifier shape, a delta path, negative events.** Option 2 of
   `decisions/011`, as decided.
+
+---
+
+# Session 5m — the composer's audience panel, and time in Eastern
+
+_Started 2026-09-08. A1 investigated and written up **before** any fix, which is
+what this section is._
+
+## A1 — what actually happened, reproduced
+
+### The panel the operator photographed
+
+    Audience     ⭐ ALL BIDDERS — MAIN LIST
+    Recipients   10,146
+    Opted out    3,460
+    Segments     443
+    Estimated cost  $0.00
+
+with the dropdown reading `09/09, 6:00 PM Private Record Collection … — 443 contacts`.
+
+### Reproduced, not reasoned about
+
+A scratch database at the production shape — **10,146 active contacts, 3,460 on
+the blocklist, one 443-member list** — and the two endpoints the panel is built
+from, timed on this machine (best of three):
+
+    POST /api/campaigns/preview   audience=all       237.9 ms   10,146 / 3,460 / 10,146 seg / $2.19
+    POST /api/campaigns/preview   audience=list:1     20.3 ms      443 /     0 /    443 seg / $0.00
+    POST /api/campaigns/preflight audience=list:1     34.9 ms      443 /     0 /    443 seg / $0.00
+
+**A twelvefold gap between the two previews, and nothing sequences them.**
+
+The composer's JavaScript is then run for real — `tests/js/composer_harness.mjs`
+loads the four composer partials out of `app/templates/` into a `vm` context with
+a DOM small enough to run them and no smaller, and
+`tests/js/composer_scenarios.mjs` drives them with those measured latencies.
+Scenario `three_audiences` prints:
+
+    audience      "⭐ ALL BIDDERS — MAIN LIST"
+    recipients    "10,146"
+    opted_out     "3,460"
+    segments      "443"
+    cost          "$0.00"
+    selector      "list:7"
+    selected_text "09/09, 6:00 PM Private Record Collection — 443 contacts"
+
+That is the photograph, character for character.
+
+**Where that scenario went.** The three reproduction scenarios —
+`three_audiences`, `stale_label` and `create_after_stale_panel` — were written
+against the pre-fix tree and are **not** in the shipped file: once the defect was
+fixed they could no longer reproduce it, and the six scenarios in
+`tests/js/composer_scenarios.mjs` are what a *fixed* tree can assert. What
+survives of the reproduction, executable from the repo:
+`test_the_harness_reproduces_the_defect_it_was_written_for` strips the ordering
+gate in a scratch copy of the templates and requires the stale reply to win, and
+the latencies above are the fixture's own. Found by the fresh-context review,
+which pointed out that the session's strongest artefact was the one a reader
+could not re-run.
+
+### The mechanism: three defects, one panel
+
+The flow is the campaign-first one — he uploaded the record-collection CSV and
+pressed Create, so `createFromUpload()` ran (`_composer-upload.html:115`).
+
+**1. `select.value = …` fires no `change` event, so the Audience row is never
+repainted.** `paintAudienceSummary()` *is* wired to the select's `change`
+(`_composer-script.html:228`) and that is exactly why the obvious explanation
+looked wrong. `change` is a user-interaction event; an assignment is not user
+interaction. `createFromUpload` sets the new list programmatically
+(`_composer-upload.html:159`), and the last thing that *did* call
+`paintAudienceSummary()` was `loadAudiences()` one line earlier, while the
+dropdown still held the pinned entry it was left on. So the row kept saying
+**ALL BIDDERS**, the audience of the previous paint, for the rest of the session.
+
+**2. Nothing sequences `/preview` responses, and the slowest one is the stale
+one.** `loadAudiences()` ends with a bare, unawaited `refreshPreview()`
+(`_composer-script.html:89`) — dispatched *before* the value is moved, so it asks
+about `all`. `createFromUpload` then awaits a second `refreshPreview()` for
+`list:7`. Request A (238 ms here) is twelve times slower than request B (20 ms),
+so B paints 443 and A repaints 10,146 and 3,460 on top of it. `refreshPreview`
+holds no notion of which request is newest; `composerMode === 'upload'` is the
+only guard in it and it does not apply here.
+
+**3. `sumSegments` and `sumCost` have a second writer.** `runPreflight()`
+(`:292-295`) writes those two rows and nothing else, from a different response
+about a different audience. Pressing **Run checks** after the panel had settled
+on A's figures left Recipients and Opted out describing 10,146 people and
+Segments and Estimated cost describing 443 — the third audience on screen.
+
+### Why development never saw it
+
+`setMode('existing')` leaves a 300 ms debounced refresh armed
+(`_composer-upload.html:34`). On this machine A comes back in 238 ms, *before*
+that late refresh, so the debounce lands last and quietly repairs the panel —
+scenario `stale_label` shows exactly that: every number right, only the Audience
+row wrong. On a one-vCPU droplet A is several hundred milliseconds slower than
+the debounce and lands after it. The bug is invisible on a fast box **by
+timing**, which is why it took a client's operator to find it.
+
+## Whether a send would have gone to 443 or 10,146 — **443**
+
+Established rather than assumed, on both sides of the wire.
+
+**Client side.** With that exact panel on screen (scenario
+`create_after_stale_panel`, pre-fix tree), pressing Create sent:
+
+    {"name": "09/09, 6:00 PM Private Record Collection", …,
+     "audience": "list:7", "batch_size": null, "scheduled_at": null}
+
+The submit handler reads `el('audience').value` at submit time
+(`_composer-script.html:303`). The panel is a *description*; it is never an
+instruction, and no code path turns a painted row back into a selector.
+
+**Server side.** The same selector through the real endpoint against the
+production-shape database:
+
+    posted selector       : list:1
+    campaign.audience     : list:1
+    campaign.audience_label: 09/09, 6:00 PM Private Record Collection
+    total_recipients      : 443
+    estimated_segments    : 443
+
+`create_campaign` resolves the audience itself and stores its own label from
+`contact_service.audience_label()`, so the stale text on screen cannot reach the
+draft.
+
+**So this is a display defect, not a mis-send** — and the display is the screen
+whose entire job is to be trusted before a blast to ten thousand people, so it is
+fixed as if it were one.
+
+**The dangerous direction is reachable, and the ordering guard alone does not
+close it.** The panel can under-report while the selector is larger: pick the 443
+list, then pick ALL BIDDERS, and until the reply lands the panel describes the
+audience he moved off while Create sends to the one he moved to. The token
+decides *which reply wins*; it cannot make a reply arrive, and the window is 300
+ms of debounce plus 237.9 ms of request — longer on his box. The first version of
+this fix left that window showing a fully self-consistent stale panel, which is
+harder to notice than the contradictory one it replaced; the fresh-context review
+caught it. **Closed by clearing the panel on the change event** — every figure
+reads `…` and the audience an em dash until an answer about the audience now
+selected arrives (`test_the_panel_says_nothing_while_it_waits`).
+
+## A1 — what shipped
+
+**One function writes the panel, and one gate decides whether a reply may.**
+`paintSummary()` in the new `app/templates/_composer-summary.html` writes all six
+rows of "This send" from a single `view` object, and nothing else in the composer
+touches any of them. Each response handler takes a ticket from `panelSequence`
+before its request and returns early if a newer one has been taken since —
+`refreshPreview()` and `runPreflight()`, one gate each, covering the rows the
+panel does not own as well (the character count, the phone preview, the
+checklist). `paintSummary()` deliberately does **not** re-check the ticket: with
+both callers gating, a check there would be a guard no arrangement can reach,
+which this project has shipped once already and had to delete (`RequestBudget`,
+P2).
+
+Both responses now name the audience they answered about. `/api/campaigns/preview`
+and `/api/campaigns/preflight` return `audience` and `audience_label`, built by
+`contact_service.audience_label()` — the same function `create_campaign()` stores
+`campaigns.audience_label` with, so the panel, the rail and the draft cannot spell
+one selector three ways.
+
+Four things followed from the requirements rather than from taste, and each is
+recorded here with the requirement that forced it:
+
+- **`/preview` takes `batch_size`.** *("Segments and Recipients are consistent
+  with each other.")* The composer's cap field was wired to re-run the preview
+  and the value was never in the body, so the panel quoted 443 recipients for a
+  send capped at 50 while the checklist beside it quoted 50. `create_campaign()`
+  applies the cap, so the capped figure is the true one.
+- **`/preview` prices an empty message at zero.** *("Every figure in the summary
+  panel comes from one response about one audience.")* The panel is now fetched
+  before a word is typed, because that response is the only thing allowed to fill
+  it. `describe("")` answers **1** segment — it answers about text — which would
+  have quoted 10,146 segments and $2.19 for an empty composer. Zeroed in the
+  router, not in `count_sms_segments()`, which is correct and is not being asked
+  this question.
+- **`paintSummary()` also writes step 2's metering strip.** *("One writer per
+  row.")* `pvRecipients`, `pvTotal` and `pvCost` are the same three figures in a
+  second box, and until now the pre-flight path wrote the panel's copy and not
+  the strip's: two boxes on one screen, different segment totals, different money.
+- **`app/services/audience_split.py` is new.** *(the 500-line rule, and the
+  layering rule.)* `_audience_split()` was a private function in
+  `app/routers/campaigns.py`, which the session pushed to 515 lines. It resolves
+  an audience, partitions the hold-back window and reads the blocklist — business
+  logic in a router, which the layering rule says belongs in a service. Router is
+  back to 453.
+
+`app/templates/_composer-summary.html` is also new, for the 500-line rule:
+`_composer-script.html` reached 538. The split is along the boundary the fix
+already drew — the panel's whole writer in one file — and `campaigns.html`
+includes it **first**, because `panelSequence` and `EMPTY_SUMMARY` are top-level
+`const`s in their own script block and `setMode('upload')` paints the empty panel
+synchronously at parse time.
+
+**Two more defects closed on the way, both the same shape.** Switching to the
+Upload tab used to zero the rows directly, and a `/preview` already in flight
+filled them straight back in under an upload composer; `resetSummary()` now takes
+a ticket, which retires every reply on its way. And `loadAudiences()` takes the
+selector the caller wants selected rather than having the caller assign it
+afterwards — one request for the right audience instead of two, the first of them
+about the wrong one. That second change is a simplification, not a guard: with
+the ticket in place the old sequence is already safe, and it has no mutation for
+exactly that reason.
+
+### How it is tested, and why it had to be
+
+`tests/js/composer_harness.mjs` loads the four composer partials out of
+`app/templates/` into a `vm` context with a DOM small enough to run them, and
+`tests/js/composer_scenarios.mjs` drives six scenarios through them.
+`tests/test_composer_panel.py` runs those scenarios in node against **response
+bodies produced by the real endpoints in the same process** — a hand-written
+fixture would be a second copy of the API drifting away from it, and the property
+under test is exactly that the panel repeats what the API said.
+
+The stub is literal about the two things the defect turned on: assigning
+`select.value` fires no `change` event, and a display-size-1 `<select>` re-selects
+its first option when the value has no match. `test_the_harness_reproduces_the_defect_
+it_was_written_for` strips the gate in a scratch copy of the templates and requires
+the stale reply to win, because a green check whose harness is broken is worse
+than no check.
+
+`node` is therefore required by the suite. `npm run build:css` is already a build
+step of this project and of `deployment/deploy.sh`, so it is not a new
+dependency — but it is a new dependency **of the tests**, and the failure is a
+`pytest.fail` with that sentence in it rather than a skip.
+
+## A2 — what shipped
+
+**Every naive timestamp this application stores is wall clock in
+`APP_TIMEZONE`**, which defaults to `America/New_York`. `app/core/clock.py` is
+where that sentence lives, with the reasoning; `app/core/config.py` resolves the
+zone and applies it to the process.
+
+`scheduled_at` stays **wall clock** rather than becoming UTC, and the reader was
+fixed instead of the data. Three reasons, in the module docstring: it is what the
+operator typed and what the input submits, so the round trip has nothing in it to
+get wrong; `sent_at`, `created_at` and `added_at` are naive local strings and are
+out of this session's scope by name, so converting `scheduled_at` alone would
+leave one table with two rules — and "the next session assumes one rule for all
+of them" is review lens 3's own worry; and the comparison in `due_campaign_ids()`
+therefore stays lexicographic, which is sound because one format and one zone are
+now guaranteed on both sides.
+
+Two mechanisms, two jobs, neither redundant:
+
+- **`clock.now()` asks `zoneinfo`**, so the scheduler is right whatever the box's
+  own clock says. `due_campaign_ids()` and `dashboard_service.next_up()` — the two
+  readers of `scheduled_at` — both use it, and `now` may be passed as an aware
+  instant, which is how every test in `tests/test_timezone.py` says something
+  about `America/New_York` rather than about the laptop it runs on.
+- **`config.apply_process_timezone()` sets the process TZ at import**, so the
+  sixty-odd ambient `datetime.now()` calls that write `sent_at`, `created_at` and
+  `last_messaged_at` mean the same thing. Rewriting sixty call sites would reach
+  half the codebase and every one of those columns is out of scope; this makes
+  them all correct at once and leaves each column's meaning exactly as its own
+  comment describes it. It is applied in `config` rather than in `clock` so the
+  two modules do not import each other — that works only while nothing imports
+  `clock` first, and the day something does, the failure is an ImportError at boot
+  with no obvious cause.
+
+**One formatter, and it is not the viewer's.** `base.html` has one parser and
+three renderers (`fmtDate`, `fmtDay`, `fmtClock`) in a script block of their own,
+and `clock.clock_time()` is their server-side twin — `suppression_service.
+clears_at_clock()` delegates to it rather than keeping a second copy of the
+arithmetic. The composer's `shortDate` and `clockTime` are now one-line
+delegations. `tests/test_timezone.py` runs the real block in node under three
+viewer zones, and a sweep asserts no template builds a `Date` from a stored value.
+
+Worth being exact about what the old formatter got wrong, because most of it was
+*accidentally* right: `new Date(naive)` reads the digits in the viewer's zone and
+`toLocaleString` prints them back in the viewer's zone, so a datetime string
+round-trips its digits anywhere. **The four hours on screen were the stored value
+being UTC**, and the process zone is what fixes that. What the formatter itself
+got wrong, and what the replacement fixes, is a **date-only** value — parsed as
+UTC midnight, so `/usage`'s reset date rendered as the day before, on the client's
+own screen, every cycle — and a wall clock inside the viewer's own DST gap, which
+`Date` moves. `test_the_render_check_goes_red_on_the_formatter_it_exists_to_reject`
+runs the rejected version against both and requires it to fail.
+
+### The two Sundays, answered rather than avoided
+
+- **1 November, the hour that happens twice.** A campaign scheduled for 1:30 AM
+  becomes due at the first 1:30 AM (EDT, 05:30 UTC) and is dispatched; by the
+  second it is no longer a draft, and `due_campaign_ids()` filters on status. The
+  draft filter is what makes the repeated hour safe, which is why the spec said
+  not to weaken it while changing the comparison, and it has its own test and its
+  own mutation.
+- **8 March, the hour that does not exist.** A campaign scheduled for 2:30 AM
+  becomes due at 3:00 AM: half an hour late in real time, at the first instant the
+  wall clock has passed it. Late is the safe direction — early is the defect this
+  session exists for.
+
+### Which stored timestamps changed meaning, and which did not
+
+| Column | Before | After |
+|---|---|---|
+| `campaigns.scheduled_at` | wall clock, **read as** the box's clock | wall clock, read as the client's. Values unchanged |
+| `sms_messages.sent_at`, `contacts.last_messaged_at`, `campaigns.created_at`, `contact_lists.created_at`, `contact_list_members.added_at`, every other naive column | the **box's** local clock — UTC on the droplet | the client's local clock. Definition unchanged: "the application's local wall clock". What changed is what the application's local clock *is* |
+
+Nothing was migrated except `scheduled_at`, and that only for offset-bearing
+values nothing in this application writes. `alembic/versions/b7d43f0c9a15` is the
+adjudication: it classifies every row by format, leaves a naive value exactly as
+it is, converts an instant, and logs the id of anything it cannot read rather than
+guessing. The development database has **no scheduled campaign at all**, so the
+adjudication runs where the rows are — on the deploy — and says on the record what
+it found. `agent/accept-5m.sh` check 6 seeds its own copy with the three shapes
+*and rolls `alembic_version` back to `d7e2a91c4f36` first*, because `upgrade head`
+against a copy already stamped at head runs nothing and looks calm doing it.
+
+**The residue, and it is real:** rows written before this deploy are UTC wall
+clock and rows written after are Eastern, in one column, and the error is
+one-directional — an old row reads up to five hours later than it happened. Third
+instance in this project of one column with two clocks, and the first where an
+invoice is computed from it. That is `decisions/013`, below.
+
+### Escalated: `decisions/013` — the zone moves a billing cycle's boundary
+
+Measured, not assumed. One send at 8:00 PM Eastern on 31 August 2026:
+
+    stored by a UTC box (before)   sent_at=2026-09-01T00:00:00  ->  cycle September 2026
+    stored now (after)             sent_at=2026-08-31T20:00:00  ->  cycle August 2026
+
+`billing_service.compute_usage()` filters `sent_at` between cycle **dates**, so an
+evening send on a cycle boundary moves one cycle. `stripe_billing._local_date()`
+is `datetime.fromtimestamp()`, so the cycle anchor derived from Stripe's
+subscription changes with the process zone — a subscription created at 02:00 UTC
+on the 1st anchors to day 1 on a UTC box and day 31 on an Eastern one. And
+`stripe_meter`'s event timestamp shifts by the same offset. **No billing file was
+edited**; the spec named this outcome in advance and routed it here. Nothing is
+metered or anchored yet — B1 Part B has not run — so the anchor question is being
+asked at the cheapest possible moment.
+
+### Files touched beyond the spec's list, and the requirement that forced each
+
+- `app/core/clock.py`, `app/services/audience_split.py`,
+  `app/templates/_composer-summary.html` — **new** (A2 requirement 1; the
+  500-line rule; the layering rule).
+- `app/core/branding.py` — one template global, `app_timezone`. *("Every
+  client-facing time renders in the client's zone, from one formatter" — the
+  formatter is in the browser and needs the zone name; `install()` is the one
+  function every template renderer calls.)*
+- `app/templates/base.html` — the one formatter lives there, beside `esc()`.
+  *(Same requirement.)*
+- `app/main.py` — `AsyncIOScheduler(timezone=clock.ZONE)`. *(Requirement 5, and
+  the spec's own observation that APScheduler prints its job times as UTC.)*
+- `app/templates/_composer-upload.html` — `resetSummary()` and the upload flow's
+  audience selection. *("One writer per row"; the panel's ticket.)*
+- `.env.example` — `APP_TIMEZONE`, named and not set anywhere live, as the spec
+  requires. **`.env` and `.env.production` were not touched. Jordan: the droplet
+  needs no `.env` edit — the default is the client's zone — but the box's own
+  `TZ` no longer matters to this application, and that is worth knowing before
+  the next deploy.**
+
+### Found while working
+
+- **The monthly API budgets move with the zone too, and they are ours, not his.**
+  `api_budget.py:88` and `lookup_service.py:180` key a spend cap on
+  `datetime.now().strftime("%Y-%m")`. A lookup or a Places request made late on
+  the last evening of a month now counts in that month rather than the next.
+  This is the same shape as `decisions/013` and it is **not** the same decision:
+  it is our own spend cap, not the client's invoice, and it moves in the
+  direction that matches the calendar a human reads. Recorded rather than
+  escalated; escalation item 7 is about *adding* a paid API, not about the
+  accounting window of a cap that already exists.
+- **`/usage`'s reset date was rendering a day early, and had been.**
+  `fmtDate(d.reset_date)` was `new Date("2026-10-01")`, which JavaScript parses
+  as midnight **UTC**, so every viewer west of UTC — which is every viewer of
+  this product — saw the day before. Fixed by the same formatter A2 needed;
+  nobody had reported it.
+- **The composer's cap was quoted two different ways on one screen.** The batch
+  field re-ran `/preview` and never sent its value, so "This send" quoted the
+  whole list while the checklist beside it quoted the cap. Closed as part of
+  criterion 4 rather than left, because a panel that disagrees with the
+  checklist next to it is the defect this session was sent to fix.
+- **The panel costs one extra `/preview` per tab switch, and it is the expensive
+  one — so `/preview` came off the event loop.** Fetching the panel before a
+  message is typed means a request for the pre-selected audience, the pinned
+  all-bidders entry, which measured **237.9 ms** at production shape against
+  20.3 ms for a list. Not per page *load*: the composer opens in upload mode,
+  where `refreshPreview()` returns early by design. It used to happen on the
+  first keystroke instead, so this is one extra request per switch to the
+  "existing list" tab, not per keystroke — accepted, because it is what makes
+  every row come from one response in every state, including before he has typed
+  anything. `refreshPreview()` also now cancels a queued refresh when it runs,
+  which took the upload commit from four `/preview` calls to one.
+  <br>**What was not acceptable was where it ran.** `preview` was `async def`
+  and awaits nothing, so that 237.9 ms of synchronous SQLAlchemy sat on the
+  event loop `run_due_campaigns` ticks on every minute and the campaign rail
+  polls every five seconds — 5j's outage, with one more caller and a lower
+  trigger threshold. It is a `def` now, which FastAPI runs in a worker thread.
+  Found by the fresh-context review. `preflight` stays `async` because it awaits
+  the capacity assessment; its own per-recipient render is still on the loop and
+  is pre-existing, unchanged, and recorded here rather than fixed in a session
+  that did not measure it.
+- **Two nightly jobs move four hours on the droplet, and that is a fix.**
+  `daily_tier_check` (06:00) and `daily_failure_digest` (07:00) were firing at
+  2 AM and 3 AM Eastern on a UTC box; their own comments already claimed "07:00
+  local" and "an operator reading one signal at breakfast". After this deploy
+  they fire at 6 and 7 AM Eastern, which is what they were written for. A
+  behaviour change on deploy either way, so it is written down rather than
+  discovered.
+- **`requirements.txt` does not declare `tzdata`, and this session now depends
+  on a zone database.** `zoneinfo` reads the OS one; Debian and
+  `python:3.12-slim` both ship it, so this is a stated assumption rather than a
+  live risk, and `_resolve_zone()` now refuses to start with a sentence naming
+  the package rather than raising a `ZoneInfoNotFoundError` out of a module every
+  entry point imports. Adding the `tzdata` Python package would remove the
+  assumption; that is escalation item 7 (a new dependency) and is not this
+  session's to take.
+- **Deployment still keeps the box's clock, and should.** `cron`, the systemd
+  journal and `scripts/backup.sh`'s log lines are the droplet's, not the
+  application's. `backup.sh`'s retention is count-based, so nothing there depends
+  on a day boundary. No file under `deployment/` was touched.
+
+### Deliberately not built
+
+- **No conversion of `sent_at`, `created_at`, `added_at` or
+  `last_messaged_at`.** Out of scope by name, and the classification cannot be
+  read off the format the way `f4a1c7d90e52` read `contact_lists.created_at` —
+  both writers spell it identically, and the only discriminator is "written
+  before the deploy", which nothing in the row records. `decisions/013` option 2
+  says why a hand-picked cut-off is worse than the bounded error it would fix.
+- **No per-user or per-tenant timezone.** One client, one zone, one setting, as
+  the spec says.
+- **No change to `count_sms_segments()`.** `/preview` reports zero segments for
+  an *empty* template in the router; the SMS layer's answer to "how many segments
+  is this text" is correct and is not being asked that question.
+- **No `/health` field for the zone.** `/health` is unauthenticated and every
+  field it gains is published. The zone is on the composer's schedule field,
+  where the person who needs it is standing.

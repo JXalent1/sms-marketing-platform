@@ -39,7 +39,7 @@ client sending real campaigns.
 | 5i | **Named lists replace categories** | Part A done 2026-09-04 · deploy pending | 5h, P1b | `app/models/{contact_list,sms_message}.py`, `app/services/{contact_service,dashboard_service,campaign_builder,campaign_service,import_service,report_service,history_service}.py`, `app/routers/{campaigns,contacts,dashboard,imports}.py`, `app/templates/{campaigns,contacts,today}.html`, `app/templates/_composer-{script,upload}.html`, `alembic/versions/`, `tests/`, `agent/{accept-5i.sh,mutate-5i.py}` |
 | 5j | **Index migration, cost guard & list archive/rename** | **Part A done 2026-09-04** · accept + gate + mutation green · **deployed 2026-09-04** | 5i | `app/models/{contact_list,sms_message}.py`, `app/services/{contact_service,dashboard_service}.py`, `app/routers/contacts.py`, `app/services/list_admin.py` (new), `app/templates/{campaigns}.html`, `app/templates/_composer-{lists,script}.html`, `alembic/versions/`, `tests/`, `agent/{accept-5j.sh,mutate-5j.py}` |
 | 5k | **Close the attribute-escaping class** | Specced · small, run before or beside P2 | 5j | `app/templates/{base,_composer-script,blocklist,contact-history,settings}.html`, `tests/test_attribute_escaping.py`, `agent/accept-5k.sh` |
-| 5m | **Composer audience panel; time in Eastern** | **Specced · URGENT · ahead of everything** | 5j | `app/templates/{_composer-script,campaigns,today,history,campaign-report}.html`, `app/services/{campaign_dispatch,campaign_builder,suppression_service,dashboard_service}.py`, `app/routers/campaigns.py`, `app/core/config.py`, `alembic/versions/`, `tests/`, `agent/{accept-5m.sh,mutate-5m.py}` |
+| 5m | **Composer audience panel; time in Eastern** | **Part A done 2026-09-08** · accept 0-10 + gate twice + 18/0 mutations · `decisions/013` open, not blocking | 5j | `app/core/{clock,config,branding}.py`, `app/services/{audience_split,campaign_dispatch,dashboard_service,suppression_service}.py`, `app/routers/campaigns.py`, `app/templates/{base,campaigns,_composer-summary,_composer-script,_composer-upload}.html`, `app/main.py`, `alembic/versions/`, `.env.example`, `tests/{test_composer_panel,test_timezone}.py`, `tests/js/`, `agent/{accept-5m.sh,mutate-5m.py}` |
 | P1 | **Prospect pipeline** | Done · deployed 2026-09-01 | 5f | `app/models/{prospect,scrape}.py`, `app/models/__init__.py`, `app/sms/lookup.py`, `app/sources/prospect_base.py`, `app/sources/__init__.py`, `app/services/{prospect_service,prospect_queue,prospect_scoring,lookup_service,scrape_runner,link_service}.py`, `app/routers/prospects.py`, `app/routers/pages.py`, `app/templates/{prospects,base}.html`, `app/core/config.py`, `app/main.py`, `alembic/versions/`, `tests/`, `agent/{accept-P1.sh,mutate-P1.py}` |
 | P1b | **Lookup provider & gate flake** | Done · deployed 2026-09-01 | P1 | `app/sms/providers/telnyx_lookup.py`, `app/sms/lookup.py`, `app/services/lookup_service.py`, `app/core/config.py`, `.env.example`, `docs/API.md`, `CLAUDE.md`, `tests/{test_lookup_provider,test_wholesale_scan,_wholesale_scan}.py`, `tests/fixtures/number_lookup_responses.json`, `tests/{test_campaign_reports,test_whitelabel,test_campaign_preflight,test_capacity_rounding,test_degraded_send_path,test_prospect_review,test_prospect_pipeline}.py`, `agent/{accept-P1b.sh,mutate-P1b.py,accept-P1.sh}` |
 | P2 | **Google Places source** | **Part A NOT complete** · accept-P2 criterion 9 fails (D2 survived) · deployed but inert without a key | P1b | `app/sources/{google_places,taxonomy,exclusions,__init__,prospect_base}.py`, `app/services/{prospect_ingest,prospect_service,api_budget,scrape_runner}.py`, `app/models/scrape.py`, `app/core/config.py`, `.env.example`, `alembic/versions/`, `agent/{accept-P2.sh,mutate-P2.py,mutate-{5e,5f,5g,5h,P1}.py}`, `tests/` |
@@ -94,6 +94,64 @@ characters. B1's file list also gained `app/services/link_service.py`
 (`RESERVED_SLUGS` must name `subscribe`, on the `prospects` precedent) and one
 line each in `report_service.py` and `preflight_totals.py`, which had a session
 in scope and were opening a second one per call.
+
+**5m's file list above is wider than the one this table carried before the
+session, in five places and each for a stated reason.** `app/core/clock.py`,
+`app/services/audience_split.py` and `app/templates/_composer-summary.html` are
+new: the first because A2's rule needed one place that owns the zone, the other
+two because the session pushed `app/routers/campaigns.py` to 515 lines and
+`_composer-script.html` to 538 against a 500-line rule. Both splits run along a
+boundary the code already had — `audience_split` is the business logic a router
+was holding, and `_composer-summary` is the panel's whole writer, which is the
+shape of the fix as much as the code is. `app/core/branding.py` gains one
+template global (`app_timezone`), because A2's "one formatter" lives in the
+browser and needs the zone name, and `install()` is the one function every
+template renderer calls. `app/templates/base.html` is where that formatter goes,
+beside `esc()`. `app/main.py` gains `AsyncIOScheduler(timezone=clock.ZONE)` — the
+spec's own observation was that APScheduler prints its job times as UTC, and a
+scheduler that decides when a real person gets a text should not inherit a zone
+from an ambient side effect. `app/services/campaign_builder.py` was in the spec's
+list and was **not** touched: `scheduled_at` keeps its format and its meaning, so
+the writer needed no edit.
+
+**The composer's panel is JavaScript, and the suite now runs it.** `tests/js/`
+loads the four composer partials into a `vm` context with a DOM small enough to
+run them, and `tests/test_composer_panel.py` drives six scenarios through them
+against response bodies produced by the real endpoints in the same process. That
+is not a preference: `paintAudienceSummary()` *was* wired to the select's
+`change` event, exactly as the spec said, and no shape test over the template
+source could have found the defect. **`node` is therefore a dependency of the
+test suite** — it was already a build dependency (`npm run build:css`,
+`deployment/deploy.sh`), and its absence is a `pytest.fail` with that sentence in
+it rather than a skip.
+
+**The fresh-context review found five defects in a tree that was green twice
+with 13 of 13 mutations caught, and the sharpest was about the tests rather
+than the code.** Every criterion-5 test handed `due_campaign_ids()` an aware
+instant — which is what makes them independent of the machine — and that takes
+`clock.wall_clock()`'s *other* branch. Reinstating the production defect in
+`clock.now()`, the branch production actually takes, left both of them green;
+pointing the aware branch at the box's own zone survived the whole suite. Closed
+by parametrizing the zone assertions over three box zones and by one test that
+calls the scheduler the way production does, with no `now` at all — mutations
+`T9` and `T10`. The other four: a fallback that could raise out of the module
+every entry point imports while its log line said it had recovered; a superseded
+pre-flight leaving "Running checks…" on screen forever; a self-consistent stale
+panel during the in-flight window, which is harder to notice than the
+contradictory one it replaced; and `scheduled_at` still accepting any string, so
+the class the migration adjudicated was open going forward. Same division
+`CLAUDE.md` describes: the harness proves a rule cannot be reverted, and only a
+reader notices a rule written slightly wrong — or a test that names the rule and
+reaches a different one.
+
+**One escalation is open and it is not blocking:** `decisions/013` — setting the
+process into the client's zone moves which billing cycle an evening send lands
+in, and changes the cycle anchor that will be derived from Stripe's subscription.
+Measured: one send at 8:00 PM Eastern on 31 August moves from September's cycle to
+August's. `sessions/session-5m.md` named that outcome in advance and routed it to
+an escalation rather than an edit; no billing file was touched. Nothing is metered
+or anchored yet, so the anchor question is being asked at the cheapest moment
+there will ever be.
 
 5c was not in the original breakdown. It exists because flipping the provider to live
 revealed that `requirements.txt` pinned a telnyx SDK major version the provider was not

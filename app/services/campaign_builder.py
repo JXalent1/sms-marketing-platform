@@ -53,6 +53,7 @@ from typing import Any, Callable, Optional, Tuple
 
 from sqlalchemy.orm import Session
 
+from app.core import clock
 from app.core.config import settings
 from app.models.campaign import Campaign
 from app.models.category import Category
@@ -275,6 +276,16 @@ def create_campaign(db: Session, render: Callable[..., str], *,
     # (5f A3), and a campaign refused for it must leave no rows behind.
     link_target = resolve_link_target(message_template, link_target_url)
 
+    # And the send time, before anything is written, for the same reason. The
+    # column means "wall clock in APP_TIMEZONE" (app/core/clock.py); this is the
+    # one place that is enforced rather than assumed. An offset-bearing value is
+    # converted, an unreadable one is refused here rather than becoming a
+    # campaign that silently never comes due.
+    try:
+        scheduled_at = clock.normalise_stored(scheduled_at)
+    except ValueError as e:
+        raise CampaignError(str(e)) from e
+
     # A malformed selector comes back as the selector grammar's own sentence
     # rather than as a 500. Until 5i this was unreachable here: every campaign
     # had to pass the category rule first, and a hand-written `list:abc` was
@@ -328,7 +339,7 @@ def create_campaign(db: Session, render: Callable[..., str], *,
         # held-back row takes it back out of both counters — the row stops being
         # skipped on the day it goes out.
         skipped_count=len(suppressed),
-        scheduled_at=scheduled_at or None,
+        scheduled_at=scheduled_at,
         link_target_url=link_target,
         status="draft",
         created_at=datetime.now().isoformat(),

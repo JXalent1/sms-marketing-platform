@@ -810,6 +810,65 @@ change to a live table.
   between an external call and your commit can fail, record the call's
   arguments before making it.
 
+- **The thing that makes a test independent of the machine can also make it miss
+  the path production takes.** 5m's headline requirement is "a campaign
+  scheduled for 6:00 PM Eastern goes out at 6:00 PM Eastern", and both tests
+  named for it handed `due_campaign_ids()` an **aware UTC instant** — which is
+  exactly what stops a test on an Eastern laptop passing with the zone handling
+  deleted. It is also a different branch: `run_due_campaigns()` passes `now=None`
+  and goes to `clock.now()`. Reinstating the production defect there left both
+  criterion tests **green**; pointing the aware branch at the box's own zone
+  survived the entire suite. Two things generalize. When a helper has an
+  injectable "now" (or url, or clock, or provider), the injected branch is the
+  one your tests take and the default branch is the one production takes — write
+  one test with nothing injected. And **a process-wide side effect defeats
+  parametrization you did not do**: `apply_process_timezone()` runs at import of
+  `app.core.config`, so the whole suite runs in the client's zone whatever
+  machine it is on, and the only way to assert a *zone* is to put the box
+  somewhere else on purpose (`box_in()` in `tests/test_timezone.py`, three zones).
+- **A fallback that is the same lookup that just failed is not a fallback.**
+  `_resolve_zone()` caught a bad `APP_TIMEZONE` and returned
+  `ZoneInfo(DEFAULT_TIMEZONE)` — correct for a typo in `.env`, and on a system
+  with no tz database at all it raises out of `app.core.config`, which the app,
+  `alembic/env.py` and `tools/` all import. Nothing boots, one second after an
+  ERROR line announcing that it had recovered: 5f's shape exactly, a guard
+  failing closed while saying it failed open. Two failures with two right
+  answers, not one. When you write a fallback, ask what makes the *fallback*
+  fail, and whether that is the same thing.
+- **Discarding a stale reply is half a refusal; the other half is clearing what
+  the request put on screen.** `runPreflight()` writes "Running checks…" before
+  its request and 5m added `if (panelStale(token)) return;` after it — so a
+  superseded report left that sentence up **forever**, on the one screen whose
+  job is to stop a bad send. Decision 006's rule applied to a refusal the same
+  session added. Whenever you add an early return after an `await`, look at what
+  was drawn before it.
+- **A consistent stale panel is harder to notice than a contradictory one.** An
+  ordering guard decides which reply *wins*; it cannot make a reply *arrive*. In
+  the 300 ms of debounce plus 238 ms of request after picking an audience, the
+  panel showed the previous audience with every row agreeing with every other,
+  next to a dropdown naming a different one and a Create button that sends to
+  that one — strictly worse to spot than the three-audience panel it replaced.
+  A surface that cannot yet answer must say **nothing** ("…"), not the last
+  answer and not zeros, which are their own claim.
+- **Adjudicating history does not close the class.** Migration `b7d43f0c9a15`
+  converts every offset-bearing `scheduled_at` and its docstring says nothing in
+  the application writes one — true, and not a guarantee: the column is a bare
+  `str` on the API, and the next one written goes out four hours **late**, the
+  mirror of the defect. "One writer, one meaning" is two clauses; writing the
+  meaning down satisfies one of them. Normalise at the writer
+  (`clock.normalise_stored()`), and canonicalise the spelling while you are
+  there — `datetime.fromisoformat()` accepts `2026-09-09T18` and
+  `2026-09-09 18:00`, and the comparison downstream is lexicographic.
+- **`new Date(iso)` round-trips a naive datetime's digits in any zone, which is
+  why a wrong formatter can look right for years.** The four hours on screen were
+  the *stored* value (a UTC box writing `datetime.now()`), not the formatter —
+  worth being exact about, because the fix for each is in a different place. What
+  the formatter itself got wrong was narrower and just as live: a **date-only**
+  value is parsed as midnight UTC, so west of UTC it renders the day before
+  (`/usage`'s reset date, every cycle), and a wall clock inside the viewer's own
+  DST gap gets moved. Parse the components and format them; never build a `Date`
+  from a stored value.
+
 ## Where things live
 
 - `A4A_BUILD_PLAN.md` — the full project plan and reasoning

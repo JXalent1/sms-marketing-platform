@@ -293,7 +293,12 @@
           <input type="datetime-local" id="scheduledAt"
                  class="mt-1.5 rounded-lg border border-line-strong bg-page px-3 py-2 text-[14px] text-ink
                         focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand">
-          <p class="mt-1 text-[11px] text-ink-3">Leave blank to create a draft you send by hand.</p>
+          {# The zone, said out loud, from the setting the scheduler reads. The
+             input submits a wall clock with no zone attached, and this field is
+             where a campaign set for 6:00 PM went out at 2:00 PM. One sentence
+             is cheap next to that. #}
+          <p class="mt-1 text-[11px] text-ink-3">Leave blank to create a draft you send by hand.
+             Times are your local clock ({{ app_timezone }}).</p>
         </div>
         <button type="submit"
                 class="ml-auto rounded-lg bg-brand px-5 py-2.5 text-[14px] font-semibold text-on-brand hover:opacity-90
@@ -326,10 +331,11 @@
       <dl class="divide-y divide-line text-[13px]">
         {# The resolved audience, in the picker's own words — not a row that
            reads "—" on every campaign now that there is no category to put in
-           it. The wording comes from `audience_label()` server-side and from
-           the selected option client-side, and both read the one pinned
-           constant, so "⭐ ALL BIDDERS — MAIN LIST" here and in the dropdown
-           above cannot drift apart. #}
+           it. The wording is `audience_label()`'s, and since 5m it arrives on
+           the same response as every figure below it rather than being read off
+           the selected option: reading it there is how this panel came to name
+           one audience while counting another. `_composer-summary.html` owns
+           every row in this list and is the only thing that writes one. #}
         <div class="flex items-center justify-between gap-3 px-5 py-2.5">
           <dt class="text-ink-3">Audience</dt><dd class="font-medium text-ink" id="sumAudience">—</dd>
         </div>
@@ -390,12 +396,18 @@
 </div>
 {% endblock %}
 
-{# Two partials, for the same reason there is one: the 500-line rule, and
+{# Several partials, for the same reason there is one: the 500-line rule, and
    Tailwind's content scan reaching class names built in JS. `_composer-upload`
    is the campaign-first flow (upload as step one, and topping up afterwards) and
-   is included second because it calls into the first — `schedulePreview`,
-   `loadCampaigns` and `setMode` are defined there. #}
+   is included after `_composer-script` because it calls into it —
+   `schedulePreview`, `loadCampaigns` and `setMode` are defined there.
+
+   `_composer-summary` is **first**, and that ordering is load-bearing: it
+   declares `panelSequence` and `EMPTY_SUMMARY` as top-level `const`s, which sit
+   in a temporal dead zone until their own block runs, and `setMode('upload')`
+   at the bottom of `_composer-upload` paints the empty panel synchronously. #}
 {% block scripts %}
+{% include "_composer-summary.html" %}
 {% include "_composer-script.html" %}
 {% include "_composer-upload.html" %}
 {% include "_composer-link.html" %}

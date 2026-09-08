@@ -7,7 +7,17 @@ in the codebase; if you find yourself typing a client's name into a .py or
 .html file, add a setting here instead.
 """
 
+import logging
+import os
+import time
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# The zone this product is built for, and the fallback when the setting is
+# unusable. Not a magic string: `Settings.APP_TIMEZONE` below defaults to it and
+# `_resolve_zone()` falls back to it, and those two must not drift apart.
+DEFAULT_TIMEZONE = "America/New_York"
 
 
 class Settings(BaseSettings):
@@ -330,6 +340,20 @@ class Settings(BaseSettings):
     ALERT_PHONE: str = ""                        # your number, for balance/scrape alerts
     BALANCE_ALERT_THRESHOLD: float = 50.0
 
+    # ─── Time ───────────────────────────────────────────────────────────────
+    # The client's timezone, and the meaning of every naive timestamp this
+    # application stores. A setting rather than a constant, on BILLING_CYCLE_DAY's
+    # precedent — but there is one client and one zone, and per-user zones are
+    # explicitly not a thing here.
+    #
+    # It matters because the droplet's own clock is UTC. `scheduled_at` arrives
+    # from a `datetime-local` input as the wall clock the operator typed, with no
+    # zone on it, and the scheduler compared it against the box's clock: a
+    # campaign set for 6:00 PM Eastern went out at 2:00 PM. See app/core/clock.py
+    # for the ruling and for what happens on the two Sundays a year when the
+    # wall clock repeats an hour or skips one.
+    APP_TIMEZONE: str = DEFAULT_TIMEZONE
+
     # ─── Infrastructure ─────────────────────────────────────────────────────
     DATABASE_URL: str = "sqlite:///./data/app.db"
     PUBLIC_BASE_URL: str = "http://localhost:8000"   # used to build webhook URLs
@@ -349,3 +373,89 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+# ─── The application's clock ────────────────────────────────────────────────
+#
+# Resolved and applied here, at the one module everything imports, rather than in
+# `app/core/clock.py` where the rest of the time handling lives. Two reasons, and
+# the second is the one that decided it:
+#
+#   * a zone is configuration, and this file is where configuration is read and
+#     validated;
+#   * `clock.py` reads `settings`, so resolving the zone there and applying it
+#     from here would make the two modules import each other. That works only
+#     while nothing imports `clock` before `config`, and the day something does
+#     the failure is an ImportError at boot with no obvious cause. One-way
+#     imports instead: `clock` reads this, and nothing here reads `clock`.
+
+def _resolve_zone(name: str) -> ZoneInfo:
+    """The configured zone, or the client's own when the *setting* is unusable.
+
+    A guard keyed on configuration must not take the product down when the
+    configuration is wrong — `short_link_host_guard` learned that in 5f. There is
+    no reading of `APP_TIMEZONE=Amerika/New_York` under which refusing to boot is
+    the right answer, so this falls back and says so loudly. It falls back to the
+    client's zone rather than to UTC, because UTC is the wrong answer that caused
+    session 5m.
+
+    **Two failures, not one, and only the first one falls back.** A bad setting is
+    a typo in `.env` and the default is a good answer to it. A system with no zone
+    database at all is a different condition: the fallback is the same lookup that
+    just failed, so "fall back and continue" would raise out of this module —
+    which every entry point imports — while the ERROR line above it announced that
+    it had recovered. That is precisely the shape 5f names, a guard failing closed
+    while saying it failed open, and the honest answer is to fail *loudly and on
+    purpose*, naming the fix. The tz database is an OS package (`tzdata`);
+    `requirements.txt` does not declare it and the Debian droplet and
+    `python:3.12-slim` both ship it, so this is a stated assumption rather than a
+    live risk. See `status.md`.
+    """
+    try:
+        return ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError, TypeError):
+        pass
+    try:
+        fallback = ZoneInfo(DEFAULT_TIMEZONE)
+    except ZoneInfoNotFoundError as exc:
+        raise RuntimeError(
+            f"This system has no time zone database: neither APP_TIMEZONE={name!r} "
+            f"nor the default {DEFAULT_TIMEZONE!r} could be resolved. Install the "
+            "tzdata OS package (or the tzdata Python package). Refusing to start "
+            "rather than keeping the wrong clock: what time a campaign goes out "
+            "decides whether a real person gets a text they did not expect."
+        ) from exc
+    logging.getLogger("clock").error(
+        "APP_TIMEZONE=%r is not a zone this system knows; falling back to %s. "
+        "Scheduled campaigns and every timestamp on screen use the fallback "
+        "until this is corrected.", name, DEFAULT_TIMEZONE)
+    return fallback
+
+
+APP_ZONE = _resolve_zone(settings.APP_TIMEZONE)
+APP_ZONE_NAME = str(APP_ZONE)
+
+
+def apply_process_timezone() -> str:
+    """Make `datetime.now()` mean the client's wall clock everywhere in-process.
+
+    Sixty-odd call sites across the services layer write `datetime.now()` into
+    `sent_at`, `created_at`, `last_messaged_at` and the rest. On a droplet whose
+    own clock is UTC every one of them wrote UTC while the browser rendered it as
+    local, so a send at 6:00 PM Eastern read "10:00 PM" in history. Rewriting
+    sixty call sites would reach half the codebase, and each of those columns is
+    out of 5m's scope by name; setting the process zone from the same setting
+    `clock.py` reads makes them all correct at once and leaves every column's
+    meaning exactly as its own comment describes it.
+
+    Applied at import, because this module is imported by the app, by
+    `alembic/env.py` and by `tools/` — and a script that writes a timestamp has
+    to keep the same clock as the application that reads it.
+    """
+    os.environ["TZ"] = APP_ZONE_NAME
+    if hasattr(time, "tzset"):        # POSIX only; this product is deployed on Linux
+        time.tzset()
+    return APP_ZONE_NAME
+
+
+apply_process_timezone()

@@ -30,6 +30,7 @@ from typing import List, Optional
 
 from sqlalchemy.orm import Session
 
+from app.core import clock
 from app.models.campaign import Campaign
 from app.services.campaign_service import CampaignService
 import logging
@@ -52,16 +53,31 @@ async def send_campaign_background(campaign_id: int):
 # ─── Scheduled send ─────────────────────────────────────────────────────────
 
 def due_campaign_ids(db: Session, now: Optional[datetime] = None) -> List[int]:
-    """Drafts whose scheduled time has arrived.
+    """Drafts whose scheduled time has arrived, in the client's zone.
 
     Drafts only. A campaign that is already running, completed or aborted is not
     due however old its timestamp is, and filtering on status is what stops the
-    minute-by-minute tick from dispatching the same campaign twice.
+    minute-by-minute tick from dispatching the same campaign twice. It is also
+    what makes the repeated hour on the first Sunday in November safe: 1:30 AM
+    Eastern happens twice, the campaign is dispatched on the first one, and by
+    the second it is no longer a draft.
 
-    Comparison is lexicographic on ISO strings, which is chronological for this
-    format — the same basis `billing_service` uses on `sent_at`.
+    **`clock.now()`, never `datetime.now()`.** `scheduled_at` is the wall clock
+    the operator typed, in `APP_TIMEZONE`; the droplet's own clock is UTC, so
+    comparing against the box's idea of now dispatched a 6:00 PM Eastern
+    campaign at 2:00 PM. `clock.now()` asks `zoneinfo` and is therefore right
+    whatever the box is set to, and right in both EDT and EST — a fixed −4 is
+    wrong for four months of the year.
+
+    `now` may be passed as an aware instant, which is how the tests assert the
+    zone rather than the machine they run on; `clock.wall_clock()` converts it.
+
+    Comparison is lexicographic on ISO strings, which is chronological while
+    every value carries one format and one zone. Both sides now do: this is the
+    only producer of the right-hand side, and `scheduled_at` gains no offset —
+    see `app/core/clock.py` for why it stays wall clock.
     """
-    cutoff = (now or datetime.now()).isoformat()
+    cutoff = clock.wall_clock(now).isoformat()
     rows = (db.query(Campaign.id)
             .filter(Campaign.status == "draft",
                     Campaign.scheduled_at.isnot(None),
