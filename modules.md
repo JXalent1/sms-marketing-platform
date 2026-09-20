@@ -1,6 +1,6 @@
 # Modules
 
-_Last updated: 2026-09-08_
+_Last updated: 2026-09-20_
 
 Root for all paths: `sms-marketing-platform/`.
 
@@ -40,7 +40,7 @@ client sending real campaigns.
 | 5j | **Index migration, cost guard & list archive/rename** | **Part A done 2026-09-04** · accept + gate + mutation green · **deployed 2026-09-04** | 5i | `app/models/{contact_list,sms_message}.py`, `app/services/{contact_service,dashboard_service}.py`, `app/routers/contacts.py`, `app/services/list_admin.py` (new), `app/templates/{campaigns}.html`, `app/templates/_composer-{lists,script}.html`, `alembic/versions/`, `tests/`, `agent/{accept-5j.sh,mutate-5j.py}` |
 | 5k | **Close the attribute-escaping class** | Specced · small, run before or beside P2 | 5j | `app/templates/{base,_composer-script,blocklist,contact-history,settings}.html`, `tests/test_attribute_escaping.py`, `agent/accept-5k.sh` |
 | 5m | **Composer audience panel; time in Eastern** | **Part A done 2026-09-08** · accept 0-10 + gate twice + 18/0 mutations · `decisions/013` open, not blocking | 5j | `app/core/{clock,config,branding}.py`, `app/services/{audience_split,campaign_dispatch,dashboard_service,suppression_service}.py`, `app/routers/campaigns.py`, `app/templates/{base,campaigns,_composer-summary,_composer-script,_composer-upload}.html`, `app/main.py`, `alembic/versions/`, `.env.example`, `tests/{test_composer_panel,test_timezone}.py`, `tests/js/`, `agent/{accept-5m.sh,mutate-5m.py}` |
-| 5n | **Upload-mode template metrics; cancel a scheduled campaign** | **Specced · next** | 5m | `app/templates/{_composer-script,campaigns}.html`, `app/routers/campaigns.py`, `app/services/{campaign_service,campaign_dispatch}.py`, `tests/`, `agent/{accept-5n.sh,mutate-5n.py}` |
+| 5n | **Upload-mode template metrics; cancel a scheduled campaign** | **Part A done 2026-09-20** · accept 0-10 + gate twice + 15/0 mutations twice · reviewed · deploy pending | 5m | `app/templates/{_composer-script,_composer-summary,_composer-upload,campaigns}.html`, `app/routers/{campaigns,campaign_preview}.py` (the latter new), `app/services/{campaign_dispatch,campaign_service,campaign_claim}.py` (the last new), `app/main.py`, `tests/`, `tests/js/`, `agent/{accept-5n.sh,mutate-5n.py,mutate-5m.py}` |
 | P1 | **Prospect pipeline** | Done · deployed 2026-09-01 | 5f | `app/models/{prospect,scrape}.py`, `app/models/__init__.py`, `app/sms/lookup.py`, `app/sources/prospect_base.py`, `app/sources/__init__.py`, `app/services/{prospect_service,prospect_queue,prospect_scoring,lookup_service,scrape_runner,link_service}.py`, `app/routers/prospects.py`, `app/routers/pages.py`, `app/templates/{prospects,base}.html`, `app/core/config.py`, `app/main.py`, `alembic/versions/`, `tests/`, `agent/{accept-P1.sh,mutate-P1.py}` |
 | P1b | **Lookup provider & gate flake** | Done · deployed 2026-09-01 | P1 | `app/sms/providers/telnyx_lookup.py`, `app/sms/lookup.py`, `app/services/lookup_service.py`, `app/core/config.py`, `.env.example`, `docs/API.md`, `CLAUDE.md`, `tests/{test_lookup_provider,test_wholesale_scan,_wholesale_scan}.py`, `tests/fixtures/number_lookup_responses.json`, `tests/{test_campaign_reports,test_whitelabel,test_campaign_preflight,test_capacity_rounding,test_degraded_send_path,test_prospect_review,test_prospect_pipeline}.py`, `agent/{accept-P1b.sh,mutate-P1b.py,accept-P1.sh}` |
 | P2 | **Google Places source** | **Part A NOT complete** · accept-P2 criterion 9 fails (D2 survived) · deployed but inert without a key | P1b | `app/sources/{google_places,taxonomy,exclusions,__init__,prospect_base}.py`, `app/services/{prospect_ingest,prospect_service,api_budget,scrape_runner}.py`, `app/models/scrape.py`, `app/core/config.py`, `.env.example`, `alembic/versions/`, `agent/{accept-P2.sh,mutate-P2.py,mutate-{5e,5f,5g,5h,P1}.py}`, `tests/` |
@@ -1311,6 +1311,24 @@ cycle*. Step 5 of `sessions/session-B1.md` Part B.
 **And a standing billing rule:** never change the metered price mid-cycle — Stripe drops
 grace-period usage from the current *and* subsequent invoices when a subscription item's
 price changes during a cycle. Rate changes wait for a boundary.
+
+**5n's file list above is wider than the one this table carried before the
+session, in four places and each for a stated reason.** `_composer-summary.html`
+and `_composer-upload.html` own the panel's one writer and the tab switch, and
+A1 is a change to what the panel says under the upload tab (the em dash for an
+unknown) and to what the switch does (ask again about the message).
+`app/routers/campaign_preview.py` is new for the 500-line rule — `/preview` grew
+a second answer and `campaigns.py` reached 536 with the cancel endpoint — and
+`app/main.py` registers it. `agent/mutate-5m.py` moved with the code: three of
+its anchors name lines that are now in the new module. `campaign_service.py`
+gained three lines — its flip to `running` now goes through
+`app/services/campaign_claim.py` (new), a conditional UPDATE that stands down
+when a cancel has landed during the campaign's own pre-flight. The first
+version of the session left that as a documented residual "this deployment
+cannot hit"; the fresh-context review measured it open in three of four
+provider/handler arrangements, including a `def` cancel route with the deployed
+provider, and the claim went in. The cancel and the post-selection re-check
+live in `campaign_dispatch.py`, beside the scheduler they exist for.
 
 ## Found in production 2026-09-08 — two live defects, `sessions/session-5m.md`
 

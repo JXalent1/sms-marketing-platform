@@ -209,6 +209,9 @@
 
         {# The live counter row. Every figure is filled by the script from
            /api/campaigns/preview — nothing here is computed in the browser.
+           The three audience cells start as "—", not 0: the page opens on the
+           upload tab, where there is no audience to count, and the script
+           paints the same em dash before anything loads (5n).
 
            It measures the raw template, so `{first_name}` counts as twelve
            characters and no recipient's message is that. It has to stay that
@@ -230,11 +233,11 @@
           </div>
           <div class="bg-surface px-3 py-2.5">
             <dt class="text-[11px] text-ink-3">Recipients</dt>
-            <dd class="mt-0.5 text-[15px] font-semibold tabular-nums text-ink" id="pvRecipients">0</dd>
+            <dd class="mt-0.5 text-[15px] font-semibold tabular-nums text-ink" id="pvRecipients">—</dd>
           </div>
           <div class="bg-surface px-3 py-2.5">
             <dt class="text-[11px] text-ink-3">Total segments (est.)</dt>
-            <dd class="mt-0.5 text-[15px] font-semibold tabular-nums text-ink" id="pvTotal">0</dd>
+            <dd class="mt-0.5 text-[15px] font-semibold tabular-nums text-ink" id="pvTotal">—</dd>
           </div>
           <div class="bg-surface px-3 py-2.5">
             <dt class="text-[11px] text-ink-3">Estimated cost</dt>
@@ -340,7 +343,7 @@
           <dt class="text-ink-3">Audience</dt><dd class="font-medium text-ink" id="sumAudience">—</dd>
         </div>
         <div class="flex items-center justify-between gap-3 px-5 py-2.5">
-          <dt class="text-ink-3">Recipients</dt><dd class="font-medium tabular-nums text-ink" id="sumRecipients">0</dd>
+          <dt class="text-ink-3">Recipients</dt><dd class="font-medium tabular-nums text-ink" id="sumRecipients">—</dd>
         </div>
         {# A6. The held-back count was already here and was only ever a number.
            What it needed was the sentence underneath: what the rule is and when
@@ -351,15 +354,15 @@
            0, because an explanation of a rule that is not running is noise. #}
         <div class="px-5 py-2.5">
           <div class="flex items-center justify-between gap-3">
-            <dt class="text-ink-3">Held back</dt><dd class="font-medium tabular-nums text-ink" id="sumSuppressed">0</dd>
+            <dt class="text-ink-3">Held back</dt><dd class="font-medium tabular-nums text-ink" id="sumSuppressed">—</dd>
           </div>
           <p id="sumSuppressedNote" class="mt-1 hidden text-[11px] leading-relaxed text-warn-ink"></p>
         </div>
         <div class="flex items-center justify-between gap-3 px-5 py-2.5">
-          <dt class="text-ink-3">Opted out</dt><dd class="font-medium tabular-nums text-ink" id="sumOptedOut">0</dd>
+          <dt class="text-ink-3">Opted out</dt><dd class="font-medium tabular-nums text-ink" id="sumOptedOut">—</dd>
         </div>
         <div class="flex items-center justify-between gap-3 px-5 py-2.5">
-          <dt class="text-ink-3">Segments</dt><dd class="font-medium tabular-nums text-ink" id="sumSegments">0</dd>
+          <dt class="text-ink-3">Segments</dt><dd class="font-medium tabular-nums text-ink" id="sumSegments">—</dd>
         </div>
         <div class="flex items-center justify-between gap-3 px-5 py-2.5">
           <dt class="text-ink-3">Estimated cost</dt><dd class="font-semibold tabular-nums text-ink" id="sumCost">—</dd>

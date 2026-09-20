@@ -127,20 +127,26 @@ async function refreshPreview() {
     clearTimeout(previewTimer);
 
     const template = el('message').value;
-    const audience = el('audience').value;
     // In upload mode the audience does not exist yet, and the dropdown still
     // holds whatever the other tab was pointing at. Counting that would put one
-    // audience's numbers on screen while he commits to another. `setMode()`
-    // paints the empty panel; nothing here may leave a figure behind.
-    if (composerMode === 'upload') { return; }
+    // audience's numbers on screen while he commits to another — so the
+    // request asks about **no audience**, and /preview answers the message half
+    // (characters, encoding, segments per message, the Unicode warning) with
+    // every audience figure null, which the panel paints as "—". Until 5n this
+    // returned outright here, and the message row read "Characters 0 ·
+    // Encoding — · Segments/msg 0" under a full message for the whole upload
+    // flow, with the emoji warning silent on the primary path. The segment
+    // count is still the server's: nothing here measures a message.
+    const audience = composerMode === 'upload' ? null : el('audience').value;
 
-    // Taken after the guard above, and before the request: it is the request's
-    // ticket, and a reply holding anything but the newest ticket is discarded.
-    // No early return for an empty message — the panel's audience, recipients
-    // and opted-out figures are true before a word is typed, and this response
-    // is the only thing allowed to supply them. /preview reports zero segments
-    // and zero cost for an empty template, because a message that does not
-    // exist is not a one-segment message.
+    // Taken before the request: it is the request's ticket, and a reply holding
+    // anything but the newest ticket is discarded — in either mode, because a
+    // reply about the message as it was two keystrokes ago is stale whichever
+    // tab it was asked from. No early return for an empty message — the panel's
+    // audience, recipients and opted-out figures are true before a word is
+    // typed, and this response is the only thing allowed to supply them.
+    // /preview reports zero segments and zero cost for an empty template,
+    // because a message that does not exist is not a one-segment message.
     const token = panelRequest();
     const data = await api('/api/campaigns/preview', {
         method: 'POST',
@@ -181,17 +187,31 @@ function paintUnicodeWarning(data) {
     const box = el('pvUnicodeWarn');
     if (data.encoding !== 'UCS-2') { box.classList.add('hidden'); return; }
 
-    // Both dollar figures come from the API at his rate, net of the month's
-    // included segments. The comparison is the whole message: one emoji cuts a
-    // segment from 160 characters to 70, and the only version of that fact
-    // anyone acts on is the difference between two numbers at tonight's count.
-    const extra = (data.estimated_cost ?? 0) - (data.estimated_cost_if_gsm7 ?? 0);
     const chars = data.forced_unicode_by.join(' ');
-    box.innerHTML =
+    const perRecipient =
         `<strong class="font-semibold">${esc(chars)} switches this message to Unicode.</strong> ` +
         `Every segment drops from 160 characters to 70, so each recipient costs ` +
-        `${data.segments} segments instead of ${data.gsm7_segments_if_stripped}. ` +
-        `At ${data.recipients.toLocaleString()} recipients that is ` +
+        `${data.segments} segments instead of ${data.gsm7_segments_if_stripped}.`;
+
+    // The warning fires on the message alone (5n A1): it is true of every
+    // recipient there will ever be, and the upload flow is the primary one. What
+    // an audience adds is the dollar comparison — both figures from the API at
+    // his rate, net of the month's included segments — and that sentence is
+    // written only when there is an audience to price it against. "At 0
+    // recipients that is $0.00" would be the false claim the null exists to
+    // avoid, one row down.
+    if (data.recipients === null || data.recipients === undefined) {
+        box.innerHTML = perRecipient +
+            ` Remove it and the message costs what plain text costs.`;
+        box.classList.remove('hidden');
+        return;
+    }
+    // One emoji cuts a segment from 160 characters to 70, and the only version
+    // of that fact anyone acts on is the difference between two numbers at
+    // tonight's count.
+    const extra = data.estimated_cost - data.estimated_cost_if_gsm7;
+    box.innerHTML = perRecipient +
+        ` At ${data.recipients.toLocaleString()} recipients that is ` +
         `<strong class="font-semibold tabular-nums">${money(data.estimated_cost)}</strong> ` +
         `instead of <strong class="font-semibold tabular-nums">${money(data.estimated_cost_if_gsm7)}</strong>` +
         (extra > 0 ? ` — <strong class="font-semibold tabular-nums">${money(extra)}</strong> more.` : '.') +
@@ -416,6 +436,11 @@ async function loadCampaigns() {
                         class="mt-1.5 rounded-md bg-good px-2.5 py-1 text-[11px] font-medium text-white hover:opacity-90">
                     Send now
                 </button>` : ''}
+            ${c.status === 'draft' && c.scheduled_at ? `
+                <button type="button" onclick="cancelCampaign(${c.id})"
+                        class="mt-1.5 rounded-md border border-line-strong bg-page px-2.5 py-1 text-[11px] font-medium text-ink hover:bg-surface-2">
+                    Cancel
+                </button>` : ''}
             ${c.status === 'completed' ? `
                 <button type="button" onclick="topUpCampaign(${c.id})"
                         class="mt-1.5 rounded-md border border-line-strong bg-page px-2.5 py-1 text-[11px] font-medium text-ink hover:bg-surface-2">
@@ -446,6 +471,19 @@ async function sendCampaign(id) {
     if (!confirm('Send this campaign now? This spends real money and cannot be undone.')) return;
     const data = await api(`/api/campaigns/${id}/send`, { method: 'POST' });
     showToast(data.success ? 'Sending started' : (data.detail || 'Failed'),
+              data.success ? 'success' : 'error');
+    loadCampaigns();
+}
+
+// The button is only drawn on a scheduled draft, and the server decides again
+// — what cancelling means, and why a campaign that has started refuses, is
+// `campaign_dispatch.cancel_scheduled()`. A refusal arrives as `detail` and is
+// shown verbatim: it names the state and what he can do instead.
+async function cancelCampaign(id) {
+    if (!confirm('Cancel this scheduled send? The campaign stays as a draft you '
+               + 'can send by hand; nothing is deleted.')) return;
+    const data = await api(`/api/campaigns/${id}/cancel`, { method: 'POST' });
+    showToast(data.success ? data.message : (data.detail || 'Could not cancel'),
               data.success ? 'success' : 'error');
     loadCampaigns();
 }

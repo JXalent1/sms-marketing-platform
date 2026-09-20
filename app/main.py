@@ -30,9 +30,10 @@ from app.services import link_service
 from app.sms.factory import get_provider
 import app.models                                    # noqa: F401 — registers tables
 
-from app.routers import (pages, dashboard, campaigns, campaign_uploads, contacts,
-                         categories, imports, blocklist, usage, reports, links,
-                         prospects, billing, settings as settings_router)
+from app.routers import (pages, dashboard, campaigns, campaign_preview,
+                         campaign_uploads, contacts, categories, imports,
+                         blocklist, usage, reports, links, prospects, billing,
+                         settings as settings_router)
 from app.routers.webhooks import telnyx as telnyx_webhooks, twilio as twilio_webhooks
 
 logger = logging.getLogger("app")
@@ -334,6 +335,9 @@ app.include_router(campaigns.router)
 # The campaign-first flow shares /api/campaigns and is registered after it, so
 # `POST /{campaign_id}/top-up` cannot shadow anything campaigns.py already owns.
 app.include_router(campaign_uploads.router)
+# The keystroke quote, `POST /preview`, split out in 5n for the 500-line rule.
+# A fixed path, so its position relative to the two above is immaterial.
+app.include_router(campaign_preview.router)
 app.include_router(contacts.router)
 app.include_router(contacts.lists_router)
 app.include_router(categories.router)

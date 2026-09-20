@@ -22,6 +22,7 @@
 // race is a fact rather than a coin toss.
 
 import fs from 'node:fs';
+import vm from 'node:vm';
 import { runComposer } from './composer_harness.mjs';
 
 const args = process.argv.slice(2);
@@ -33,10 +34,11 @@ if (!name || args.indexOf('--fixtures') < 0) {
 }
 const F = JSON.parse(fs.readFileSync(fixturesAt, 'utf8'));
 
-const audienceOf = (options) => {
-    try { return JSON.parse(options?.body || '{}').audience ?? null; }
-    catch { return null; }
+const bodyOf = (options) => {
+    try { return JSON.parse(options?.body || '{}'); }
+    catch { return {}; }
 };
+const audienceOf = (options) => bodyOf(options).audience ?? null;
 
 function plan(url, options) {
     if (url.startsWith('/api/campaigns/audiences')) {
@@ -44,8 +46,22 @@ function plan(url, options) {
     }
     if (url.startsWith('/api/campaigns/preview')) {
         const who = audienceOf(options);
-        return { delay: F.latency.preview[who] ?? 10,
-                 body: F.preview[who] ?? F.preview[''] };
+        // No audience — the upload tab's question (5n). Answered per *message*,
+        // from real endpoint replies keyed on the exact text asked about, and
+        // loudly when the fixture has no reply for that text: a fixture that
+        // answered about a message it was not asked about would be the same
+        // defect as a panel answering about an audience it was not asked about.
+        if (!who) {
+            const text = bodyOf(options).message_template ?? '';
+            if (!(text in F.template_previews)) {
+                throw new Error(`no audience-less fixture for message ${JSON.stringify(text)}`);
+            }
+            return { delay: F.latency.template ?? 10, body: F.template_previews[text] };
+        }
+        return { delay: F.latency.preview[who] ?? 10, body: F.preview[who] };
+    }
+    if (/^\/api\/campaigns\/\d+\/cancel$/.test(url)) {
+        return { delay: 20, body: F.cancel_replies?.[url.split('/')[3]] ?? { detail: 'no fixture' } };
     }
     if (url.startsWith('/api/campaigns/preflight')) {
         const who = audienceOf(options);
@@ -55,7 +71,7 @@ function plan(url, options) {
         return { delay: 20, body: F.from_upload };
     }
     if (url === '/api/campaigns') return { delay: 20, body: F.created };
-    if (url.startsWith('/api/campaigns?')) return { delay: 10, body: { campaigns: [] } };
+    if (url.startsWith('/api/campaigns?')) return { delay: 10, body: F.rail ?? { campaigns: [] } };
     if (url.startsWith('/api/lists/manage')) return { delay: 10, body: { lists: [] } };
     return { delay: 5, body: {} };
 }
@@ -173,13 +189,73 @@ const SCENARIOS = {
     // Switching to the upload tab while a preview is in flight. The panel is
     // cleared, and the reply that lands afterwards must not refill it under a
     // composer whose audience is a file that has not been read yet.
+    //
+    // Read twice since 5n. The switch now also asks again about the message,
+    // 300 ms later, and that request's own ticket would retire the reply too —
+    // so the switch is timed for the reply to land *inside* that window, and
+    // the panel is read before the re-ask can answer. What stands between the
+    // stale reply and the panel at that instant is the ticket `resetSummary()`
+    // takes, and nothing else; a scenario that read only after settling would
+    // pass with that ticket removed, which is how 5m's mutation P6 came to
+    // survive on the first run of the 5n tree.
     upload_mode_clears_and_stays_clear: async () => {
         const run = await openComposer();
         run.select.choose('all');
-        await wait(DEBOUNCE + F.latency.preview.all / 4);   // in flight, not back
+        await wait(DEBOUNCE + F.latency.preview.all - 100);   // 100 ms from landing
+        run.sandbox.setMode('upload');
+        await wait(200);                                       // landed; re-ask not yet
+        const inside = run.panel();
+        await settle();
+        return { inside, settled: run.panel() };
+    },
+
+    // The upload tab, a message typed, no audience anywhere (5n A1). The three
+    // rows measured on the message have to be live; the three that need an
+    // audience have to say they do not know; the Unicode warning has to fire.
+    // The message is the fixture's emoji one, so the segment figure on screen
+    // is one only the server's counter produces — a naive length / 160 in the
+    // browser would print a different number.
+    upload_mode_measures_the_template: async () => {
+        const run = runComposer({ plan });
+        await wait(F.latency.audiences + 100);         // page load has settled
+        run.el('message').value = F.emoji_message;
+        run.el('message').dispatch('input');           // the keystroke path
+        await wait(DEBOUNCE + (F.latency.template ?? 10) + 100);
+        const asked = run.calls
+            .filter(c => c.url.startsWith('/api/campaigns/preview'))
+            .map(c => JSON.parse(c.body));
+        // A top-level `let` in the partials, so it lives in the script's own
+        // lexical scope rather than on the sandbox object.
+        const mode = vm.runInContext('composerMode', run.context);
+        return { panel: run.panel(), mode,
+                 audiences_asked: asked.map(b => b.audience ?? null) };
+    },
+
+    // Typed on the existing tab, then carried to the upload tab while the
+    // reply about it is still in flight. The reset retires that reply; the
+    // switch has to ask again, or the counter keeps describing the previous
+    // keystroke under a message that now carries an emoji.
+    upload_switch_reasks_about_the_message: async () => {
+        const run = await openComposer();
+        await settle();
+        run.el('message').value = F.emoji_message;
+        run.el('message').dispatch('input');
+        await wait(DEBOUNCE + 5);                      // the 'all' reply is on the wire
         run.sandbox.setMode('upload');
         await settle();
         return run.panel();
+    },
+
+    // The campaign rail offers Cancel on a scheduled draft and on nothing else,
+    // and pressing it posts to the campaign's own cancel route (5n A2).
+    rail_offers_cancel_on_a_scheduled_draft: async () => {
+        const run = runComposer({ plan });
+        await wait(F.latency.audiences + 100);
+        const before = run.panel().rail;
+        await run.sandbox.cancelCampaign(F.scheduled_campaign_id);
+        await wait(60);
+        const posted = run.calls.filter(c => /\/cancel$/.test(c.url)).map(c => c.url);
+        return { rail: before, posted, toasts: run.toasts };
     },
 };
 

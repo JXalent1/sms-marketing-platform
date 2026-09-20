@@ -46,6 +46,14 @@ SCENARIOS = ROOT / "tests" / "js" / "composer_scenarios.mjs"
 
 MESSAGE = "Private record collection, tonight 6pm. Doors 5."
 LIST_LABEL = "09/09, 6:00 PM Private Record Collection"
+# One emoji, and a length chosen so the two ways of counting disagree: 79
+# characters is one segment by "length over 160" and **two** by the UCS-2 rule
+# `count_sms_segments()` applies (70 per single segment, 67 per part after
+# that). The figure on screen can only be the server's.
+EMOJI_MESSAGE = ("\U0001F525 Private record collection tonight 6pm, doors 5. "
+                 "Rare pressings, sealed boxes.")
+SCHEDULED_NAME = "Panel rail scheduled draft"
+UNSCHEDULED_NAME = "Panel rail draft sent by hand"
 
 # The measured ordering, exaggerated so a race is a fact rather than a coin toss.
 # At the production shape /preview for the whole database took 237.9 ms against
@@ -124,7 +132,7 @@ def _add_member(list_id: int) -> None:
 # blocklist arithmetic and `test_dashboard`'s never-texted list both went red
 # the first time this ran. The mirror of 5i's lesson, one file along.
 PHONE_PREFIXES = ("+1954777", "+1954778")
-CAMPAIGN_NAMES = ("Panel and draft agree",)
+CAMPAIGN_NAMES = ("Panel and draft agree", SCHEDULED_NAME, UNSCHEDULED_NAME)
 
 
 def _tear_down():
@@ -186,14 +194,47 @@ def fixtures(tmp_path_factory):
                                  json={"message_template": MESSAGE, "audience": selector,
                                        "batch_size": None, "link_target_url": None}).json()
 
+    # The upload tab's question (5n): the message alone, no audience. One reply
+    # per message the scenarios can type, and the plan refuses any other text.
+    template_previews = {
+        text: client.post("/api/campaigns/preview",
+                          json={"message_template": text, "audience": None}).json()
+        for text in ("", MESSAGE, EMOJI_MESSAGE)
+    }
+
+    # The rail: a scheduled draft the JavaScript has to offer Cancel on, beside
+    # the drafts it must not. Both the list and the cancel reply are the real
+    # endpoints' — the rail renders what `/api/campaigns` says and the toast
+    # repeats what `/cancel` says, so neither may be hand-written here.
+    scheduled = client.post("/api/campaigns", json={
+        "name": SCHEDULED_NAME, "message_template": MESSAGE, "audience": selector,
+        "cross_category_override": True, "scheduled_at": "2030-01-01T18:00:00",
+    })
+    assert scheduled.status_code == 200, scheduled.text
+    scheduled_id = scheduled.json()["campaign"]["id"]
+    # And a draft with no time on it, in the same rail: the control must be
+    # absent there, and a fixture without one could not say so.
+    by_hand = client.post("/api/campaigns", json={
+        "name": UNSCHEDULED_NAME, "message_template": MESSAGE, "audience": selector,
+        "cross_category_override": True,
+    })
+    assert by_hand.status_code == 200, by_hand.text
+    rail = client.get("/api/campaigns?limit=8").json()
+    cancelled = client.post(f"/api/campaigns/{scheduled_id}/cancel").json()
+
     payload = {
         "list_selector": selector,
         "list_label": LIST_LABEL,
         "message": MESSAGE,
+        "emoji_message": EMOJI_MESSAGE,
         "latency": {**LATENCY, "preview": {**LATENCY["preview"], selector: 40}},
         "audiences": audiences,
         "preview": {"all": preview_all, selector: preview_list},
+        "template_previews": template_previews,
         "preflight": {selector: preflight_list},
+        "rail": rail,
+        "scheduled_campaign_id": scheduled_id,
+        "cancel_replies": {str(scheduled_id): cancelled},
         "from_upload": {"success": True,
                         "campaign": {"id": 901, "name": LIST_LABEL, "scheduled_at": None,
                                      "total_recipients": preview_list["recipients"],
@@ -354,13 +395,140 @@ def test_a_superseded_preflight_leaves_a_checklist_you_can_re_run(fixtures):
 
 
 def test_switching_to_upload_retires_the_replies_still_in_flight(fixtures):
-    """A cleared panel stays cleared; the slow reply must not refill it."""
-    _, path = fixtures
-    panel = run_scenario("upload_mode_clears_and_stays_clear", path)
-    assert panel["audience"] == "—"
-    assert panel["recipients"] == "0"
-    assert panel["segments"] == "0"
-    assert panel["cost"] == "—"
+    """A cleared panel stays cleared; the slow reply must not refill it.
+
+    Cleared to "—", not to 0, since 5n: under the upload tab there is no
+    audience to count, and "0 recipients" is a claim about one.
+    """
+    payload, path = fixtures
+    everyone = payload["preview"]["all"]
+    out = run_scenario("upload_mode_clears_and_stays_clear", path)
+    # Inside the window: the abandoned reply has landed and the re-ask has not
+    # answered. Only `resetSummary()`'s ticket keeps it off the panel here.
+    for when in ("inside", "settled"):
+        panel = out[when]
+        assert panel["audience"] == "—", when
+        assert panel["recipients"] == "—", when
+        assert panel["segments"] == "—", when
+        assert panel["cost"] == "—", when
+        assert panel["recipients"] != f'{everyone["recipients"]:,}', when
+
+
+# ─── 5n A1: the message's own figures, under the upload tab ────────────────
+
+def test_upload_mode_measures_the_template_and_admits_what_it_does_not_know(fixtures):
+    """Three rows are true of the message alone; three need an audience.
+
+    Characters, Encoding and Segments/msg are live with no audience anywhere.
+    Recipients, Total segments and Estimated cost read "—": not 0, which is a
+    claim about an audience that does not exist yet. And the request that
+    filled the row asked about **no** audience — not the dropdown's, which
+    still holds whatever the other tab was pointing at.
+    """
+    payload, path = fixtures
+    measured = payload["template_previews"][EMOJI_MESSAGE]
+    out = run_scenario("upload_mode_measures_the_template", path)
+    panel = out["panel"]
+
+    assert out["mode"] == "upload"
+    assert panel["characters"] == str(measured["characters"])
+    assert panel["encoding"] == measured["encoding"] == "UCS-2"
+    assert panel["segments_per_message"] == str(measured["segments"])
+    assert panel["strip_recipients"] == "—", "an unknown is not a zero"
+    assert panel["strip_total"] == "—"
+    assert panel["strip_cost"] == "—"
+    # "This send" says the same thing about the same unknowns.
+    assert panel["audience"] == "—" and panel["recipients"] == "—"
+    assert panel["segments"] == "—" and panel["cost"] == "—"
+    # Every preview the upload tab asked for asked about nobody.
+    assert out["audiences_asked"], "no preview was requested in upload mode"
+    assert set(out["audiences_asked"]) == {None}
+
+
+def test_the_segment_figure_on_screen_is_count_sms_segments_via_the_server(fixtures):
+    """Criterion 4: no second segment calculation exists.
+
+    The figure the upload tab shows is asserted against three things at once:
+    the fixture reply it was painted from, `count_sms_segments()` called
+    directly on the same text the endpoint counts, and the number a browser-side
+    `Math.ceil(length / 160)` would have produced instead. On the emoji message
+    those last two differ — 2 against 1 — so a JavaScript that measured the
+    message itself cannot pass this.
+    """
+    from app.services import link_service
+    from app.sms.segments import count_segments
+
+    payload, path = fixtures
+    measured = payload["template_previews"][EMOJI_MESSAGE]
+    authority = count_segments(link_service.for_counting(EMOJI_MESSAGE))
+    naive = -(-len(EMOJI_MESSAGE) // 160)
+    assert authority != naive, "the fixture message must separate the two counters"
+    assert measured["segments"] == authority
+
+    panel = run_scenario("upload_mode_measures_the_template", path)["panel"]
+    assert panel["segments_per_message"] == str(authority)
+    assert panel["segments_per_message"] != str(naive)
+
+
+def test_the_unicode_warning_fires_under_the_upload_tab(fixtures):
+    """Criterion 3. One emoji triples the cost, and the upload flow is the primary one.
+
+    With no audience the warning names the per-recipient fact — segments per
+    message, before and after — and makes no claim about a recipient count or a
+    dollar figure, because it has neither.
+    """
+    payload, path = fixtures
+    measured = payload["template_previews"][EMOJI_MESSAGE]
+    warning = run_scenario("upload_mode_measures_the_template", path)["panel"]["unicode_warning"]
+
+    assert warning["shown"] is True
+    assert "switches this message to Unicode" in warning["html"]
+    assert (f'{measured["segments"]} segments instead of '
+            f'{measured["gsm7_segments_if_stripped"]}') in warning["html"]
+    assert "recipients" not in warning["html"], "no audience, so no recipient count"
+    assert "$" not in warning["html"], "no audience, so no dollar figure"
+
+
+def test_carrying_a_message_to_the_upload_tab_asks_about_it_again(fixtures):
+    """The switch retires the reply in flight, so it has to ask again.
+
+    Typed on the existing tab, switched before the reply landed: the reset
+    discards that reply on purpose. Without a fresh request the counter would
+    keep describing the previous keystroke — the plain message — under a box
+    that now carries an emoji, with the warning silent.
+    """
+    payload, path = fixtures
+    measured = payload["template_previews"][EMOJI_MESSAGE]
+    panel = run_scenario("upload_switch_reasks_about_the_message", path)
+    assert panel["encoding"] == "UCS-2"
+    assert panel["segments_per_message"] == str(measured["segments"])
+    assert panel["unicode_warning"]["shown"] is True
+    assert panel["strip_recipients"] == "—"
+
+
+# ─── 5n A2: the rail's Cancel control ───────────────────────────────────────
+
+def test_the_rail_offers_cancel_on_a_scheduled_draft_and_posts_to_its_route(fixtures):
+    """Criterion 5, the client-side half: the control exists where he sees
+    "Scheduled …", on that campaign and on no other, and pressing it posts to
+    that campaign's own cancel route. The toast repeats the server's sentence.
+    """
+    payload, path = fixtures
+    scheduled_id = payload["scheduled_campaign_id"]
+    rail_rows = payload["rail"]["campaigns"]
+    assert any(c["id"] == scheduled_id and c["scheduled_at"] for c in rail_rows)
+    others = [c["id"] for c in rail_rows if c["id"] != scheduled_id]
+    assert any(c["status"] == "draft" and not c["scheduled_at"] for c in rail_rows), (
+        "the rail must also hold a draft with no time, or 'Cancel on every "
+        "draft' passes this test")
+
+    out = run_scenario("rail_offers_cancel_on_a_scheduled_draft", path)
+    assert f"cancelCampaign({scheduled_id})" in out["rail"]
+    for other in others:
+        assert f"cancelCampaign({other})" not in out["rail"], other
+    assert out["posted"] == [f"/api/campaigns/{scheduled_id}/cancel"]
+    assert out["toasts"][-1]["type"] == "success"
+    assert out["toasts"][-1]["message"] == payload["cancel_replies"][str(scheduled_id)]["message"]
 
 
 # ─── The harness, checked against a case whose answer is known ──────────────
@@ -517,3 +685,36 @@ def test_an_empty_message_is_zero_segments_and_the_audience_is_still_named(fixtu
     assert blank["audience"] == selector
     assert blank["audience_label"] == LIST_LABEL
     assert blank["recipients"] > 0
+
+
+def test_preview_without_an_audience_measures_the_message_and_admits_the_rest(fixtures):
+    """5n A1 at the API: the message half answered, the audience half `None`.
+
+    Not 0. `/preview` used to be asked only with an audience; the upload tab
+    now asks with none, and an endpoint that resolved "no audience" into
+    `recipients: 0` would hand the panel a claim to paint. Every figure that
+    needs an audience is null, and every figure the message alone decides is
+    the same one an audience-bearing preview reports.
+    """
+    from app.services import link_service
+    from app.sms.segments import count_segments
+
+    payload, _ = fixtures
+    client = _client()
+    alone = client.post("/api/campaigns/preview",
+                        json={"message_template": EMOJI_MESSAGE, "audience": None}).json()
+    with_audience = client.post("/api/campaigns/preview",
+                                json={"message_template": EMOJI_MESSAGE,
+                                      "audience": payload["list_selector"]}).json()
+
+    for key in ("recipients", "suppressed", "opted_out", "total_segments",
+                "estimated_cost", "estimated_cost_if_gsm7", "audience", "audience_label"):
+        assert alone[key] is None, f"{key} should be unknown, not {alone[key]!r}"
+    for key in ("characters", "encoding", "segments", "forced_unicode_by",
+                "gsm7_segments_if_stripped", "risky_links", "link_in_message"):
+        assert alone[key] == with_audience[key], key
+    assert alone["segments"] == count_segments(link_service.for_counting(EMOJI_MESSAGE))
+    assert alone["encoding"] == "UCS-2"
+    # And the empty template is still zero segments, on this path too.
+    blank = client.post("/api/campaigns/preview", json={"message_template": ""}).json()
+    assert blank["segments"] == 0 and blank["recipients"] is None

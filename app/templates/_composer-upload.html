@@ -29,9 +29,17 @@ function setMode(mode) {
     el('existingPane').classList.toggle('hidden', mode === 'upload');
 
     // The summary panel describes an audience that does not exist yet in upload
-    // mode. Zeroing it is honest; leaving the previous tab's numbers up would
+    // mode. Clearing it is honest; leaving the previous tab's numbers up would
     // have him reading one audience's figures while committing to another.
-    if (mode === 'upload') { resetSummary(); } else { schedulePreview(); }
+    //
+    // And then a preview is scheduled in *both* modes (5n A1). The message's
+    // own figures — characters, encoding, segments per message, the Unicode
+    // warning — are true whatever the audience is, and the reset above has
+    // just retired any reply still in flight about the message as it stands.
+    // Without this, "Hello 🎉" typed on the other tab and carried here would sit
+    // above a counter still describing "Hello".
+    if (mode === 'upload') { resetSummary(); }
+    schedulePreview();
 }
 
 // Through the panel's one writer, with a fresh ticket — which is what makes it

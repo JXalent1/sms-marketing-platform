@@ -4947,3 +4947,332 @@ asked at the cheapest possible moment.
 - **No `/health` field for the zone.** `/health` is unauthenticated and every
   field it gains is published. The zone is on the composer's schedule field,
   where the person who needs it is standing.
+
+# Session 5n — upload-mode template metrics, and cancelling a scheduled campaign
+
+_2026-09-20. Both defects reported by the client's operator. A1 is the message
+row under the upload tab; A2 is a control that did not exist._
+
+## A1 — what shipped
+
+**The upload tab now asks `/preview` about no audience, and `/preview` answers
+the half it can.** `refreshPreview()` used to return outright when
+`composerMode === 'upload'`, so Characters, Encoding and Segments/msg were
+never written under the primary flow, and the Unicode warning — the one
+CLAUDE.md says must be loud — never fired there. The guard's reason was right
+and its scope was wrong: it existed so that the dropdown's leftover audience
+was not counted under a composer whose audience is a file, and that reason
+covers three of the six figures.
+
+So the request now carries `audience: null` in upload mode and the reply is
+split along the same line the figures are:
+
+| figure | depends on | with an audience | without one |
+|---|---|---|---|
+| Characters, Encoding, Segments/msg, the Unicode warning, risky links, the link tag's state | the message | measured | measured, identically |
+| The phone preview and "Rendered for <name>" | the message *and* a sample contact from the audience | rendered against that contact | the raw template, merge tags literal, "Merge tags render against a real contact." |
+| Recipients, Held back, Opted out, Total segments, Estimated cost, Audience | the audience | counted | **`null`** |
+
+(The review caught the first draft of this table filing the phone preview
+under "the message". It is built by `_template_half()` for convenience, and it
+is honest in both modes, but it is not audience-independent.)
+
+`null`, never 0, and the panel paints it as the em dash it already used for a
+thing it does not know. Three renderings for three claims, and
+`paintSummary()` now says which is which: `…` is "an answer is on its way",
+`—` is "there is no answer to have", and a number — including 0 — is a fact
+about an audience that resolved. `EMPTY_SUMMARY` carried zeros before this
+session, so the "This send" panel under the upload tab read "Recipients 0"
+too; that was the same false claim one box over, and the review lens asked
+for every place that conflates them.
+
+**No second segment calculation.** The figure on screen is the server's — the
+`segments` field of the same reply, from `count_sms_segments()` through
+`describe()` — and nothing in the browser measures a message. The test for
+criterion 4 uses a 79-character message with one emoji, which is **2**
+segments by the UCS-2 rule and **1** by `length / 160`, and asserts the screen
+against the fixture reply, against `count_sms_segments()` called directly on
+the text the endpoint counts, and against the naive figure it must not equal.
+Mutation `U4` puts the naive count in the template and three tests go red.
+
+**The Unicode warning is worded for what it knows.** With no audience it names
+the per-recipient fact — "each recipient costs 2 segments instead of 1" — and
+makes no claim about a recipient count or a dollar figure, because it has
+neither; "At 0 recipients that is $0.00 instead of $0.00" would have been the
+null-as-zero defect one sentence down. With an audience the dollar comparison
+is exactly as it was.
+
+**The tab switch asks again.** `setMode('upload')` clears the panel with a
+fresh ticket, which retires every reply in flight — including one about the
+message as it stands. Without a fresh request, "Hello 🎉" typed on the other
+tab and carried across sat above a counter still describing "Hello", warning
+silent. `setMode()` now schedules a preview in both modes, and the
+audience-less request costs no audience resolution and no blocklist load.
+
+**5m's staleness rule holds in both modes.** `refreshPreview()` takes a ticket
+before the request whichever tab asked, and a reply about the message two
+keystrokes ago is stale whichever tab it was asked from. The three composer
+mutations of 5m that touch this path (`P1`, `P4`, `P6`) still resolve and are
+still caught.
+
+### Files touched beyond the spec's list, and the requirement that forced each
+
+- **`app/routers/campaign_preview.py` — new.** `/preview` grew a second answer
+  and `campaigns.py` reached 536 lines with the cancel endpoint; the 500-line
+  rule. The split is along the endpoint's own story — the keystroke path,
+  cheap and off the loop, the only thing allowed to fill the panel — and
+  `_template_half()` is the one builder both answers share, so the message
+  half cannot drift between them. `campaigns.py` is at 399.
+- **`app/main.py`** — one `include_router` for the new module.
+- **`app/services/campaign_claim.py` — new**, and three lines in
+  `campaign_service.py`'s `run_send_loop()`. *(A2: "cancelling at the moment
+  `run_due_campaigns` has selected the campaign must not produce a
+  half-send" — the review's probe showed the re-check alone does not
+  guarantee it.)* `campaign_service.py` is at exactly 500 lines, so the claim
+  is its own module and the service calls it.
+- **`agent/mutate-5m.py`** — `ROUTER` now names the new file. `P3`–`P5` edit
+  the same lines at their new address; the anchors themselves are unchanged
+  and all eighteen still resolve. B1's rule: a harness whose anchors do not
+  resolve exits 2 and proves nothing, so the harness moved with the code.
+- **`tests/js/composer_harness.mjs`** — `textContent` now coerces to a string
+  on assignment, as the DOM's does. The stub was storing the raw number the
+  composer writes into a cell, so a scenario read back `2` where a browser
+  shows `"2"`; a stub that is wrong about the browser is a test that is wrong
+  about the product. And the `panel()` reader gained the metering strip, the
+  Unicode warning and the rail, split the way 5n splits them.
+
+## A2 — what shipped
+
+**What cancelling means, decided once.** `campaign_dispatch.cancel_scheduled()`
+clears `scheduled_at` and leaves an ordinary **draft** — name, audience,
+message and every `pending` row intact; not a terminal state. The usual reason
+to cancel is a wrong time, and a draft can be sent by hand from the rail with
+the audience it was built for. The consequence, stated in the docstring: it
+cannot be given a *new* time from here, because scheduling is chosen at
+creation and editing in place is its own session — so "wrong day" is cancel,
+then create again. A cancelled draft is indistinguishable from one he never
+scheduled, and that is the intended end state rather than a lost record: the
+campaign never ran, and there is nothing about it to keep.
+
+**Refused on anything that has started, by name.** `CANCEL_STATE_ERRORS`
+carries one sentence per state, in his units and with the remedy that works on
+this object (`decisions/006`): a `running` campaign says how many of how many
+have gone and that a send which has started cannot be stopped; `completed`
+points at History; `aborted` and `failed` say to create it again; a draft that
+was never scheduled says it is one he sends by hand. The router turns the
+sentence into a 409 verbatim, so the rail's toast and the API read the same
+words.
+
+**The race, measured before it was fixed.** On the pre-fix tree, with the
+cancel simulated as the raw clear it would have had to be:
+
+    selected [1]; then cancelled #1 (scheduled_at -> NULL, status still draft)
+    dispatched=[1]  status=completed  sent rows=1
+
+`due_campaign_ids()` answers about a moment; `run_due_campaigns()` then works
+through its answer one campaign at a time, and a campaign at the back of that
+list waits behind every blast in front of it — minutes at this client's list
+sizes, with the send loop yielding after every message. A cancel in that gap
+cleared a schedule on a campaign the tick had already decided to send, and
+`send_campaign()` could not tell, because it checks `status` and a cancel
+leaves the status alone on purpose.
+
+Three mechanisms close it, and the third was the review's doing:
+
+- **`still_scheduled()`** re-asks the two conditions a cancel can change —
+  still a draft, still carrying a schedule — against the row as it stands,
+  immediately before each dispatch. A column query, so it reads what another
+  session has since committed. **Not the time:** selection already judged
+  that, and the only thing that can move `scheduled_at` afterwards is a
+  cancel, which clears it. The first version re-compared the wall clock too,
+  and the review pointed out what that costs once a year — a campaign
+  selected in the first 1 AM hour on the first Sunday in November and
+  reached after the clocks fall back reads as "not yet due" again, is
+  skipped, and is logged as cancelled. `run_due_campaigns()` logs the skip
+  and returns only what it sent — it used to return what it selected, which
+  after this session would have named a cancelled campaign as dispatched.
+- **The cancel's clear is conditional at the database** — `UPDATE … WHERE
+  status = 'draft' AND scheduled_at IS NOT NULL` — and a clear that matches no
+  row re-reads the campaign and refuses with the state it is *now* in. So the
+  other direction of the race, a dispatch that flipped the campaign to
+  `running` between the cancel's read and its write, ends with the client
+  told "already sending — 1 of 443 sent so far" rather than "cancelled" over a
+  blast that is going out. `test_cancel_decides_on_the_row_as_it_stands_not_
+  the_object_it_read` holds a stale identity map and proves it.
+- **The flip to `running` is itself a claim** (`app/services/campaign_claim.py`).
+  The first version of this session stopped at the two above and wrote down a
+  residual: between `still_scheduled()` and the `running` commit sits the
+  pre-flight, which awaits the provider's balance call, and whether a cancel
+  can land in that gap "depends on the provider blocking the loop". The
+  review measured it instead of taking it — four arrangements, a cancel fired
+  150 ms into a 400 ms balance call:
+
+      provider=blocking  cancel=loop    -> refused: already sending            (deployed config)
+      provider=blocking  cancel=thread  -> cancel SUCCESS; status=completed, sent_rows=3
+      provider=awaiting  cancel=loop    -> cancel SUCCESS; status=completed, sent_rows=3
+      provider=awaiting  cancel=thread  -> cancel SUCCESS; status=completed, sent_rows=3
+
+  Row 2 is a `def` cancel route with **the deployed provider**: `urlopen`
+  releases the GIL and a threadpool thread runs the cancel in the meantime.
+  And a `def` route is exactly what this project's own 5j lesson — sync
+  SQLAlchemy on an `async def` route holds the loop — pushes the next session
+  toward; the review mutated the route to `def` and every test stayed green.
+  The closure was resting on three properties nothing asserted: the route on
+  the loop, the provider blocking it, one uvicorn worker.
+
+  So `run_send_loop()`'s flip is now `campaign_claim.take()`: on a first send,
+  `UPDATE campaigns SET status='running', started_at=? WHERE id=? AND
+  status='draft' AND scheduled_at IS <exactly what the caller loaded>`. One
+  row means this run owns the send; zero means the row changed under it — a
+  cancel cleared the schedule, or another path took it — and it raises
+  `SendClaimLost` before anything is sent, with the row untouched. Between
+  the cancel's conditional statement and this one the database decides the
+  race, whichever thread, loop or worker either arrives on. The scheduler
+  logs a lost claim as a stand-down, not a failure, and does not count it as
+  dispatched. It closes the button path's double-click for the same reason.
+  A top-up is not a claim — it runs on a `completed` campaign whose checks
+  are `campaign_topup.assess()`'s — and its flip is the plain one it was.
+
+  `campaign_service.py` was at exactly 500 lines. The claim lives in its own
+  module and the four lines of flip became three; the file is at 500 again.
+  Mutation `C7` reverts the flip to unconditional: four tests go red — the
+  three mid-pre-flight cases with "3 sent" after a cancel the client was
+  told succeeded, and the double-click case with a completed campaign
+  relabelled `aborted: this audience resolved to nobody`, because the second
+  run flipped it to `running` again and found nothing left pending.
+
+**Tested as the race, not as the happy path.** One test injects the cancel at
+the exact seam — after `due_campaign_ids()` returns and before
+`send_campaign()` — by wrapping the selection. One runs it on the event loop:
+two campaigns due, the second cancelled while the first is mid-blast, which
+is the shape production has. Three parametrized cases put the cancel *inside*
+a campaign's own pre-flight — from the loop with a provider that truly
+awaits, from a thread with a provider that blocks (the deployed one, as a
+`def` route would reach it), and both — and require the cancel to say
+"cancelled" *and* nothing to send in the same run. One more hands the same
+draft to two send loops. All assert no `sent` row, the status, and the
+campaign absent from what the tick reports. `accept-5n.sh` 7b removes the
+re-check from a scratch copy and 7c makes the flip unconditional in another,
+and each judges by the **sentence the test names** rather than the exit
+code: the review found the concurrent race test red on the pre-fix copy for
+the wrong reason — the first test's campaign had sent (the defect), the
+hold-back window then held the fixture's contacts back, and the second
+test's "first" campaign resolved to nobody, aborted without yielding, and
+failed its own precondition. Every sending test now starts from an untexted
+list, and 7a runs each criterion-7 test alone as well.
+
+**The control.** The rail draws Cancel on a draft that carries a
+`scheduled_at`, and on nothing else — beside "Send now" on a draft that does
+not and "Top up" on a completed one. `cancelCampaign()` confirms, posts,
+shows the server's sentence, reloads. Proven through the real JavaScript
+against a rail fixture that deliberately holds a scheduled draft *and* an
+unscheduled one, so "Cancel on every draft" (`C5`) has something to fail on.
+
+## Found while working
+
+- **The re-ask on the tab switch made one of 5m's guards unreachable by its
+  own test, and the harness said so.** `mutate-5m.py` P6 removes the ticket
+  `resetSummary()` takes, and on the first run against this tree it
+  **survived**: 5n's `setMode('upload')` now schedules a preview 300 ms later
+  whose own ticket retires the stale reply, and 5m's scenario read the panel
+  only after settling — by which time the re-ask had repaired it. The guard
+  is still doing work: without it the abandoned audience's figures paint for
+  up to 300 ms under the upload tab. Measured with P6 applied to a scratch
+  copy, the panel read 100 ms after the switch:
+
+      with P6      inside: ALL BIDDERS · 40 recipients · 40 segments   settled: — · — · —
+      repo         inside: — · — · —                                    settled: — · — · —
+
+  `upload_mode_clears_and_stays_clear` now times the switch so the reply
+  lands inside the debounce and reads the panel there as well as after
+  settling; P6 is caught again. B1's lesson, verbatim: a mutation reachable
+  in one arrangement may not be in the next, and the caught-by list is what
+  tells you — a second mechanism added beside a guard can take the guard's
+  test away from it without taking the guard's job.
+- **`audience_split.resolve()` answers an unresolvable selector with zeros,
+  and `/preview` passes them through as a resolved audience of nobody.**
+  `audience="nonsense:zzz"` returns `recipients: 0`, `total_segments: 0`,
+  `estimated_cost: 0.0` and the selector as its own label. Pre-existing,
+  unreachable from the dropdown, and outside this session's file list — but it
+  is a 0 that means "I could not resolve this", not "nobody is in it", which
+  is the conflation A1 was sent to remove one layer up. Found by the review.
+- **`audience=""` now yields nulls where it used to yield zeros.** The
+  endpoint's `if not payload.audience` catches the empty string, which is what
+  the existing tab sends when the dropdown reads "No contacts yet". No
+  audience is selected in that state, so "—" is the right claim; recorded
+  because it is a behaviour change the session did not set out to make.
+- **`run_due_campaigns()` returned the selected ids, not the dispatched ones.**
+  Harmless while every selected campaign was sent; after this session it
+  would have reported a cancelled campaign as dispatched. Returns
+  `dispatched` now (`C4`). `test_metering_pass.py` reads the value and is
+  unaffected.
+- **The harness stub stored numbers where a browser stores strings.** See
+  A1's file notes. Every existing scenario passed either way because none
+  read a numeric cell; the first one that did found it.
+- **`describe("")` reports `gsm7_segments_if_stripped: 1`** for an empty
+  message (`count_segments("")` is 1, and the router zeroes `segments` but not
+  this sibling). Pre-existing, unreachable from any renderer — the field is
+  read only when the encoding is UCS-2, and an empty message is GSM-7 — and
+  left alone rather than touched in `app/sms/`.
+- **`test_run_due_campaigns_reports_only_what_it_dispatched` cannot see `C4`
+  on its own.** Its cancelled campaign is cancelled *before* the tick, so the
+  selection already excludes it and "selected" equals "dispatched". The two
+  race tests are what pin `C4`; the test keeps its name because the property
+  it asserts is real, but the mutation's caught-by list is the honest record.
+  The review added that in a full-module run its "going out" campaign had
+  resolved to nobody and aborted, and still counted as dispatched — so it now
+  starts from an untexted list and asserts the campaign completed with rows
+  sent.
+- **The first version of `accept-5n.sh` 7b decided by exit code and ran one
+  test.** An import error, a fixture failing its own precondition, or the
+  neighbour-poisoned race test above would all have read as "red without the
+  re-check". It now runs both race tests alone and greps for the assertion
+  sentence each names, and 7c does the same for the claim.
+- **Every earlier harness verified pristineness only for the files it
+  patches.** A leftover edit in a test file in the scratch tree would not be
+  noticed. `mutate-5n.py` compares every `.py`/`.html`/`.mjs`/`.json` under
+  `app/`, `tests/` and `alembic/`. The older harnesses keep their narrower
+  check; widening them is a one-block change each and is not this session's.
+- **A visual check of the composer needs a login.** The dev server was booted
+  and curled (`/login` 200, `/static/app.css` 200, `/health` healthy); looking
+  at the upload tab in a browser requires typing the admin password into the
+  login form, which is a human's action and not this session's. The node
+  harness runs the real partials, which is what the criteria are proven on.
+
+## Deliberately not built
+
+- **Re-scheduling in place.** Out of scope by name; cancel returns the draft
+  to a state the existing composer handles.
+- **A "cancelled" marker.** A cancelled draft reads as a draft, not as a
+  campaign that failed; the toast says what happened at the moment it
+  happened. A badge would outlive its usefulness the moment he sent the draft
+  by hand.
+- **A mutation for `still_scheduled()` reading through `db.get()`.** The
+  identity map cannot be stale at that call site today — nothing loads the
+  campaign before the check, and every send commits, which expires everything
+  — so the arrangement that makes the column query load-bearing does not
+  exist to construct. The comment on the query says why it is a column query;
+  it is not claimed as a guard.
+- **A pin on the cancel route being `async def`.** The review suggested one
+  as the minimum; with the flip a claim, nothing about the race depends on
+  the route's kind, and the thread-arrival test covers what a `def` route
+  would do. The route stays `async def` for consistency with its neighbours.
+
+## Verified this session
+
+- `python -m pytest tests/ -q` — **858 passed** (835 + 17 cancel + 6 panel).
+- `bash agent/gate.sh` — green, twice.
+- `bash agent/accept-5n.sh` — checks 0-10 pass; 4b and 6b show the figures and
+  the sentences; 7a runs each criterion-7 test alone; 7b and 7c show the
+  race tests red on the trees they exist to reject, by the sentence each
+  names.
+- `agent/mutate-5n.py` — **15 caught / 0 survived**, two consecutive runs on a
+  verified-pristine tree, every mutation caught by a test that names it.
+- `agent/mutate-5m.py` — 18 caught / 0 survived after its anchors moved and
+  P6's scenario was re-timed (one survivor on the first run; see above).
+- One synchronous fresh-context review; its findings are recorded above and
+  every one of them changed something: the claim, the re-check's clock, the
+  neighbour-proof tests, 7b's verdict, the table, the initial markup, a
+  docstring, the harness's pristine scope.
+- `./run.sh` → `/login` 200, `/static/app.css` 200 after `npm run build:css`;
+  the CDN and white-label greps return nothing.

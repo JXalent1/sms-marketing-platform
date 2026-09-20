@@ -86,7 +86,10 @@ SCRIPT = "app/templates/_composer-script.html"
 SUMMARY = "app/templates/_composer-summary.html"
 UPLOAD = "app/templates/_composer-upload.html"
 BASE = "app/templates/base.html"
-ROUTER = "app/routers/campaigns.py"
+# `/preview` moved to its own module in session 5n, when the endpoint grew a
+# second answer and `campaigns.py` crossed the 500-line rule. P3-P5 edit the
+# same lines at their new address; the anchors themselves are unchanged.
+ROUTER = "app/routers/campaign_preview.py"
 DISPATCH = "app/services/campaign_dispatch.py"
 CLOCK = "app/core/clock.py"
 CONFIG = "app/core/config.py"

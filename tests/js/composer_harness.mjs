@@ -61,7 +61,14 @@ class Element {
         this.id = id;
         this.kind = kind;
         this.value = '';
-        this.textContent = '';
+        // `textContent` coerces to a string on assignment, as the DOM's does:
+        // the composer writes `data.segments` (a number) into a cell and a
+        // scenario reads back what a browser would show, which is "2", not 2.
+        let text = '';
+        Object.defineProperty(this, 'textContent', {
+            get: () => text,
+            set: (value) => { text = (value === null || value === undefined) ? '' : String(value); },
+        });
         this.innerHTML = '';
         this.className = '';
         this.title = '';
@@ -232,6 +239,19 @@ export function runComposer({ plan, settleMs = 1200 }) {
         sample: elements.get('previewWho')?.textContent ?? null,
         characters: elements.get('pvChars')?.textContent ?? null,
         checklist: elements.get('preflightList')?.innerHTML ?? null,
+        // Step 2's metering strip, split the way 5n splits it: three rows that
+        // are measured on the message alone, three that need an audience.
+        encoding: elements.get('pvEncoding')?.textContent ?? null,
+        segments_per_message: elements.get('pvSegments')?.textContent ?? null,
+        strip_recipients: elements.get('pvRecipients')?.textContent ?? null,
+        strip_total: elements.get('pvTotal')?.textContent ?? null,
+        strip_cost: elements.get('pvCost')?.textContent ?? null,
+        unicode_warning: (() => {
+            const box = elements.get('pvUnicodeWarn');
+            if (!box) return null;
+            return { shown: !box.classList.contains('hidden'), html: box.innerHTML };
+        })(),
+        rail: elements.get('campaignList')?.innerHTML ?? null,
     });
 
     const settled = new Promise(resolve => setTimeout(resolve, settleMs));

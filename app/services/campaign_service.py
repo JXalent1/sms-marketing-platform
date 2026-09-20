@@ -29,8 +29,8 @@ from app.models.campaign import Campaign
 from app.models.category import Category
 from app.models.sms_message import SMSMessage
 from app.models.contact import Contact
-from app.services import campaign_outcome, campaign_release, message_render
-from app.services import cost_reconciliation
+from app.services import (campaign_claim, campaign_outcome, campaign_release,
+                          cost_reconciliation, message_render)
 from app.services.blocklist_service import load_blocked_set, block_number
 # Re-exported deliberately: these three names were defined here before 5e split
 # creation out, and `routers/campaigns.py`, `campaign_dispatch.py` and the suite
@@ -303,10 +303,10 @@ class CampaignService:
         campaign_id = campaign.id
         previously_sent = campaign.sent_count or 0
 
-        campaign.status = "running"
-        if not top_up:
-            campaign.started_at = datetime.now().isoformat()
-        self.db.commit()
+        # On a first send this is a conditional UPDATE that can lose — to a
+        # cancel that landed during pre-flight, or to a second click. It
+        # raises before anything is sent; see campaign_claim.
+        campaign_claim.take(self.db, campaign, top_up=top_up)
 
         messages = self.db.query(SMSMessage).filter(
             SMSMessage.campaign_id == campaign_id,

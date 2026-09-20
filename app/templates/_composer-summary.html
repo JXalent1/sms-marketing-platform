@@ -48,10 +48,14 @@ let panelSequence = 0;
 const panelRequest = () => ++panelSequence;
 const panelStale = (token) => token !== panelSequence;
 
+// Every audience figure is null, not 0. This is the panel under the upload tab,
+// where the audience is a file that has not been read yet — and "0 recipients"
+// above a list he is about to upload is a claim, and a false one. Null renders
+// as the em dash the panel already uses for a thing it does not know (5n A1).
 const EMPTY_SUMMARY = {
-    audience_label: null, recipients: 0, suppressed: 0, opted_out: 0,
-    total_segments: 0, estimated_cost: null,
-    suppression_days: 0, suppression_clears_at: null,
+    audience_label: null, recipients: null, suppressed: null, opted_out: null,
+    total_segments: null, estimated_cost: null,
+    suppression_days: null, suppression_clears_at: null,
 };
 
 // The panel between picking an audience and hearing about it. Zeros would be a
@@ -68,8 +72,16 @@ function pendingSummary() {
 // also paints rows this function does not own — the character count, the phone
 // preview, the checklist. A second check here would be a guard no arrangement
 // can reach, which this project has shipped once already and had to delete.
+//
+// Three renderings, three different claims. `…` is "an answer is on its way";
+// `—` is "there is no answer to have" — no audience, so nothing to count; a
+// number, including 0, is a fact about an audience that resolved. Only the
+// third may look like a figure: a null painted as 0 would be the false claim
+// this panel was rebuilt to stop making.
 function paintSummary(view) {
-    const figure = (value) => view.pending ? '…' : (value || 0).toLocaleString();
+    const figure = (value) => view.pending ? '…'
+        : (value === null || value === undefined) ? '—'
+        : value.toLocaleString();
     const cost = view.pending ? '…' : money(view.estimated_cost);
 
     el('sumAudience').textContent = view.audience_label || '—';

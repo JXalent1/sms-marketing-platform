@@ -1762,3 +1762,85 @@ verified-pristine tree.
 - There is at least one pending scheduled draft on the box
   (`09/09, 6:00 PM Private Record Collection`). After this deploy it goes out at
   6:00 PM Eastern. Before it, it would have gone out at 2:00 PM.
+
+---
+
+# Session 5n — upload-mode template metrics, and cancelling a scheduled campaign
+
+_2026-09-20. Sections append; this is the bottom and the current state._
+
+## What just happened
+
+Two operator-reported defects, both fixed, both tested by running the code the
+client runs.
+
+**A1.** The message row under the upload tab — the primary flow — read
+`Characters 0 · Encoding — · Segments/msg 0` under a full message, because
+`refreshPreview()` returned outright in upload mode and the emoji warning was
+silent with it. The request now asks `/preview` about **no audience**; the
+endpoint (moved to `app/routers/campaign_preview.py`) answers the message half
+exactly as before and the audience half as `null`, which the panel paints as
+`—`. Not 0: "0 recipients" above a list he is about to upload is a claim.
+
+**A2.** There was no way to cancel a scheduled campaign short of SQL.
+`campaign_dispatch.cancel_scheduled()` clears `scheduled_at` and leaves an
+editable draft; refuses, with a sentence naming the state, on anything that
+has started; and the rail draws Cancel on a scheduled draft only. The race —
+selected by the tick, cancelled, dispatched anyway — was measured on the
+pre-fix tree (`completed`, one row `sent`) and is closed three ways:
+`still_scheduled()` re-asking immediately before each dispatch, a conditional
+clear on the cancel side so a cancel that loses says so, and — after the
+review measured the remaining gap open — the flip to `running` itself being a
+conditional claim (`campaign_claim.take()`).
+
+## State of the code
+
+`bash agent/gate.sh` green twice. **858 tests**, up from 835 at 5m.
+`bash agent/accept-5n.sh` exits 0 on checks 0-10. `agent/mutate-5n.py`
+reports **15 caught / 0 survived** on two consecutive invocations, both on a
+verified-pristine tree. `agent/mutate-5m.py` still 18 / 0 after three of its
+anchors moved with `/preview`.
+
+## Read this before touching either area
+
+1. **`null` and `0` are different answers from `/preview`, and the panel
+   renders them differently.** `UNKNOWN_AUDIENCE` in `campaign_preview.py` is
+   what "no audience" returns; `paintSummary()`'s `figure()` maps null to `—`,
+   pending to `…`, and a number to itself. Do not "tidy" `(value || 0)` back in.
+2. **The upload tab sends `audience: null` on purpose.** The dropdown still
+   holds the other tab's selection; sending it would count that audience under
+   a composer whose audience is a file. Mutation `U5`.
+3. **The tab switch schedules a preview in both modes.** `resetSummary()`
+   retires every reply in flight, including the one about the message as it
+   stands; without the re-ask the counter describes the previous keystroke.
+4. **Cancelling leaves a draft, and that is a ruling with a stated
+   consequence** — see `cancel_scheduled()`'s docstring. It cannot be given a
+   new time from the rail; "wrong day" is cancel, then create again.
+5. **The flip to `running` is a claim, and that is what closes the race.**
+   `campaign_claim.take()` is a conditional UPDATE keyed on the row still
+   being the draft the caller loaded, with the same `scheduled_at`; it raises
+   `SendClaimLost` before anything is sent when it matches nothing.
+   `still_scheduled()` before dispatch is the cheap, logged common case; the
+   claim is the guarantee, and it holds whatever thread, loop or worker the
+   cancel arrives on. The review measured the gap open in three of four
+   provider/handler arrangements before it existed — including a `def` cancel
+   route with the deployed provider. Do not make the flip unconditional
+   again to "simplify"; mutation `C7` is there to notice.
+6. **`run_due_campaigns()` returns what it dispatched, not what it selected.**
+   It was the same list until a campaign could be cancelled after selection.
+
+## For the deploy
+
+- No migration this session. No `.env` edit.
+- `app/services/campaign_claim.py` is new and on every first send: the flip
+  to `running` is now a conditional UPDATE. A lost claim logs
+  "stood down" at INFO from the scheduler and "background send failed" from
+  the button path; neither sends.
+- `app/routers/campaign_preview.py` is new and registered in `app/main.py`;
+  `POST /api/campaigns/preview` is unchanged in path and, with an audience, in
+  shape. Without one it now returns nulls where it never used to be asked.
+- `POST /api/campaigns/{id}/cancel` is new: 200 with the campaign, 409 with a
+  sentence, 404 for an unknown id. No rate limit — it spends nothing.
+- The pending scheduled draft on the box (`09/09, 6:00 PM …`) has passed its
+  time by now; whatever state it is in, the rail will say, and Cancel will
+  refuse it with that state's sentence if it is no longer a draft.
