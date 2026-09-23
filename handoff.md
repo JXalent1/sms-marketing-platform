@@ -1844,3 +1844,27 @@ anchors moved with `/preview`.
 - The pending scheduled draft on the box (`09/09, 6:00 PM …`) has passed its
   time by now; whatever state it is in, the rail will say, and Cancel will
   refuse it with that state's sentence if it is no longer a draft.
+
+## Session L1 — 2026-09-23
+
+**What landed.** His registered LiveAuctioneers bidders become contacts through
+`ContactSource.ingest()`; their behaviour goes into `bidder_profiles` (real
+types, one row per contact per platform). Daily at 09:00 in `clock.ZONE`, only
+when `LA_*` are set, one at a time, killed at `BIDDER_SCRAPE_TIMEOUT_SECONDS`
+with the browser closed on every path. `decisions/014` records the reversal of
+the 18 Aug ruling. Nothing ran against LiveAuctioneers.
+
+**Before the first live run (Part B, status.md):** add `StateDirectory=` to the
+systemd unit and point `BROWSER_PROFILE_ROOT` at it — the unit as shipped
+mounts home read-only and the job refuses every in-project path. Then
+`playwright install chromium` + `install-deps`, credentials, and watch
+`free -m` during the first run. Measured peak on a fixture: 482-541 MB
+(macOS, real Chromium); app ~95 MB.
+
+**What the fixtures do not prove:** that LA still serves these selectors. The
+fake portal and the real-Chromium probe are both shaped to the port's own
+selectors. The first live run is the test; a changed page fails loudly
+(`SelectorDrift`, `incomplete`) rather than reporting zero.
+
+**Next:** audiences on `bidder_profiles` ("won ≥ 3", "avg hammer > $250") —
+the data is there, the selector grammar is not.

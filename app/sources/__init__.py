@@ -16,13 +16,20 @@ Register new sources here so routes and scheduled jobs can look them up by name.
 
 from app.sources.base import ContactSource, ContactRecord, IngestResult
 from app.sources.csv_source import CSVContactSource
+from app.sources.liveauctioneers import LiveAuctioneersSource
 from app.sources.prospect_base import (
     ProspectSource, ProspectRecord, ProspectIngestResult,
 )
 
 SOURCES = {
     CSVContactSource.name: CSVContactSource,
-    # ExampleAPIContactSource.name: ExampleAPIContactSource,   # needs constructor args
+    # His own registered bidders (session L1). Registered so it is findable by
+    # name, but its `ingest()` lands only what `collect()` already read — the
+    # browser, the deadline, the blocklist and the profile rows are driven by
+    # `app/services/bidder_scrape.run_scrape()`, and nothing else should call
+    # it bare. Importing it here costs nothing: Playwright is imported only
+    # inside a scrape.
+    LiveAuctioneersSource.name: LiveAuctioneersSource,
 }
 
 # Discovery sources. P1 built the machinery and shipped none; P2 added the

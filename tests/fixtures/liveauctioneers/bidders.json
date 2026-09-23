@@ -1,0 +1,2356 @@
+{
+ "_comment": "Synthetic. Shaped to the selectors in app/sources/liveauctioneers.py, not recorded from the live portal - nobody has recorded it. 954-700-xxxx is this fixture's own number block. Edge cases: index 4 has no phone; 9 is a 'Less than' hammer; 14 has no analytics; 19 is '$1.2K'; 24 and 34 re-spell their own numbers; 48/49 share a number on adjacent rows (the second reads as no phone - the line was already on screen); 60/69 share a number nine rows apart (a conflict); the last row repeats 39.",
+ "bidders": [
+  {
+   "name": "Ben Brooks 1",
+   "username": "bidder001",
+   "phone": "(954) 700-0001",
+   "address": "101 Palm Avenue",
+   "location": "Miami, FL 33130",
+   "member_since": "Feb 2, 2011",
+   "card_on_file": "Yes",
+   "auctions_attended": 2,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 3,
+    "items_won": 1,
+    "payment_rate": "81%",
+    "avg_hammer": "$57.01",
+    "dispute_history": "1 open, 1 closed"
+   }
+  },
+  {
+   "name": "Cleo Chen 2",
+   "username": "bidder002",
+   "phone": "(954) 700-0002",
+   "address": "102 Palm Avenue",
+   "location": "Boca Raton, FL 33431",
+   "member_since": "Mar 3, 2012",
+   "card_on_file": "Yes",
+   "auctions_attended": 3,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 6,
+    "items_won": 2,
+    "payment_rate": "82%",
+    "avg_hammer": "$64.02",
+    "dispute_history": "0 open, 2 closed"
+   }
+  },
+  {
+   "name": "Dev Dubois 3",
+   "username": "bidder003",
+   "phone": "(954) 700-0003",
+   "address": "103 Palm Avenue",
+   "location": "Hollywood, FL 33020",
+   "member_since": "Apr 4, 2013",
+   "card_on_file": "No",
+   "auctions_attended": 4,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 9,
+    "items_won": 3,
+    "payment_rate": "83%",
+    "avg_hammer": "$71.03",
+    "dispute_history": "1 open, 3 closed"
+   }
+  },
+  {
+   "name": "Eli Evans 4",
+   "username": "bidder004",
+   "phone": "(954) 700-0004",
+   "address": "104 Palm Avenue",
+   "location": "Fort Lauderdale, FL 33301",
+   "member_since": "May 5, 2014",
+   "card_on_file": "Yes",
+   "auctions_attended": 5,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 12,
+    "items_won": 4,
+    "payment_rate": "84%",
+    "avg_hammer": "$78.04",
+    "dispute_history": "0 open, 0 closed"
+   }
+  },
+  {
+   "name": "Fay Fischer 5",
+   "username": "bidder005",
+   "phone": "",
+   "address": "105 Palm Avenue",
+   "location": "Miami, FL 33130",
+   "member_since": "Jun 6, 2015",
+   "card_on_file": "Yes",
+   "auctions_attended": 6,
+   "tax_exemption": "Yes",
+   "analytics": {
+    "bids_placed": 15,
+    "items_won": 5,
+    "payment_rate": "85%",
+    "avg_hammer": "$85.05",
+    "dispute_history": "1 open, 1 closed"
+   }
+  },
+  {
+   "name": "Gus Garcia 6",
+   "username": "bidder006",
+   "phone": "(954) 700-0006",
+   "address": "106 Palm Avenue",
+   "location": "Boca Raton, FL 33431",
+   "member_since": "Jul 7, 2016",
+   "card_on_file": "No",
+   "auctions_attended": 7,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 18,
+    "items_won": 6,
+    "payment_rate": "86%",
+    "avg_hammer": "$92.06",
+    "dispute_history": "0 open, 2 closed"
+   }
+  },
+  {
+   "name": "Hana Hughes 7",
+   "username": "bidder007",
+   "phone": "(954) 700-0007",
+   "address": "107 Palm Avenue",
+   "location": "Hollywood, FL 33020",
+   "member_since": "Aug 8, 2017",
+   "card_on_file": "Yes",
+   "auctions_attended": 8,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 21,
+    "items_won": 7,
+    "payment_rate": "87%",
+    "avg_hammer": "$99.07",
+    "dispute_history": "1 open, 3 closed"
+   }
+  },
+  {
+   "name": "Ivan Ibarra 8",
+   "username": "bidder008",
+   "phone": "(954) 700-0008",
+   "address": "108 Palm Avenue",
+   "location": "Fort Lauderdale, FL 33301",
+   "member_since": "Sep 9, 2018",
+   "card_on_file": "Yes",
+   "auctions_attended": 9,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 24,
+    "items_won": 8,
+    "payment_rate": "88%",
+    "avg_hammer": "$106.08",
+    "dispute_history": "0 open, 0 closed"
+   }
+  },
+  {
+   "name": "Jo Jensen 9",
+   "username": "bidder009",
+   "phone": "(954) 700-0009",
+   "address": "109 Palm Avenue",
+   "location": "Miami, FL 33130",
+   "member_since": "Oct 10, 2019",
+   "card_on_file": "No",
+   "auctions_attended": 10,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 27,
+    "items_won": 0,
+    "payment_rate": "89%",
+    "avg_hammer": "$113.09",
+    "dispute_history": "1 open, 1 closed"
+   }
+  },
+  {
+   "name": "Kai Kim 10",
+   "username": "bidder010",
+   "phone": "(954) 700-0010",
+   "address": "110 Palm Avenue",
+   "location": "Boca Raton, FL 33431",
+   "member_since": "Nov 11, 2020",
+   "card_on_file": "Yes",
+   "auctions_attended": 11,
+   "tax_exemption": "Yes",
+   "analytics": {
+    "bids_placed": 30,
+    "items_won": 1,
+    "payment_rate": "90%",
+    "avg_hammer": "Less than $100",
+    "dispute_history": "0 open, 2 closed"
+   }
+  },
+  {
+   "name": "Lena Lopez 11",
+   "username": "bidder011",
+   "phone": "(954) 700-0011",
+   "address": "111 Palm Avenue",
+   "location": "Hollywood, FL 33020",
+   "member_since": "Dec 12, 2021",
+   "card_on_file": "Yes",
+   "auctions_attended": 12,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 33,
+    "items_won": 2,
+    "payment_rate": "91%",
+    "avg_hammer": "$127.11",
+    "dispute_history": "1 open, 3 closed"
+   }
+  },
+  {
+   "name": "Milo Moreau 12",
+   "username": "bidder012",
+   "phone": "(954) 700-0012",
+   "address": "112 Palm Avenue",
+   "location": "Fort Lauderdale, FL 33301",
+   "member_since": "Jan 13, 2022",
+   "card_on_file": "No",
+   "auctions_attended": 13,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 36,
+    "items_won": 3,
+    "payment_rate": "92%",
+    "avg_hammer": "$134.12",
+    "dispute_history": "0 open, 0 closed"
+   }
+  },
+  {
+   "name": "Nia Novak 13",
+   "username": "bidder013",
+   "phone": "(954) 700-0013",
+   "address": "113 Palm Avenue",
+   "location": "Miami, FL 33130",
+   "member_since": "Feb 14, 2023",
+   "card_on_file": "Yes",
+   "auctions_attended": 14,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 39,
+    "items_won": 4,
+    "payment_rate": "93%",
+    "avg_hammer": "$141.13",
+    "dispute_history": "1 open, 1 closed"
+   }
+  },
+  {
+   "name": "Otto Okafor 14",
+   "username": "bidder014",
+   "phone": "(954) 700-0014",
+   "address": "114 Palm Avenue",
+   "location": "Boca Raton, FL 33431",
+   "member_since": "Mar 15, 2024",
+   "card_on_file": "Yes",
+   "auctions_attended": 15,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 42,
+    "items_won": 5,
+    "payment_rate": "94%",
+    "avg_hammer": "$148.14",
+    "dispute_history": "0 open, 2 closed"
+   }
+  },
+  {
+   "name": "Pia Patel 15",
+   "username": "bidder015",
+   "phone": "(954) 700-0015",
+   "address": "115 Palm Avenue",
+   "location": "Hollywood, FL 33020",
+   "member_since": "Apr 16, 2010",
+   "card_on_file": "No",
+   "auctions_attended": 16,
+   "tax_exemption": "Yes"
+  },
+  {
+   "name": "Quin Quinn 16",
+   "username": "bidder016",
+   "phone": "(954) 700-0016",
+   "address": "116 Palm Avenue",
+   "location": "Fort Lauderdale, FL 33301",
+   "member_since": "May 17, 2011",
+   "card_on_file": "Yes",
+   "auctions_attended": 17,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 48,
+    "items_won": 7,
+    "payment_rate": "96%",
+    "avg_hammer": "$162.16",
+    "dispute_history": "0 open, 0 closed"
+   }
+  },
+  {
+   "name": "Rosa Rossi 17",
+   "username": "bidder017",
+   "phone": "(954) 700-0017",
+   "address": "117 Palm Avenue",
+   "location": "Miami, FL 33130",
+   "member_since": "Jun 18, 2012",
+   "card_on_file": "Yes",
+   "auctions_attended": 18,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 51,
+    "items_won": 8,
+    "payment_rate": "97%",
+    "avg_hammer": "$169.17",
+    "dispute_history": "1 open, 1 closed"
+   }
+  },
+  {
+   "name": "Sam Silva 18",
+   "username": "bidder018",
+   "phone": "(954) 700-0018",
+   "address": "118 Palm Avenue",
+   "location": "Boca Raton, FL 33431",
+   "member_since": "Jul 19, 2013",
+   "card_on_file": "No",
+   "auctions_attended": 19,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 54,
+    "items_won": 0,
+    "payment_rate": "98%",
+    "avg_hammer": "$176.18",
+    "dispute_history": "0 open, 2 closed"
+   }
+  },
+  {
+   "name": "Tess Tran 19",
+   "username": "bidder019",
+   "phone": "(954) 700-0019",
+   "address": "119 Palm Avenue",
+   "location": "Hollywood, FL 33020",
+   "member_since": "Aug 20, 2014",
+   "card_on_file": "Yes",
+   "auctions_attended": 20,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 57,
+    "items_won": 1,
+    "payment_rate": "99%",
+    "avg_hammer": "$183.19",
+    "dispute_history": "1 open, 3 closed"
+   }
+  },
+  {
+   "name": "Ana Ueda 20",
+   "username": "bidder020",
+   "phone": "(954) 700-0020",
+   "address": "120 Palm Avenue",
+   "location": "Fort Lauderdale, FL 33301",
+   "member_since": "Sep 21, 2015",
+   "card_on_file": "Yes",
+   "auctions_attended": 21,
+   "tax_exemption": "Yes",
+   "analytics": {
+    "bids_placed": 60,
+    "items_won": 2,
+    "payment_rate": "100%",
+    "avg_hammer": "$1.2K",
+    "dispute_history": "0 open, 0 closed"
+   }
+  },
+  {
+   "name": "Ben Alvarez 21",
+   "username": "bidder021",
+   "phone": "(954) 700-0021",
+   "address": "121 Palm Avenue",
+   "location": "Miami, FL 33130",
+   "member_since": "Oct 22, 2016",
+   "card_on_file": "No",
+   "auctions_attended": 22,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 63,
+    "items_won": 3,
+    "payment_rate": "80%",
+    "avg_hammer": "$197.21",
+    "dispute_history": "1 open, 1 closed"
+   }
+  },
+  {
+   "name": "Cleo Brooks 22",
+   "username": "bidder022",
+   "phone": "(954) 700-0022",
+   "address": "122 Palm Avenue",
+   "location": "Boca Raton, FL 33431",
+   "member_since": "Nov 23, 2017",
+   "card_on_file": "Yes",
+   "auctions_attended": 23,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 66,
+    "items_won": 4,
+    "payment_rate": "81%",
+    "avg_hammer": "$204.22",
+    "dispute_history": "0 open, 2 closed"
+   }
+  },
+  {
+   "name": "Dev Chen 23",
+   "username": "bidder023",
+   "phone": "(954) 700-0023",
+   "address": "123 Palm Avenue",
+   "location": "Hollywood, FL 33020",
+   "member_since": "Dec 24, 2018",
+   "card_on_file": "Yes",
+   "auctions_attended": 24,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 69,
+    "items_won": 5,
+    "payment_rate": "82%",
+    "avg_hammer": "$211.23",
+    "dispute_history": "1 open, 3 closed"
+   }
+  },
+  {
+   "name": "Eli Dubois 24",
+   "username": "bidder024",
+   "phone": "(954) 700-0024",
+   "address": "124 Palm Avenue",
+   "location": "Fort Lauderdale, FL 33301",
+   "member_since": "Jan 25, 2019",
+   "card_on_file": "No",
+   "auctions_attended": 25,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 72,
+    "items_won": 6,
+    "payment_rate": "83%",
+    "avg_hammer": "$218.24",
+    "dispute_history": "0 open, 0 closed"
+   }
+  },
+  {
+   "name": "Fay Evans 25",
+   "username": "bidder025",
+   "phone": "+1 (954) 700-0025",
+   "address": "125 Palm Avenue",
+   "location": "Miami, FL 33130",
+   "member_since": "Feb 26, 2020",
+   "card_on_file": "Yes",
+   "auctions_attended": 26,
+   "tax_exemption": "Yes",
+   "analytics": {
+    "bids_placed": 75,
+    "items_won": 7,
+    "payment_rate": "84%",
+    "avg_hammer": "$225.25",
+    "dispute_history": "1 open, 1 closed"
+   }
+  },
+  {
+   "name": "Gus Fischer 26",
+   "username": "bidder026",
+   "phone": "(954) 700-0026",
+   "address": "126 Palm Avenue",
+   "location": "Boca Raton, FL 33431",
+   "member_since": "Mar 27, 2021",
+   "card_on_file": "Yes",
+   "auctions_attended": 27,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 78,
+    "items_won": 8,
+    "payment_rate": "85%",
+    "avg_hammer": "$232.26",
+    "dispute_history": "0 open, 2 closed"
+   }
+  },
+  {
+   "name": "Hana Garcia 27",
+   "username": "bidder027",
+   "phone": "(954) 700-0027",
+   "address": "127 Palm Avenue",
+   "location": "Hollywood, FL 33020",
+   "member_since": "Apr 1, 2022",
+   "card_on_file": "No",
+   "auctions_attended": 28,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 81,
+    "items_won": 0,
+    "payment_rate": "86%",
+    "avg_hammer": "$239.27",
+    "dispute_history": "1 open, 3 closed"
+   }
+  },
+  {
+   "name": "Ivan Hughes 28",
+   "username": "bidder028",
+   "phone": "(954) 700-0028",
+   "address": "128 Palm Avenue",
+   "location": "Fort Lauderdale, FL 33301",
+   "member_since": "May 2, 2023",
+   "card_on_file": "Yes",
+   "auctions_attended": 29,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 84,
+    "items_won": 1,
+    "payment_rate": "87%",
+    "avg_hammer": "$246.28",
+    "dispute_history": "0 open, 0 closed"
+   }
+  },
+  {
+   "name": "Jo Ibarra 29",
+   "username": "bidder029",
+   "phone": "(954) 700-0029",
+   "address": "129 Palm Avenue",
+   "location": "Miami, FL 33130",
+   "member_since": "Jun 3, 2024",
+   "card_on_file": "Yes",
+   "auctions_attended": 30,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 87,
+    "items_won": 2,
+    "payment_rate": "88%",
+    "avg_hammer": "$253.29",
+    "dispute_history": "1 open, 1 closed"
+   }
+  },
+  {
+   "name": "Kai Jensen 30",
+   "username": "bidder030",
+   "phone": "(954) 700-0030",
+   "address": "130 Palm Avenue",
+   "location": "Boca Raton, FL 33431",
+   "member_since": "Jul 4, 2010",
+   "card_on_file": "No",
+   "auctions_attended": 31,
+   "tax_exemption": "Yes",
+   "analytics": {
+    "bids_placed": 90,
+    "items_won": 3,
+    "payment_rate": "89%",
+    "avg_hammer": "$260.30",
+    "dispute_history": "0 open, 2 closed"
+   }
+  },
+  {
+   "name": "Lena Kim 31",
+   "username": "bidder031",
+   "phone": "(954) 700-0031",
+   "address": "131 Palm Avenue",
+   "location": "Hollywood, FL 33020",
+   "member_since": "Aug 5, 2011",
+   "card_on_file": "Yes",
+   "auctions_attended": 32,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 93,
+    "items_won": 4,
+    "payment_rate": "90%",
+    "avg_hammer": "$267.31",
+    "dispute_history": "1 open, 3 closed"
+   }
+  },
+  {
+   "name": "Milo Lopez 32",
+   "username": "bidder032",
+   "phone": "(954) 700-0032",
+   "address": "132 Palm Avenue",
+   "location": "Fort Lauderdale, FL 33301",
+   "member_since": "Sep 6, 2012",
+   "card_on_file": "Yes",
+   "auctions_attended": 33,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 96,
+    "items_won": 5,
+    "payment_rate": "91%",
+    "avg_hammer": "$274.32",
+    "dispute_history": "0 open, 0 closed"
+   }
+  },
+  {
+   "name": "Nia Moreau 33",
+   "username": "bidder033",
+   "phone": "(954) 700-0033",
+   "address": "133 Palm Avenue",
+   "location": "Miami, FL 33130",
+   "member_since": "Oct 7, 2013",
+   "card_on_file": "No",
+   "auctions_attended": 34,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 99,
+    "items_won": 6,
+    "payment_rate": "92%",
+    "avg_hammer": "$281.33",
+    "dispute_history": "1 open, 1 closed"
+   }
+  },
+  {
+   "name": "Otto Novak 34",
+   "username": "bidder034",
+   "phone": "(954) 700-0034",
+   "address": "134 Palm Avenue",
+   "location": "Boca Raton, FL 33431",
+   "member_since": "Nov 8, 2014",
+   "card_on_file": "Yes",
+   "auctions_attended": 35,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 102,
+    "items_won": 7,
+    "payment_rate": "93%",
+    "avg_hammer": "$288.34",
+    "dispute_history": "0 open, 2 closed"
+   }
+  },
+  {
+   "name": "Pia Okafor 35",
+   "username": "bidder035",
+   "phone": "1-954-700-0035",
+   "address": "135 Palm Avenue",
+   "location": "Hollywood, FL 33020",
+   "member_since": "Dec 9, 2015",
+   "card_on_file": "Yes",
+   "auctions_attended": 36,
+   "tax_exemption": "Yes",
+   "analytics": {
+    "bids_placed": 105,
+    "items_won": 8,
+    "payment_rate": "94%",
+    "avg_hammer": "$295.35",
+    "dispute_history": "1 open, 3 closed"
+   }
+  },
+  {
+   "name": "Quin Patel 36",
+   "username": "bidder036",
+   "phone": "(954) 700-0036",
+   "address": "136 Palm Avenue",
+   "location": "Fort Lauderdale, FL 33301",
+   "member_since": "Jan 10, 2016",
+   "card_on_file": "No",
+   "auctions_attended": 37,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 108,
+    "items_won": 0,
+    "payment_rate": "95%",
+    "avg_hammer": "$302.36",
+    "dispute_history": "0 open, 0 closed"
+   }
+  },
+  {
+   "name": "Rosa Quinn 37",
+   "username": "bidder037",
+   "phone": "(954) 700-0037",
+   "address": "137 Palm Avenue",
+   "location": "Miami, FL 33130",
+   "member_since": "Feb 11, 2017",
+   "card_on_file": "Yes",
+   "auctions_attended": 38,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 111,
+    "items_won": 1,
+    "payment_rate": "96%",
+    "avg_hammer": "$309.37",
+    "dispute_history": "1 open, 1 closed"
+   }
+  },
+  {
+   "name": "Sam Rossi 38",
+   "username": "bidder038",
+   "phone": "(954) 700-0038",
+   "address": "138 Palm Avenue",
+   "location": "Boca Raton, FL 33431",
+   "member_since": "Mar 12, 2018",
+   "card_on_file": "Yes",
+   "auctions_attended": 39,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 114,
+    "items_won": 2,
+    "payment_rate": "97%",
+    "avg_hammer": "$316.38",
+    "dispute_history": "0 open, 2 closed"
+   }
+  },
+  {
+   "name": "Tess Silva 39",
+   "username": "bidder039",
+   "phone": "(954) 700-0039",
+   "address": "139 Palm Avenue",
+   "location": "Hollywood, FL 33020",
+   "member_since": "Apr 13, 2019",
+   "card_on_file": "No",
+   "auctions_attended": 40,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 117,
+    "items_won": 3,
+    "payment_rate": "98%",
+    "avg_hammer": "$323.39",
+    "dispute_history": "1 open, 3 closed"
+   }
+  },
+  {
+   "name": "Ana Tran 40",
+   "username": "bidder040",
+   "phone": "(954) 700-0040",
+   "address": "140 Palm Avenue",
+   "location": "Fort Lauderdale, FL 33301",
+   "member_since": "May 14, 2020",
+   "card_on_file": "Yes",
+   "auctions_attended": 1,
+   "tax_exemption": "Yes",
+   "analytics": {
+    "bids_placed": 120,
+    "items_won": 4,
+    "payment_rate": "99%",
+    "avg_hammer": "$330.40",
+    "dispute_history": "0 open, 0 closed"
+   }
+  },
+  {
+   "name": "Ben Ueda 41",
+   "username": "bidder041",
+   "phone": "(954) 700-0041",
+   "address": "141 Palm Avenue",
+   "location": "Miami, FL 33130",
+   "member_since": "Jun 15, 2021",
+   "card_on_file": "Yes",
+   "auctions_attended": 2,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 123,
+    "items_won": 5,
+    "payment_rate": "100%",
+    "avg_hammer": "$337.41",
+    "dispute_history": "1 open, 1 closed"
+   }
+  },
+  {
+   "name": "Cleo Alvarez 42",
+   "username": "bidder042",
+   "phone": "(954) 700-0042",
+   "address": "142 Palm Avenue",
+   "location": "Boca Raton, FL 33431",
+   "member_since": "Jul 16, 2022",
+   "card_on_file": "No",
+   "auctions_attended": 3,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 126,
+    "items_won": 6,
+    "payment_rate": "80%",
+    "avg_hammer": "$344.42",
+    "dispute_history": "0 open, 2 closed"
+   }
+  },
+  {
+   "name": "Dev Brooks 43",
+   "username": "bidder043",
+   "phone": "(954) 700-0043",
+   "address": "143 Palm Avenue",
+   "location": "Hollywood, FL 33020",
+   "member_since": "Aug 17, 2023",
+   "card_on_file": "Yes",
+   "auctions_attended": 4,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 129,
+    "items_won": 7,
+    "payment_rate": "81%",
+    "avg_hammer": "$351.43",
+    "dispute_history": "1 open, 3 closed"
+   }
+  },
+  {
+   "name": "Eli Chen 44",
+   "username": "bidder044",
+   "phone": "(954) 700-0044",
+   "address": "144 Palm Avenue",
+   "location": "Fort Lauderdale, FL 33301",
+   "member_since": "Sep 18, 2024",
+   "card_on_file": "Yes",
+   "auctions_attended": 5,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 132,
+    "items_won": 8,
+    "payment_rate": "82%",
+    "avg_hammer": "$358.44",
+    "dispute_history": "0 open, 0 closed"
+   }
+  },
+  {
+   "name": "Fay Dubois 45",
+   "username": "bidder045",
+   "phone": "(954) 700-0045",
+   "address": "145 Palm Avenue",
+   "location": "Miami, FL 33130",
+   "member_since": "Oct 19, 2010",
+   "card_on_file": "No",
+   "auctions_attended": 6,
+   "tax_exemption": "Yes",
+   "analytics": {
+    "bids_placed": 135,
+    "items_won": 0,
+    "payment_rate": "83%",
+    "avg_hammer": "$365.45",
+    "dispute_history": "1 open, 1 closed"
+   }
+  },
+  {
+   "name": "Gus Evans 46",
+   "username": "bidder046",
+   "phone": "(954) 700-0046",
+   "address": "146 Palm Avenue",
+   "location": "Boca Raton, FL 33431",
+   "member_since": "Nov 20, 2011",
+   "card_on_file": "Yes",
+   "auctions_attended": 7,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 138,
+    "items_won": 1,
+    "payment_rate": "84%",
+    "avg_hammer": "$372.46",
+    "dispute_history": "0 open, 2 closed"
+   }
+  },
+  {
+   "name": "Hana Fischer 47",
+   "username": "bidder047",
+   "phone": "(954) 700-0047",
+   "address": "147 Palm Avenue",
+   "location": "Hollywood, FL 33020",
+   "member_since": "Dec 21, 2012",
+   "card_on_file": "Yes",
+   "auctions_attended": 8,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 141,
+    "items_won": 2,
+    "payment_rate": "85%",
+    "avg_hammer": "$379.47",
+    "dispute_history": "1 open, 3 closed"
+   }
+  },
+  {
+   "name": "Ivan Garcia 48",
+   "username": "bidder048",
+   "phone": "(954) 700-0048",
+   "address": "148 Palm Avenue",
+   "location": "Fort Lauderdale, FL 33301",
+   "member_since": "Jan 22, 2013",
+   "card_on_file": "No",
+   "auctions_attended": 9,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 144,
+    "items_won": 3,
+    "payment_rate": "86%",
+    "avg_hammer": "$386.48",
+    "dispute_history": "0 open, 0 closed"
+   }
+  },
+  {
+   "name": "Jo Hughes 49",
+   "username": "bidder049",
+   "phone": "(954) 700-0049",
+   "address": "149 Palm Avenue",
+   "location": "Miami, FL 33130",
+   "member_since": "Feb 23, 2014",
+   "card_on_file": "Yes",
+   "auctions_attended": 10,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 147,
+    "items_won": 4,
+    "payment_rate": "87%",
+    "avg_hammer": "$393.49",
+    "dispute_history": "1 open, 1 closed"
+   }
+  },
+  {
+   "name": "Kai Ibarra 50",
+   "username": "bidder050",
+   "phone": "(954) 700-0049",
+   "address": "150 Palm Avenue",
+   "location": "Boca Raton, FL 33431",
+   "member_since": "Mar 24, 2015",
+   "card_on_file": "Yes",
+   "auctions_attended": 11,
+   "tax_exemption": "Yes",
+   "analytics": {
+    "bids_placed": 150,
+    "items_won": 5,
+    "payment_rate": "88%",
+    "avg_hammer": "$400.50",
+    "dispute_history": "0 open, 2 closed"
+   }
+  },
+  {
+   "name": "Lena Jensen 51",
+   "username": "bidder051",
+   "phone": "(954) 700-0051",
+   "address": "151 Palm Avenue",
+   "location": "Hollywood, FL 33020",
+   "member_since": "Apr 25, 2016",
+   "card_on_file": "No",
+   "auctions_attended": 12,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 153,
+    "items_won": 6,
+    "payment_rate": "89%",
+    "avg_hammer": "$407.51",
+    "dispute_history": "1 open, 3 closed"
+   }
+  },
+  {
+   "name": "Milo Kim 52",
+   "username": "bidder052",
+   "phone": "(954) 700-0052",
+   "address": "152 Palm Avenue",
+   "location": "Fort Lauderdale, FL 33301",
+   "member_since": "May 26, 2017",
+   "card_on_file": "Yes",
+   "auctions_attended": 13,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 156,
+    "items_won": 7,
+    "payment_rate": "90%",
+    "avg_hammer": "$414.52",
+    "dispute_history": "0 open, 0 closed"
+   }
+  },
+  {
+   "name": "Nia Lopez 53",
+   "username": "bidder053",
+   "phone": "(954) 700-0053",
+   "address": "153 Palm Avenue",
+   "location": "Miami, FL 33130",
+   "member_since": "Jun 27, 2018",
+   "card_on_file": "Yes",
+   "auctions_attended": 14,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 159,
+    "items_won": 8,
+    "payment_rate": "91%",
+    "avg_hammer": "$421.53",
+    "dispute_history": "1 open, 1 closed"
+   }
+  },
+  {
+   "name": "Otto Moreau 54",
+   "username": "bidder054",
+   "phone": "(954) 700-0054",
+   "address": "154 Palm Avenue",
+   "location": "Boca Raton, FL 33431",
+   "member_since": "Jul 1, 2019",
+   "card_on_file": "No",
+   "auctions_attended": 15,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 162,
+    "items_won": 0,
+    "payment_rate": "92%",
+    "avg_hammer": "$428.54",
+    "dispute_history": "0 open, 2 closed"
+   }
+  },
+  {
+   "name": "Pia Novak 55",
+   "username": "bidder055",
+   "phone": "(954) 700-0055",
+   "address": "155 Palm Avenue",
+   "location": "Hollywood, FL 33020",
+   "member_since": "Aug 2, 2020",
+   "card_on_file": "Yes",
+   "auctions_attended": 16,
+   "tax_exemption": "Yes",
+   "analytics": {
+    "bids_placed": 165,
+    "items_won": 1,
+    "payment_rate": "93%",
+    "avg_hammer": "$435.55",
+    "dispute_history": "1 open, 3 closed"
+   }
+  },
+  {
+   "name": "Quin Okafor 56",
+   "username": "bidder056",
+   "phone": "(954) 700-0056",
+   "address": "156 Palm Avenue",
+   "location": "Fort Lauderdale, FL 33301",
+   "member_since": "Sep 3, 2021",
+   "card_on_file": "Yes",
+   "auctions_attended": 17,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 168,
+    "items_won": 2,
+    "payment_rate": "94%",
+    "avg_hammer": "$442.56",
+    "dispute_history": "0 open, 0 closed"
+   }
+  },
+  {
+   "name": "Rosa Patel 57",
+   "username": "bidder057",
+   "phone": "(954) 700-0057",
+   "address": "157 Palm Avenue",
+   "location": "Miami, FL 33130",
+   "member_since": "Oct 4, 2022",
+   "card_on_file": "No",
+   "auctions_attended": 18,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 171,
+    "items_won": 3,
+    "payment_rate": "95%",
+    "avg_hammer": "$449.57",
+    "dispute_history": "1 open, 1 closed"
+   }
+  },
+  {
+   "name": "Sam Quinn 58",
+   "username": "bidder058",
+   "phone": "(954) 700-0058",
+   "address": "158 Palm Avenue",
+   "location": "Boca Raton, FL 33431",
+   "member_since": "Nov 5, 2023",
+   "card_on_file": "Yes",
+   "auctions_attended": 19,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 174,
+    "items_won": 4,
+    "payment_rate": "96%",
+    "avg_hammer": "$456.58",
+    "dispute_history": "0 open, 2 closed"
+   }
+  },
+  {
+   "name": "Tess Rossi 59",
+   "username": "bidder059",
+   "phone": "(954) 700-0059",
+   "address": "159 Palm Avenue",
+   "location": "Hollywood, FL 33020",
+   "member_since": "Dec 6, 2024",
+   "card_on_file": "Yes",
+   "auctions_attended": 20,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 177,
+    "items_won": 5,
+    "payment_rate": "97%",
+    "avg_hammer": "$463.59",
+    "dispute_history": "1 open, 3 closed"
+   }
+  },
+  {
+   "name": "Ana Silva 60",
+   "username": "bidder060",
+   "phone": "(954) 700-0060",
+   "address": "160 Palm Avenue",
+   "location": "Fort Lauderdale, FL 33301",
+   "member_since": "Jan 7, 2010",
+   "card_on_file": "No",
+   "auctions_attended": 21,
+   "tax_exemption": "Yes",
+   "analytics": {
+    "bids_placed": 180,
+    "items_won": 6,
+    "payment_rate": "98%",
+    "avg_hammer": "$470.60",
+    "dispute_history": "0 open, 0 closed"
+   }
+  },
+  {
+   "name": "Ben Tran 61",
+   "username": "bidder061",
+   "phone": "(954) 700-0061",
+   "address": "161 Palm Avenue",
+   "location": "Miami, FL 33130",
+   "member_since": "Feb 8, 2011",
+   "card_on_file": "Yes",
+   "auctions_attended": 22,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 183,
+    "items_won": 7,
+    "payment_rate": "99%",
+    "avg_hammer": "$477.61",
+    "dispute_history": "1 open, 1 closed"
+   }
+  },
+  {
+   "name": "Cleo Ueda 62",
+   "username": "bidder062",
+   "phone": "(954) 700-0062",
+   "address": "162 Palm Avenue",
+   "location": "Boca Raton, FL 33431",
+   "member_since": "Mar 9, 2012",
+   "card_on_file": "Yes",
+   "auctions_attended": 23,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 186,
+    "items_won": 8,
+    "payment_rate": "100%",
+    "avg_hammer": "$484.62",
+    "dispute_history": "0 open, 2 closed"
+   }
+  },
+  {
+   "name": "Dev Alvarez 63",
+   "username": "bidder063",
+   "phone": "(954) 700-0063",
+   "address": "163 Palm Avenue",
+   "location": "Hollywood, FL 33020",
+   "member_since": "Apr 10, 2013",
+   "card_on_file": "No",
+   "auctions_attended": 24,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 189,
+    "items_won": 0,
+    "payment_rate": "80%",
+    "avg_hammer": "$491.63",
+    "dispute_history": "1 open, 3 closed"
+   }
+  },
+  {
+   "name": "Eli Brooks 64",
+   "username": "bidder064",
+   "phone": "(954) 700-0064",
+   "address": "164 Palm Avenue",
+   "location": "Fort Lauderdale, FL 33301",
+   "member_since": "May 11, 2014",
+   "card_on_file": "Yes",
+   "auctions_attended": 25,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 192,
+    "items_won": 1,
+    "payment_rate": "81%",
+    "avg_hammer": "$498.64",
+    "dispute_history": "0 open, 0 closed"
+   }
+  },
+  {
+   "name": "Fay Chen 65",
+   "username": "bidder065",
+   "phone": "(954) 700-0065",
+   "address": "165 Palm Avenue",
+   "location": "Miami, FL 33130",
+   "member_since": "Jun 12, 2015",
+   "card_on_file": "Yes",
+   "auctions_attended": 26,
+   "tax_exemption": "Yes",
+   "analytics": {
+    "bids_placed": 195,
+    "items_won": 2,
+    "payment_rate": "82%",
+    "avg_hammer": "$505.65",
+    "dispute_history": "1 open, 1 closed"
+   }
+  },
+  {
+   "name": "Gus Dubois 66",
+   "username": "bidder066",
+   "phone": "(954) 700-0066",
+   "address": "166 Palm Avenue",
+   "location": "Boca Raton, FL 33431",
+   "member_since": "Jul 13, 2016",
+   "card_on_file": "No",
+   "auctions_attended": 27,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 198,
+    "items_won": 3,
+    "payment_rate": "83%",
+    "avg_hammer": "$512.66",
+    "dispute_history": "0 open, 2 closed"
+   }
+  },
+  {
+   "name": "Hana Evans 67",
+   "username": "bidder067",
+   "phone": "(954) 700-0067",
+   "address": "167 Palm Avenue",
+   "location": "Hollywood, FL 33020",
+   "member_since": "Aug 14, 2017",
+   "card_on_file": "Yes",
+   "auctions_attended": 28,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 201,
+    "items_won": 4,
+    "payment_rate": "84%",
+    "avg_hammer": "$519.67",
+    "dispute_history": "1 open, 3 closed"
+   }
+  },
+  {
+   "name": "Ivan Fischer 68",
+   "username": "bidder068",
+   "phone": "(954) 700-0068",
+   "address": "168 Palm Avenue",
+   "location": "Fort Lauderdale, FL 33301",
+   "member_since": "Sep 15, 2018",
+   "card_on_file": "Yes",
+   "auctions_attended": 29,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 204,
+    "items_won": 5,
+    "payment_rate": "85%",
+    "avg_hammer": "$526.68",
+    "dispute_history": "0 open, 0 closed"
+   }
+  },
+  {
+   "name": "Jo Garcia 69",
+   "username": "bidder069",
+   "phone": "(954) 700-0069",
+   "address": "169 Palm Avenue",
+   "location": "Miami, FL 33130",
+   "member_since": "Oct 16, 2019",
+   "card_on_file": "No",
+   "auctions_attended": 30,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 207,
+    "items_won": 6,
+    "payment_rate": "86%",
+    "avg_hammer": "$533.69",
+    "dispute_history": "1 open, 1 closed"
+   }
+  },
+  {
+   "name": "Kai Hughes 70",
+   "username": "bidder070",
+   "phone": "(954) 700-0061",
+   "address": "170 Palm Avenue",
+   "location": "Boca Raton, FL 33431",
+   "member_since": "Nov 17, 2020",
+   "card_on_file": "Yes",
+   "auctions_attended": 31,
+   "tax_exemption": "Yes",
+   "analytics": {
+    "bids_placed": 210,
+    "items_won": 7,
+    "payment_rate": "87%",
+    "avg_hammer": "$540.70",
+    "dispute_history": "0 open, 2 closed"
+   }
+  },
+  {
+   "name": "Lena Ibarra 71",
+   "username": "bidder071",
+   "phone": "(954) 700-0071",
+   "address": "171 Palm Avenue",
+   "location": "Hollywood, FL 33020",
+   "member_since": "Dec 18, 2021",
+   "card_on_file": "Yes",
+   "auctions_attended": 32,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 213,
+    "items_won": 8,
+    "payment_rate": "88%",
+    "avg_hammer": "$547.71",
+    "dispute_history": "1 open, 3 closed"
+   }
+  },
+  {
+   "name": "Milo Jensen 72",
+   "username": "bidder072",
+   "phone": "(954) 700-0072",
+   "address": "172 Palm Avenue",
+   "location": "Fort Lauderdale, FL 33301",
+   "member_since": "Jan 19, 2022",
+   "card_on_file": "No",
+   "auctions_attended": 33,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 216,
+    "items_won": 0,
+    "payment_rate": "89%",
+    "avg_hammer": "$554.72",
+    "dispute_history": "0 open, 0 closed"
+   }
+  },
+  {
+   "name": "Nia Kim 73",
+   "username": "bidder073",
+   "phone": "(954) 700-0073",
+   "address": "173 Palm Avenue",
+   "location": "Miami, FL 33130",
+   "member_since": "Feb 20, 2023",
+   "card_on_file": "Yes",
+   "auctions_attended": 34,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 219,
+    "items_won": 1,
+    "payment_rate": "90%",
+    "avg_hammer": "$561.73",
+    "dispute_history": "1 open, 1 closed"
+   }
+  },
+  {
+   "name": "Otto Lopez 74",
+   "username": "bidder074",
+   "phone": "(954) 700-0074",
+   "address": "174 Palm Avenue",
+   "location": "Boca Raton, FL 33431",
+   "member_since": "Mar 21, 2024",
+   "card_on_file": "Yes",
+   "auctions_attended": 35,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 222,
+    "items_won": 2,
+    "payment_rate": "91%",
+    "avg_hammer": "$568.74",
+    "dispute_history": "0 open, 2 closed"
+   }
+  },
+  {
+   "name": "Pia Moreau 75",
+   "username": "bidder075",
+   "phone": "(954) 700-0075",
+   "address": "175 Palm Avenue",
+   "location": "Hollywood, FL 33020",
+   "member_since": "Apr 22, 2010",
+   "card_on_file": "No",
+   "auctions_attended": 36,
+   "tax_exemption": "Yes",
+   "analytics": {
+    "bids_placed": 225,
+    "items_won": 3,
+    "payment_rate": "92%",
+    "avg_hammer": "$575.75",
+    "dispute_history": "1 open, 3 closed"
+   }
+  },
+  {
+   "name": "Quin Novak 76",
+   "username": "bidder076",
+   "phone": "(954) 700-0076",
+   "address": "176 Palm Avenue",
+   "location": "Fort Lauderdale, FL 33301",
+   "member_since": "May 23, 2011",
+   "card_on_file": "Yes",
+   "auctions_attended": 37,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 228,
+    "items_won": 4,
+    "payment_rate": "93%",
+    "avg_hammer": "$582.76",
+    "dispute_history": "0 open, 0 closed"
+   }
+  },
+  {
+   "name": "Rosa Okafor 77",
+   "username": "bidder077",
+   "phone": "(954) 700-0077",
+   "address": "177 Palm Avenue",
+   "location": "Miami, FL 33130",
+   "member_since": "Jun 24, 2012",
+   "card_on_file": "Yes",
+   "auctions_attended": 38,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 231,
+    "items_won": 5,
+    "payment_rate": "94%",
+    "avg_hammer": "$589.77",
+    "dispute_history": "1 open, 1 closed"
+   }
+  },
+  {
+   "name": "Sam Patel 78",
+   "username": "bidder078",
+   "phone": "(954) 700-0078",
+   "address": "178 Palm Avenue",
+   "location": "Boca Raton, FL 33431",
+   "member_since": "Jul 25, 2013",
+   "card_on_file": "No",
+   "auctions_attended": 39,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 234,
+    "items_won": 6,
+    "payment_rate": "95%",
+    "avg_hammer": "$596.78",
+    "dispute_history": "0 open, 2 closed"
+   }
+  },
+  {
+   "name": "Tess Quinn 79",
+   "username": "bidder079",
+   "phone": "(954) 700-0079",
+   "address": "179 Palm Avenue",
+   "location": "Hollywood, FL 33020",
+   "member_since": "Aug 26, 2014",
+   "card_on_file": "Yes",
+   "auctions_attended": 40,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 237,
+    "items_won": 7,
+    "payment_rate": "96%",
+    "avg_hammer": "$603.79",
+    "dispute_history": "1 open, 3 closed"
+   }
+  },
+  {
+   "name": "Ana Rossi 80",
+   "username": "bidder080",
+   "phone": "(954) 700-0080",
+   "address": "180 Palm Avenue",
+   "location": "Fort Lauderdale, FL 33301",
+   "member_since": "Sep 27, 2015",
+   "card_on_file": "Yes",
+   "auctions_attended": 1,
+   "tax_exemption": "Yes",
+   "analytics": {
+    "bids_placed": 240,
+    "items_won": 8,
+    "payment_rate": "97%",
+    "avg_hammer": "$610.80",
+    "dispute_history": "0 open, 0 closed"
+   }
+  },
+  {
+   "name": "Ben Silva 81",
+   "username": "bidder081",
+   "phone": "(954) 700-0081",
+   "address": "181 Palm Avenue",
+   "location": "Miami, FL 33130",
+   "member_since": "Oct 1, 2016",
+   "card_on_file": "No",
+   "auctions_attended": 2,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 243,
+    "items_won": 0,
+    "payment_rate": "98%",
+    "avg_hammer": "$617.81",
+    "dispute_history": "1 open, 1 closed"
+   }
+  },
+  {
+   "name": "Cleo Tran 82",
+   "username": "bidder082",
+   "phone": "(954) 700-0082",
+   "address": "182 Palm Avenue",
+   "location": "Boca Raton, FL 33431",
+   "member_since": "Nov 2, 2017",
+   "card_on_file": "Yes",
+   "auctions_attended": 3,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 246,
+    "items_won": 1,
+    "payment_rate": "99%",
+    "avg_hammer": "$624.82",
+    "dispute_history": "0 open, 2 closed"
+   }
+  },
+  {
+   "name": "Dev Ueda 83",
+   "username": "bidder083",
+   "phone": "(954) 700-0083",
+   "address": "183 Palm Avenue",
+   "location": "Hollywood, FL 33020",
+   "member_since": "Dec 3, 2018",
+   "card_on_file": "Yes",
+   "auctions_attended": 4,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 249,
+    "items_won": 2,
+    "payment_rate": "100%",
+    "avg_hammer": "$631.83",
+    "dispute_history": "1 open, 3 closed"
+   }
+  },
+  {
+   "name": "Eli Alvarez 84",
+   "username": "bidder084",
+   "phone": "(954) 700-0084",
+   "address": "184 Palm Avenue",
+   "location": "Fort Lauderdale, FL 33301",
+   "member_since": "Jan 4, 2019",
+   "card_on_file": "No",
+   "auctions_attended": 5,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 252,
+    "items_won": 3,
+    "payment_rate": "80%",
+    "avg_hammer": "$638.84",
+    "dispute_history": "0 open, 0 closed"
+   }
+  },
+  {
+   "name": "Fay Brooks 85",
+   "username": "bidder085",
+   "phone": "(954) 700-0085",
+   "address": "185 Palm Avenue",
+   "location": "Miami, FL 33130",
+   "member_since": "Feb 5, 2020",
+   "card_on_file": "Yes",
+   "auctions_attended": 6,
+   "tax_exemption": "Yes",
+   "analytics": {
+    "bids_placed": 255,
+    "items_won": 4,
+    "payment_rate": "81%",
+    "avg_hammer": "$645.85",
+    "dispute_history": "1 open, 1 closed"
+   }
+  },
+  {
+   "name": "Gus Chen 86",
+   "username": "bidder086",
+   "phone": "(954) 700-0086",
+   "address": "186 Palm Avenue",
+   "location": "Boca Raton, FL 33431",
+   "member_since": "Mar 6, 2021",
+   "card_on_file": "Yes",
+   "auctions_attended": 7,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 258,
+    "items_won": 5,
+    "payment_rate": "82%",
+    "avg_hammer": "$652.86",
+    "dispute_history": "0 open, 2 closed"
+   }
+  },
+  {
+   "name": "Hana Dubois 87",
+   "username": "bidder087",
+   "phone": "(954) 700-0087",
+   "address": "187 Palm Avenue",
+   "location": "Hollywood, FL 33020",
+   "member_since": "Apr 7, 2022",
+   "card_on_file": "No",
+   "auctions_attended": 8,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 261,
+    "items_won": 6,
+    "payment_rate": "83%",
+    "avg_hammer": "$659.87",
+    "dispute_history": "1 open, 3 closed"
+   }
+  },
+  {
+   "name": "Ivan Evans 88",
+   "username": "bidder088",
+   "phone": "(954) 700-0088",
+   "address": "188 Palm Avenue",
+   "location": "Fort Lauderdale, FL 33301",
+   "member_since": "May 8, 2023",
+   "card_on_file": "Yes",
+   "auctions_attended": 9,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 264,
+    "items_won": 7,
+    "payment_rate": "84%",
+    "avg_hammer": "$666.88",
+    "dispute_history": "0 open, 0 closed"
+   }
+  },
+  {
+   "name": "Jo Fischer 89",
+   "username": "bidder089",
+   "phone": "(954) 700-0089",
+   "address": "189 Palm Avenue",
+   "location": "Miami, FL 33130",
+   "member_since": "Jun 9, 2024",
+   "card_on_file": "Yes",
+   "auctions_attended": 10,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 267,
+    "items_won": 8,
+    "payment_rate": "85%",
+    "avg_hammer": "$673.89",
+    "dispute_history": "1 open, 1 closed"
+   }
+  },
+  {
+   "name": "Kai Garcia 90",
+   "username": "bidder090",
+   "phone": "(954) 700-0090",
+   "address": "190 Palm Avenue",
+   "location": "Boca Raton, FL 33431",
+   "member_since": "Jul 10, 2010",
+   "card_on_file": "No",
+   "auctions_attended": 11,
+   "tax_exemption": "Yes",
+   "analytics": {
+    "bids_placed": 270,
+    "items_won": 0,
+    "payment_rate": "86%",
+    "avg_hammer": "$680.90",
+    "dispute_history": "0 open, 2 closed"
+   }
+  },
+  {
+   "name": "Lena Hughes 91",
+   "username": "bidder091",
+   "phone": "(954) 700-0091",
+   "address": "191 Palm Avenue",
+   "location": "Hollywood, FL 33020",
+   "member_since": "Aug 11, 2011",
+   "card_on_file": "Yes",
+   "auctions_attended": 12,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 273,
+    "items_won": 1,
+    "payment_rate": "87%",
+    "avg_hammer": "$687.91",
+    "dispute_history": "1 open, 3 closed"
+   }
+  },
+  {
+   "name": "Milo Ibarra 92",
+   "username": "bidder092",
+   "phone": "(954) 700-0092",
+   "address": "192 Palm Avenue",
+   "location": "Fort Lauderdale, FL 33301",
+   "member_since": "Sep 12, 2012",
+   "card_on_file": "Yes",
+   "auctions_attended": 13,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 276,
+    "items_won": 2,
+    "payment_rate": "88%",
+    "avg_hammer": "$694.92",
+    "dispute_history": "0 open, 0 closed"
+   }
+  },
+  {
+   "name": "Nia Jensen 93",
+   "username": "bidder093",
+   "phone": "(954) 700-0093",
+   "address": "193 Palm Avenue",
+   "location": "Miami, FL 33130",
+   "member_since": "Oct 13, 2013",
+   "card_on_file": "No",
+   "auctions_attended": 14,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 279,
+    "items_won": 3,
+    "payment_rate": "89%",
+    "avg_hammer": "$701.93",
+    "dispute_history": "1 open, 1 closed"
+   }
+  },
+  {
+   "name": "Otto Kim 94",
+   "username": "bidder094",
+   "phone": "(954) 700-0094",
+   "address": "194 Palm Avenue",
+   "location": "Boca Raton, FL 33431",
+   "member_since": "Nov 14, 2014",
+   "card_on_file": "Yes",
+   "auctions_attended": 15,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 282,
+    "items_won": 4,
+    "payment_rate": "90%",
+    "avg_hammer": "$708.94",
+    "dispute_history": "0 open, 2 closed"
+   }
+  },
+  {
+   "name": "Pia Lopez 95",
+   "username": "bidder095",
+   "phone": "(954) 700-0095",
+   "address": "195 Palm Avenue",
+   "location": "Hollywood, FL 33020",
+   "member_since": "Dec 15, 2015",
+   "card_on_file": "Yes",
+   "auctions_attended": 16,
+   "tax_exemption": "Yes",
+   "analytics": {
+    "bids_placed": 285,
+    "items_won": 5,
+    "payment_rate": "91%",
+    "avg_hammer": "$715.95",
+    "dispute_history": "1 open, 3 closed"
+   }
+  },
+  {
+   "name": "Quin Moreau 96",
+   "username": "bidder096",
+   "phone": "(954) 700-0096",
+   "address": "196 Palm Avenue",
+   "location": "Fort Lauderdale, FL 33301",
+   "member_since": "Jan 16, 2016",
+   "card_on_file": "No",
+   "auctions_attended": 17,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 288,
+    "items_won": 6,
+    "payment_rate": "92%",
+    "avg_hammer": "$722.96",
+    "dispute_history": "0 open, 0 closed"
+   }
+  },
+  {
+   "name": "Rosa Novak 97",
+   "username": "bidder097",
+   "phone": "(954) 700-0097",
+   "address": "197 Palm Avenue",
+   "location": "Miami, FL 33130",
+   "member_since": "Feb 17, 2017",
+   "card_on_file": "Yes",
+   "auctions_attended": 18,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 291,
+    "items_won": 7,
+    "payment_rate": "93%",
+    "avg_hammer": "$729.97",
+    "dispute_history": "1 open, 1 closed"
+   }
+  },
+  {
+   "name": "Sam Okafor 98",
+   "username": "bidder098",
+   "phone": "(954) 700-0098",
+   "address": "198 Palm Avenue",
+   "location": "Boca Raton, FL 33431",
+   "member_since": "Mar 18, 2018",
+   "card_on_file": "Yes",
+   "auctions_attended": 19,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 294,
+    "items_won": 8,
+    "payment_rate": "94%",
+    "avg_hammer": "$736.98",
+    "dispute_history": "0 open, 2 closed"
+   }
+  },
+  {
+   "name": "Tess Patel 99",
+   "username": "bidder099",
+   "phone": "(954) 700-0099",
+   "address": "199 Palm Avenue",
+   "location": "Hollywood, FL 33020",
+   "member_since": "Apr 19, 2019",
+   "card_on_file": "No",
+   "auctions_attended": 20,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 297,
+    "items_won": 0,
+    "payment_rate": "95%",
+    "avg_hammer": "$743.99",
+    "dispute_history": "1 open, 3 closed"
+   }
+  },
+  {
+   "name": "Ana Quinn 100",
+   "username": "bidder100",
+   "phone": "(954) 700-0100",
+   "address": "200 Palm Avenue",
+   "location": "Fort Lauderdale, FL 33301",
+   "member_since": "May 20, 2020",
+   "card_on_file": "Yes",
+   "auctions_attended": 21,
+   "tax_exemption": "Yes",
+   "analytics": {
+    "bids_placed": 300,
+    "items_won": 1,
+    "payment_rate": "96%",
+    "avg_hammer": "$750.00",
+    "dispute_history": "0 open, 0 closed"
+   }
+  },
+  {
+   "name": "Ben Rossi 101",
+   "username": "bidder101",
+   "phone": "(954) 700-0101",
+   "address": "201 Palm Avenue",
+   "location": "Miami, FL 33130",
+   "member_since": "Jun 21, 2021",
+   "card_on_file": "Yes",
+   "auctions_attended": 22,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 303,
+    "items_won": 2,
+    "payment_rate": "97%",
+    "avg_hammer": "$757.01",
+    "dispute_history": "1 open, 1 closed"
+   }
+  },
+  {
+   "name": "Cleo Silva 102",
+   "username": "bidder102",
+   "phone": "(954) 700-0102",
+   "address": "202 Palm Avenue",
+   "location": "Boca Raton, FL 33431",
+   "member_since": "Jul 22, 2022",
+   "card_on_file": "No",
+   "auctions_attended": 23,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 306,
+    "items_won": 3,
+    "payment_rate": "98%",
+    "avg_hammer": "$764.02",
+    "dispute_history": "0 open, 2 closed"
+   }
+  },
+  {
+   "name": "Dev Tran 103",
+   "username": "bidder103",
+   "phone": "(954) 700-0103",
+   "address": "203 Palm Avenue",
+   "location": "Hollywood, FL 33020",
+   "member_since": "Aug 23, 2023",
+   "card_on_file": "Yes",
+   "auctions_attended": 24,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 309,
+    "items_won": 4,
+    "payment_rate": "99%",
+    "avg_hammer": "$771.03",
+    "dispute_history": "1 open, 3 closed"
+   }
+  },
+  {
+   "name": "Eli Ueda 104",
+   "username": "bidder104",
+   "phone": "(954) 700-0104",
+   "address": "204 Palm Avenue",
+   "location": "Fort Lauderdale, FL 33301",
+   "member_since": "Sep 24, 2024",
+   "card_on_file": "Yes",
+   "auctions_attended": 25,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 312,
+    "items_won": 5,
+    "payment_rate": "100%",
+    "avg_hammer": "$778.04",
+    "dispute_history": "0 open, 0 closed"
+   }
+  },
+  {
+   "name": "Fay Alvarez 105",
+   "username": "bidder105",
+   "phone": "(954) 700-0105",
+   "address": "205 Palm Avenue",
+   "location": "Miami, FL 33130",
+   "member_since": "Oct 25, 2010",
+   "card_on_file": "No",
+   "auctions_attended": 26,
+   "tax_exemption": "Yes",
+   "analytics": {
+    "bids_placed": 315,
+    "items_won": 6,
+    "payment_rate": "80%",
+    "avg_hammer": "$785.05",
+    "dispute_history": "1 open, 1 closed"
+   }
+  },
+  {
+   "name": "Gus Brooks 106",
+   "username": "bidder106",
+   "phone": "(954) 700-0106",
+   "address": "206 Palm Avenue",
+   "location": "Boca Raton, FL 33431",
+   "member_since": "Nov 26, 2011",
+   "card_on_file": "Yes",
+   "auctions_attended": 27,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 318,
+    "items_won": 7,
+    "payment_rate": "81%",
+    "avg_hammer": "$792.06",
+    "dispute_history": "0 open, 2 closed"
+   }
+  },
+  {
+   "name": "Hana Chen 107",
+   "username": "bidder107",
+   "phone": "(954) 700-0107",
+   "address": "207 Palm Avenue",
+   "location": "Hollywood, FL 33020",
+   "member_since": "Dec 27, 2012",
+   "card_on_file": "Yes",
+   "auctions_attended": 28,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 321,
+    "items_won": 8,
+    "payment_rate": "82%",
+    "avg_hammer": "$799.07",
+    "dispute_history": "1 open, 3 closed"
+   }
+  },
+  {
+   "name": "Ivan Dubois 108",
+   "username": "bidder108",
+   "phone": "(954) 700-0108",
+   "address": "208 Palm Avenue",
+   "location": "Fort Lauderdale, FL 33301",
+   "member_since": "Jan 1, 2013",
+   "card_on_file": "No",
+   "auctions_attended": 29,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 324,
+    "items_won": 0,
+    "payment_rate": "83%",
+    "avg_hammer": "$806.08",
+    "dispute_history": "0 open, 0 closed"
+   }
+  },
+  {
+   "name": "Jo Evans 109",
+   "username": "bidder109",
+   "phone": "(954) 700-0109",
+   "address": "209 Palm Avenue",
+   "location": "Miami, FL 33130",
+   "member_since": "Feb 2, 2014",
+   "card_on_file": "Yes",
+   "auctions_attended": 30,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 327,
+    "items_won": 1,
+    "payment_rate": "84%",
+    "avg_hammer": "$813.09",
+    "dispute_history": "1 open, 1 closed"
+   }
+  },
+  {
+   "name": "Kai Fischer 110",
+   "username": "bidder110",
+   "phone": "(954) 700-0110",
+   "address": "210 Palm Avenue",
+   "location": "Boca Raton, FL 33431",
+   "member_since": "Mar 3, 2015",
+   "card_on_file": "Yes",
+   "auctions_attended": 31,
+   "tax_exemption": "Yes",
+   "analytics": {
+    "bids_placed": 330,
+    "items_won": 2,
+    "payment_rate": "85%",
+    "avg_hammer": "$820.10",
+    "dispute_history": "0 open, 2 closed"
+   }
+  },
+  {
+   "name": "Lena Garcia 111",
+   "username": "bidder111",
+   "phone": "(954) 700-0111",
+   "address": "211 Palm Avenue",
+   "location": "Hollywood, FL 33020",
+   "member_since": "Apr 4, 2016",
+   "card_on_file": "No",
+   "auctions_attended": 32,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 333,
+    "items_won": 3,
+    "payment_rate": "86%",
+    "avg_hammer": "$827.11",
+    "dispute_history": "1 open, 3 closed"
+   }
+  },
+  {
+   "name": "Milo Hughes 112",
+   "username": "bidder112",
+   "phone": "(954) 700-0112",
+   "address": "212 Palm Avenue",
+   "location": "Fort Lauderdale, FL 33301",
+   "member_since": "May 5, 2017",
+   "card_on_file": "Yes",
+   "auctions_attended": 33,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 336,
+    "items_won": 4,
+    "payment_rate": "87%",
+    "avg_hammer": "$834.12",
+    "dispute_history": "0 open, 0 closed"
+   }
+  },
+  {
+   "name": "Nia Ibarra 113",
+   "username": "bidder113",
+   "phone": "(954) 700-0113",
+   "address": "213 Palm Avenue",
+   "location": "Miami, FL 33130",
+   "member_since": "Jun 6, 2018",
+   "card_on_file": "Yes",
+   "auctions_attended": 34,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 339,
+    "items_won": 5,
+    "payment_rate": "88%",
+    "avg_hammer": "$841.13",
+    "dispute_history": "1 open, 1 closed"
+   }
+  },
+  {
+   "name": "Otto Jensen 114",
+   "username": "bidder114",
+   "phone": "(954) 700-0114",
+   "address": "214 Palm Avenue",
+   "location": "Boca Raton, FL 33431",
+   "member_since": "Jul 7, 2019",
+   "card_on_file": "No",
+   "auctions_attended": 35,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 342,
+    "items_won": 6,
+    "payment_rate": "89%",
+    "avg_hammer": "$848.14",
+    "dispute_history": "0 open, 2 closed"
+   }
+  },
+  {
+   "name": "Pia Kim 115",
+   "username": "bidder115",
+   "phone": "(954) 700-0115",
+   "address": "215 Palm Avenue",
+   "location": "Hollywood, FL 33020",
+   "member_since": "Aug 8, 2020",
+   "card_on_file": "Yes",
+   "auctions_attended": 36,
+   "tax_exemption": "Yes",
+   "analytics": {
+    "bids_placed": 345,
+    "items_won": 7,
+    "payment_rate": "90%",
+    "avg_hammer": "$855.15",
+    "dispute_history": "1 open, 3 closed"
+   }
+  },
+  {
+   "name": "Quin Lopez 116",
+   "username": "bidder116",
+   "phone": "(954) 700-0116",
+   "address": "216 Palm Avenue",
+   "location": "Fort Lauderdale, FL 33301",
+   "member_since": "Sep 9, 2021",
+   "card_on_file": "Yes",
+   "auctions_attended": 37,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 348,
+    "items_won": 8,
+    "payment_rate": "91%",
+    "avg_hammer": "$862.16",
+    "dispute_history": "0 open, 0 closed"
+   }
+  },
+  {
+   "name": "Rosa Moreau 117",
+   "username": "bidder117",
+   "phone": "(954) 700-0117",
+   "address": "217 Palm Avenue",
+   "location": "Miami, FL 33130",
+   "member_since": "Oct 10, 2022",
+   "card_on_file": "No",
+   "auctions_attended": 38,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 351,
+    "items_won": 0,
+    "payment_rate": "92%",
+    "avg_hammer": "$869.17",
+    "dispute_history": "1 open, 1 closed"
+   }
+  },
+  {
+   "name": "Sam Novak 118",
+   "username": "bidder118",
+   "phone": "(954) 700-0118",
+   "address": "218 Palm Avenue",
+   "location": "Boca Raton, FL 33431",
+   "member_since": "Nov 11, 2023",
+   "card_on_file": "Yes",
+   "auctions_attended": 39,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 354,
+    "items_won": 1,
+    "payment_rate": "93%",
+    "avg_hammer": "$876.18",
+    "dispute_history": "0 open, 2 closed"
+   }
+  },
+  {
+   "name": "Tess Okafor 119",
+   "username": "bidder119",
+   "phone": "(954) 700-0119",
+   "address": "219 Palm Avenue",
+   "location": "Hollywood, FL 33020",
+   "member_since": "Dec 12, 2024",
+   "card_on_file": "Yes",
+   "auctions_attended": 40,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 357,
+    "items_won": 2,
+    "payment_rate": "94%",
+    "avg_hammer": "$883.19",
+    "dispute_history": "1 open, 3 closed"
+   }
+  },
+  {
+   "name": "Ana Patel 120",
+   "username": "bidder120",
+   "phone": "(954) 700-0120",
+   "address": "220 Palm Avenue",
+   "location": "Fort Lauderdale, FL 33301",
+   "member_since": "Jan 13, 2010",
+   "card_on_file": "No",
+   "auctions_attended": 1,
+   "tax_exemption": "Yes",
+   "analytics": {
+    "bids_placed": 360,
+    "items_won": 3,
+    "payment_rate": "95%",
+    "avg_hammer": "$890.20",
+    "dispute_history": "0 open, 0 closed"
+   }
+  },
+  {
+   "name": "Ben Quinn 121",
+   "username": "bidder121",
+   "phone": "(954) 700-0121",
+   "address": "221 Palm Avenue",
+   "location": "Miami, FL 33130",
+   "member_since": "Feb 14, 2011",
+   "card_on_file": "Yes",
+   "auctions_attended": 2,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 363,
+    "items_won": 4,
+    "payment_rate": "96%",
+    "avg_hammer": "$897.21",
+    "dispute_history": "1 open, 1 closed"
+   }
+  },
+  {
+   "name": "Cleo Rossi 122",
+   "username": "bidder122",
+   "phone": "(954) 700-0122",
+   "address": "222 Palm Avenue",
+   "location": "Boca Raton, FL 33431",
+   "member_since": "Mar 15, 2012",
+   "card_on_file": "Yes",
+   "auctions_attended": 3,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 366,
+    "items_won": 5,
+    "payment_rate": "97%",
+    "avg_hammer": "$904.22",
+    "dispute_history": "0 open, 2 closed"
+   }
+  },
+  {
+   "name": "Dev Silva 123",
+   "username": "bidder123",
+   "phone": "(954) 700-0123",
+   "address": "223 Palm Avenue",
+   "location": "Hollywood, FL 33020",
+   "member_since": "Apr 16, 2013",
+   "card_on_file": "No",
+   "auctions_attended": 4,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 369,
+    "items_won": 6,
+    "payment_rate": "98%",
+    "avg_hammer": "$911.23",
+    "dispute_history": "1 open, 3 closed"
+   }
+  },
+  {
+   "name": "Eli Tran 124",
+   "username": "bidder124",
+   "phone": "(954) 700-0124",
+   "address": "224 Palm Avenue",
+   "location": "Fort Lauderdale, FL 33301",
+   "member_since": "May 17, 2014",
+   "card_on_file": "Yes",
+   "auctions_attended": 5,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 372,
+    "items_won": 7,
+    "payment_rate": "99%",
+    "avg_hammer": "$918.24",
+    "dispute_history": "0 open, 0 closed"
+   }
+  },
+  {
+   "name": "Fay Ueda 125",
+   "username": "bidder125",
+   "phone": "(954) 700-0125",
+   "address": "225 Palm Avenue",
+   "location": "Miami, FL 33130",
+   "member_since": "Jun 18, 2015",
+   "card_on_file": "Yes",
+   "auctions_attended": 6,
+   "tax_exemption": "Yes",
+   "analytics": {
+    "bids_placed": 375,
+    "items_won": 8,
+    "payment_rate": "100%",
+    "avg_hammer": "$925.25",
+    "dispute_history": "1 open, 1 closed"
+   }
+  },
+  {
+   "name": "Gus Alvarez 126",
+   "username": "bidder126",
+   "phone": "(954) 700-0126",
+   "address": "226 Palm Avenue",
+   "location": "Boca Raton, FL 33431",
+   "member_since": "Jul 19, 2016",
+   "card_on_file": "No",
+   "auctions_attended": 7,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 378,
+    "items_won": 0,
+    "payment_rate": "80%",
+    "avg_hammer": "$932.26",
+    "dispute_history": "0 open, 2 closed"
+   }
+  },
+  {
+   "name": "Hana Brooks 127",
+   "username": "bidder127",
+   "phone": "(954) 700-0127",
+   "address": "227 Palm Avenue",
+   "location": "Hollywood, FL 33020",
+   "member_since": "Aug 20, 2017",
+   "card_on_file": "Yes",
+   "auctions_attended": 8,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 381,
+    "items_won": 1,
+    "payment_rate": "81%",
+    "avg_hammer": "$939.27",
+    "dispute_history": "1 open, 3 closed"
+   }
+  },
+  {
+   "name": "Ivan Chen 128",
+   "username": "bidder128",
+   "phone": "(954) 700-0128",
+   "address": "228 Palm Avenue",
+   "location": "Fort Lauderdale, FL 33301",
+   "member_since": "Sep 21, 2018",
+   "card_on_file": "Yes",
+   "auctions_attended": 9,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 384,
+    "items_won": 2,
+    "payment_rate": "82%",
+    "avg_hammer": "$946.28",
+    "dispute_history": "0 open, 0 closed"
+   }
+  },
+  {
+   "name": "Jo Dubois 129",
+   "username": "bidder129",
+   "phone": "(954) 700-0129",
+   "address": "229 Palm Avenue",
+   "location": "Miami, FL 33130",
+   "member_since": "Oct 22, 2019",
+   "card_on_file": "No",
+   "auctions_attended": 10,
+   "tax_exemption": "No",
+   "analytics": {
+    "bids_placed": 387,
+    "items_won": 3,
+    "payment_rate": "83%",
+    "avg_hammer": "$953.29",
+    "dispute_history": "1 open, 1 closed"
+   }
+  },
+  {
+   "name": "Kai Evans 130",
+   "username": "bidder130",
+   "phone": "(954) 700-0130",
+   "address": "230 Palm Avenue",
+   "location": "Boca Raton, FL 33431",
+   "member_since": "Nov 23, 2020",
+   "card_on_file": "Yes",
+   "auctions_attended": 11,
+   "tax_exemption": "Yes",
+   "analytics": {
+    "bids_placed": 390,
+    "items_won": 4,
+    "payment_rate": "84%",
+    "avg_hammer": "$960.30",
+    "dispute_history": "0 open, 2 closed"
+   }
+  },
+  {
+   "name": "Ana Tran 40",
+   "username": "bidder040",
+   "phone": "(954) 700-0040",
+   "address": "140 Palm Avenue",
+   "location": "Fort Lauderdale, FL 33301",
+   "member_since": "May 14, 2020",
+   "card_on_file": "Yes",
+   "auctions_attended": 1,
+   "tax_exemption": "Yes",
+   "analytics": {
+    "bids_placed": 120,
+    "items_won": 4,
+    "payment_rate": "99%",
+    "avg_hammer": "$330.40",
+    "dispute_history": "0 open, 0 closed"
+   }
+  }
+ ]
+}

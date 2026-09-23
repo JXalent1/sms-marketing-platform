@@ -31,5 +31,15 @@ ProtectSystem=full
 ProtectHome=read-only
 ReadWritePaths=/home/appuser/app/data /home/appuser/app/logs /home/appuser/app/exports
 
+# The LiveAuctioneers scraper keeps a logged-in Chromium profile. ProtectHome
+# above is read-only and ReadWritePaths covers only the app tree, so the profile
+# cannot live under /home/appuser — the browser-profile guard refuses it and
+# every daily run fails. StateDirectory gives systemd's own writable location
+# (/var/lib/sms-platform-browser, created 0700 and owned by User=), which is also
+# the right place for it: it is a live session for the client's auction account
+# and must not sit inside a tree that deploy.sh rsyncs or backup.sh archives.
+# Pair with BROWSER_PROFILE_ROOT=/var/lib/sms-platform-browser in .env.
+StateDirectory=sms-platform-browser
+
 [Install]
 WantedBy=multi-user.target

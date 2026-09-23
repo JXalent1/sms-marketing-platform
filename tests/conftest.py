@@ -47,6 +47,16 @@ os.environ["STRIPE_PRICE_METERED"] = ""
 os.environ["STRIPE_PRICE_BALANCE"] = ""
 os.environ["STRIPE_WEBHOOK_SECRET"] = ""
 
+# Same rule for his auction account (session L1). A developer whose `.env` holds
+# the real partner-portal login would otherwise have the daily bidder read
+# registered by every test that runs the lifespan, and a browser profile written
+# into their home directory. The suite never drives a real browser: every page
+# is `tests/_la_portal.py`.
+os.environ["LA_USERNAME"] = ""
+os.environ["LA_PASSWORD"] = ""
+os.environ["LA_HOUSE_ID"] = ""
+os.environ["BROWSER_PROFILE_ROOT"] = tempfile.mkdtemp(prefix="sms-test-browser-")
+
 os.environ.setdefault("SECRET_KEY", "test-secret-key")
 os.environ.setdefault("ADMIN_PASSWORD", "devpassword123")
 os.environ.setdefault("COOKIE_SECURE", "false")

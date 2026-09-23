@@ -354,6 +354,27 @@ class Settings(BaseSettings):
     # wall clock repeats an hour or skips one.
     APP_TIMEZONE: str = DEFAULT_TIMEZONE
 
+    # ─── His own registered bidders (session L1, decisions/014) ─────────────
+    # Human-only: an agent may not write these. All three blank means the
+    # daily job is not registered at all — the off switch is the credential.
+    LA_USERNAME: str = ""
+    LA_PASSWORD: str = ""
+    LA_HOUSE_ID: str = ""
+    # When the daily read runs, as wall clock in APP_TIMEZONE. Hour and minute
+    # only: the zone comes from the one setting above and nowhere else.
+    BIDDER_SCRAPE_HOUR: int = 9
+    BIDDER_SCRAPE_MINUTE: int = 0
+    # The browser is killed at this deadline, not merely abandoned. Longer than
+    # PROSPECT_JOB_TIMEOUT_SECONDS because a profile panel is one click per
+    # bidder: 425 bidders took the reference system about 25 minutes.
+    BIDDER_SCRAPE_TIMEOUT_SECONDS: int = 3600
+    # A logged-in browser profile is a live session for his auction account.
+    # It must sit outside the deploy tree (deploy.sh rsyncs app/ with --delete),
+    # outside anything served, and outside what backup.sh archives; the job
+    # refuses to start if it resolves inside the project. See auction_scraper_base.
+    BROWSER_PROFILE_ROOT: str = "~/.local/state/sms-platform/browser-profiles"
+    SCRAPER_HEADLESS: bool = True
+
     # ─── Infrastructure ─────────────────────────────────────────────────────
     DATABASE_URL: str = "sqlite:///./data/app.db"
     PUBLIC_BASE_URL: str = "http://localhost:8000"   # used to build webhook URLs

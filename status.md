@@ -5276,3 +5276,197 @@ unscheduled one, so "Cancel on every draft" (`C5`) has something to fail on.
   docstring, the harness's pristine scope.
 - `./run.sh` → `/login` 200, `/static/app.css` 200 after `npm run build:css`;
   the CDN and white-label greps return nothing.
+
+# Session L1 — the LiveAuctioneers bidder source (2026-09-22)
+
+His registered bidders, read from his own partner portal every morning, land in
+the contact list the way a CSV does, and their behaviour lands beside them in
+its own table. `decisions/014` records why this reverses the 18 Aug ruling
+without reopening marketplace scraping. **Nothing ran against LiveAuctioneers**;
+the first live run is Jordan's (Part B).
+
+## What was built
+
+- **Three files ported, behind A4A's own interface.** `app/sources/platforms.py`
+  (the registry, kept a registry), `app/sources/auction_scraper_base.py` (browser
+  lifecycle, retry, paging, screenshots) and `app/sources/liveauctioneers.py`
+  (the selectors). `example_api_source.py` is deleted. The sources produce
+  `BidderRecord`s and never touch the database — `_save_profile` is unwound
+  into `app/services/bidder_scrape.py`, which runs them through
+  `ContactSource.ingest()` (the existing upsert, the unique phone index) and
+  writes the behaviour.
+- **`bidder_profiles`** — one row per contact per platform, real types:
+  integer counts, `avg_hammer_cents` in integer cents plus a ceiling flag for
+  "Less than $100", `member_since` a date, booleans for card on file and tax
+  exemption. NULL means the page did not say. **`bidder_scrape_runs`** records
+  each run with counts that add up to what was read, and `cleanup_ran`.
+  Migration `c1e8f3a6b29d`: two new tables, `contacts` untouched.
+- **The schedule**: daily at `BIDDER_SCRAPE_HOUR:MINUTE` in `clock.ZONE`,
+  registered only when `LA_USERNAME`/`LA_PASSWORD`/`LA_HOUSE_ID` are all set,
+  `max_instances=1`, a sync job on the executor thread with its own event loop.
+  A process lock plus a fresh-`running`-row check refuse a second run.
+- **The deadline** (`BIDDER_SCRAPE_TIMEOUT_SECONDS`, 3600) cancels the scrape,
+  and the cancellation unwinds through the `finally` that closes the context
+  and stops the driver. Each teardown step is bounded at 15 s.
+- **The browser profile** lives under `BROWSER_PROFILE_ROOT`, default
+  `~/.local/state/sms-platform/browser-profiles/<platform>`, mode 0700 —
+  outside the deploy tree (`deploy.sh` rsyncs `app/` with `--delete`), outside
+  anything served, outside what `backup.sh` archives (the database file only).
+  The run refuses to start if it resolves inside the project.
+
+## Decisions made alone, and why
+
+- **A bidder with no phone is not kept.** `contacts.phone` is the identity and
+  NOT NULL; a phoneless row could only be keyed on name + sale, which is the
+  reference system's second identity — the thing A4A's dedup exists to
+  prevent. Counted (`no_phone`), not stored. He still has them on the platform.
+- **Screening, when on, applies the prospect gate exactly**: `mobile`/`voip`
+  pass, `landline`, `toll_free` and `unknown` are held (not ingested) and
+  re-screened on the next morning's read. When off (the default), bidders land
+  unscreened, as a CSV row does. A held bidder who is already a contact from a
+  CSV is not deactivated — this path just does not touch him.
+- **A blocked bidder is skipped outright**, as `import_service.commit()` skips
+  an opted-out CSV row: not created, not updated, not listed, no profile.
+- **One list per platform** (`"LiveAuctioneers bidders"`, from the registry's
+  label), not one per run — the daily read re-finds the same people.
+- **Playwright pinned at 1.63.0**, not the reference 1.41.0: a browser driving
+  a logged-in account should be current, and 1.63's Chromium was already cached.
+- **The proxy support was not ported.** A4A has no proxy setting, and a paid
+  proxy is a budget decision (escalation item 7).
+
+## Peak RSS, real Chromium, fixture run
+
+Measured by `tests/_la_rss_probe.py`: headless Chromium driven through the
+unchanged source and `run_scrape()`, every request answered from the fixture by
+route interception (2 requests, both fulfilled, none escaped). Summed RSS of
+the Python process and every descendant, sampled every 100 ms — summing counts
+shared pages once per process, so this **overstates**.
+
+| run | bidders | peak tree | of which browser | processes at peak | after |
+|---|---|---|---|---|---|
+| fixture | 131 | **482-541 MB** (three runs) | 402-464 MB | 7-8 | 1 (clean) |
+| scaled | 500 | **537 MB** | 460 MB | 7 | 1 (clean) |
+| app server, serving `/login`, `/health`, static | — | **95 MB** | — | 1 | — |
+
+**Headroom on 2 GB: yes, with a margin, on these numbers — and they are macOS
+arm64 numbers, not the droplet's.** App + scrape at peak is about 0.63 GB,
+leaving roughly 1.3 GB for the OS, nginx and a campaign send (0.64 GB at the
+highest fixture reading). Memory grows
+modestly with list size (+55 MB from 131 to 500 bidders): the table is 120
+rows a page and the records are small. The reference box's 1.6 GB was
+seventeen *leaked* drivers at ~95 MB each, not one scrape.
+
+Not measured, and said so rather than estimated — the review's list, and it is
+the half that matters more than the double-counting: the live portal is a React
+single-page app, not a static page with a 60 ms panel; a real run is 25-60
+minutes and hundreds of panel opens, not a hundred seconds; production runs
+inside uvicorn on the executor thread, not a bare process; the droplet is Linux
+x86; and the app was measured idle at 95 MB, never while sending. On 2 GB with
+no swap, Chromium's renderers carry a raised OOM score and would likely be
+killed first — the run fails part-way and keeps what it read — so the likelier
+cost is CPU contention on one vCPU with a send. Part B
+item 3 — `free -m` before and during the first live run — is the measurement
+that settles it, and the answer if it is tight is a bigger droplet.
+
+## Found while working
+
+- **`Locator.is_visible(timeout=…)` ignores its timeout** in the pinned SDK
+  (documented "Deprecated: This option is ignored… returns immediately"). The
+  reference `_open_dropdown()` relied on it to wait three seconds for the
+  dropdown and never waited at all. The port uses `wait_for(state="visible")`.
+- **The reference panel wait read stale panels.** "Any profile marker is on
+  the page" is true of the *previous* bidder's panel, so a slow click read
+  bidder 1's phone as bidder 2's — on a phone-keyed dedup, two people merged
+  into one contact. The wait now also requires the page text to change.
+- **The reference phone regex ran over the whole page**, so any ten-digit
+  figure in the table became a phoneless bidder's number. Phone is now read
+  only from the lines the click added. Consequence, by design: two bidders on
+  adjacent rows sharing a number — the second reads as `no_phone`, not as the
+  first's number.
+- **`member_since` was the first date on the page** — with a sale selected,
+  the sale's own date. It is now read beside its label.
+- **A changed page reported success.** Renamed panel labels meant every row was
+  skipped and the run "completed" with zero bidders. It now fails with
+  `SelectorDrift`.
+- **Pagination clicks on the last page used the 60 s default timeout**, three
+  attempts at two selectors — six minutes of a browser held open to learn the
+  list had ended. Now 5 s.
+- **Upload undo does not know about `bidder_profiles`.**
+  `import_service._still_referenced` can delete a contact that has a profile,
+  leaving an orphan row (SQLite does not enforce the foreign key). Outside the
+  file list; left alone. (Review finding 19.)
+- **Analytics are read from the whole page**, not only the lines the click
+  changed — deliberately, since "Card on File / Yes" repeats between bidders.
+  If the live portal redraws the panel piecemeal, the figures could be the
+  previous bidder's while the phone is not. The first live run should spot-check
+  three bidders against the portal by eye. (Review finding 5, unverified.)
+- `docs/ARCHITECTURE.md` and `docs/NEW_CLIENT_CHECKLIST.md` still name
+  `example_api_source.py`, which this session deleted. Outside the file list;
+  left alone.
+
+## The fresh-context review
+
+One synchronous reviewer, 20 findings. What each changed:
+
+- **Serious — the production unit cannot run this.** `deployment/app.service.template`
+  has `ProtectHome=read-only` and writes allowed only inside the project, which
+  `profile_dir_problem()` refuses — no location works. The unit is outside the
+  file list, so it is **Part B item 0** below; the run now fails with a message
+  naming the fix (`_check_writable()`, mutation `S18`) instead of a bare
+  PermissionError from Chromium.
+- **Serious — a changed phone field was a "completed" run creating nobody**
+  (measured: 131 read, 131 no_phone, 0 created). Now `SelectorDrift` (`S14`).
+- **Silent partials** — paging that stopped early, or most panels failing, read
+  `completed`. New status `incomplete` with the shortfall in `error`
+  (`rows_expected` from the page's own "of N"; read below 90% of rows seen). `S15`.
+- **Two bidders with one name** — the reference clicked the first row with that
+  name, so the second was a "repeat" and never landed. The row's own cell is
+  clicked first now (`S12`); the fake opens by row, as the real page does.
+- **One number, two people, across runs** — contact was one person, profile the
+  other, flipping with page order. A profile owned by a different platform
+  username is no longer overwritten; `profile_conflicts` counts it (`S16`).
+- **A changed page at real timings reported `timed_out`, not the cause** — 15 s
+  per missed panel. Five misses before anything is read now raise
+  `SelectorDrift` (`S13`), and the row click has the short timeout.
+- **Criterion 7 passed with the per-step teardown bound removed** — a hanging
+  `close()` test now covers it (`S11`).
+- **`misfire_grace_time` defaulted to one second** — a 09:00 firing missed by a
+  stalled loop skipped the day silently. 3600 now (`S17`).
+- **The AST scan** listed three files by hand; it now derives the scraper
+  modules from the registry, and flags `sqlite3`/`importlib`/`ingest()`. The
+  reviewer's eight deliberate bypasses (`getattr`, `__import__`, a session
+  parameter named `sess`, …) still pass it — it is a structural tripwire for
+  the realistic shape, not a sandbox, and five behavioural tests also fail on a
+  real write.
+- Also fixed: counters survive a rollback after `ingest()` committed;
+  screenshots pruned after 14 days; the dead `except CancelledError` removed;
+  the logged-in check no longer accepts `[class*="control"]`, which matches a
+  login form.
+- **Not changed, recorded:** see the next two sections.
+
+## Part B additions (Jordan's)
+
+0. **Before anything else, the unit.** Add to `/etc/systemd/system/<app>.service`
+   under `[Service]`: `StateDirectory=sms-platform-browser` — and in `.env`:
+   `BROWSER_PROFILE_ROOT=/var/lib/sms-platform-browser`. systemd creates it owned
+   by `appuser`, writable under `ProtectSystem=full`, outside the project, the
+   deploy rsync and the backup. Without it every run fails, loudly, on day one.
+   (`deployment/app.service.template` should carry the same line; outside L1's list.)
+5. **Do not deploy or restart during the 09:00 read.** The sync job runs on the
+   loop's default executor and `asyncio.run` waits for it: a restart mid-scrape
+   blocks up to systemd's 90 s kill, and the run row stays `running` until
+   `_running_elsewhere` ages it out (deadline + 10 min). Chromium dies with the
+   cgroup, so nothing leaks.
+6. **`--no-sandbox`** is carried over from the reference. Removing it is right in
+   principle and may not launch on Ubuntu's AppArmor userns restriction; try it on
+   the first live run, and keep it only if Chromium refuses.
+
+## File-list departures
+
+- **`app/services/bidder_scrape.py` is new** and not in the list. The list names
+  `contact_service.py` (494 lines) and `scrape_runner.py` (451); neither can take
+  a runner plus a persistence pass under the 500-line rule, and `scrape_runner`'s
+  job row is the prospect pipeline's. Neither file was edited.
+- **`tests/conftest.py`** blanks `LA_*` and points `BROWSER_PROFILE_ROOT` at a temp
+  dir, on the Stripe precedent, so a developer's real `.env` can never register
+  the job or write a profile into their home during the suite.

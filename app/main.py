@@ -258,6 +258,29 @@ async def lifespan(app: FastAPI):
         coalesce=True,
     )
 
+    # His registered bidders, daily (session L1, decisions/014). Registered only
+    # with credentials: blank LA_* is the off switch, and one line says which.
+    # A sync function, so it runs on the executor thread with its own event
+    # loop and an hour of browser clicks never sits on the loop the send path
+    # shares. max_instances=1 makes a second firing refuse rather than queue a
+    # second Chromium on a 2 GB box; `run_scrape()`'s lock does the same for
+    # anything else that calls it. The zone comes from `trigger()`, which reads
+    # APP_TIMEZONE and takes no zone of its own.
+    from app.services import bidder_scrape
+    if bidder_scrape.configured():
+        scheduler.add_job(
+            bidder_scrape.daily_job, bidder_scrape.trigger(),
+            id=bidder_scrape.JOB_ID, replace_existing=True, max_instances=1,
+            # APScheduler's default grace is one second, and this loop has
+            # stalled for 24-38 s under a reporting query (CLAUDE.md, 5i). A
+            # 09:00 firing missed by that would skip the day and write nothing.
+            # Within the hour it runs late instead.
+            coalesce=True, misfire_grace_time=3600,
+        )
+    else:
+        logger.info("Bidder read is not configured (LA_USERNAME, LA_PASSWORD, "
+                    "LA_HOUSE_ID) | the daily job is not registered")
+
     scheduler.start()
     for job in scheduler.get_jobs():
         # One line per job, by id. "Scheduler started" told us a scheduler

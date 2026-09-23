@@ -14,8 +14,11 @@ from app.models.app_setting import AppSetting
 from app.models.short_link import ShortLink, LinkClick
 from app.models.prospect import Prospect, ProspectSighting, ProspectRejection
 from app.models.scrape import ScrapeJob, PhoneLookup
+from app.models.bidder_profile import BidderProfile, BidderScrapeRun
 
 __all__ = [
+    "BidderProfile",
+    "BidderScrapeRun",
     "ShortLink",
     "LinkClick",
     "Prospect",
