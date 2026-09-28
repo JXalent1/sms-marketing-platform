@@ -40,6 +40,10 @@ ReadWritePaths=/home/appuser/app/data /home/appuser/app/logs /home/appuser/app/e
 # and must not sit inside a tree that deploy.sh rsyncs or backup.sh archives.
 # Pair with BROWSER_PROFILE_ROOT=/var/lib/sms-platform-browser in .env.
 StateDirectory=sms-platform-browser
+# 0700, not systemd's 0755 default: the profile holds a live logged-in session
+# for the client's auction account, and anything readable by another account on
+# this box is a credential leak waiting for a second service to exist.
+StateDirectoryMode=0700
 
 [Install]
 WantedBy=multi-user.target

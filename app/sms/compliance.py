@@ -14,7 +14,11 @@ from typing import Optional
 
 from app.core.config import settings
 
-STOP_KEYWORDS = {"STOP", "STOPALL", "UNSUBSCRIBE", "CANCEL", "END", "QUIT", "OPTOUT", "OPT-OUT"}
+# "2" is the client's own opt-out word (2026-09-28): his campaigns say "Reply 2
+# to opt-out" and the carrier profile treats a bare "2" as STOP. Without it here,
+# a "2" is blocked at the carrier but never reaches our blocklist, the source of
+# truth above. Exact-match only, so "2 lots please" is not an opt-out.
+STOP_KEYWORDS = {"STOP", "STOPALL", "UNSUBSCRIBE", "CANCEL", "END", "QUIT", "OPTOUT", "OPT-OUT", "2"}
 START_KEYWORDS = {"START", "UNSTOP", "YES", "SUBSCRIBE", "OPTIN", "OPT-IN"}
 HELP_KEYWORDS = {"HELP", "INFO"}
 
@@ -38,13 +42,13 @@ def stop_confirmation() -> str:
 
 def start_confirmation() -> str:
     return (f"You have been resubscribed to {settings.BRAND_NAME} messages. "
-            f"Reply STOP to unsubscribe anytime.")
+            f"Reply 2 to unsubscribe anytime.")
 
 
 def help_reply() -> str:
     contact = settings.BRAND_SUPPORT_PHONE or settings.BRAND_SUPPORT_EMAIL or "our website"
     return (f"{settings.BRAND_NAME} marketing alerts. For help contact {contact}. "
-            f"Reply STOP to unsubscribe. Msg & data rates may apply.")
+            f"Reply 2 to unsubscribe. Msg & data rates may apply.")
 
 
 def default_auto_reply() -> str:
@@ -65,7 +69,7 @@ def default_auto_reply() -> str:
         )
         lines += [f"For inquiries please contact us at {contact_bits}.", ""]
     lines += [
-        "To unsubscribe from future messages, reply STOP.",
+        "To unsubscribe from future messages, reply 2.",
         "",
         f"- {settings.BRAND_NAME}",
     ]

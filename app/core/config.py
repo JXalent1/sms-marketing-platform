@@ -211,6 +211,7 @@ class Settings(BaseSettings):
         "memorabilia": None,
         "marine": None,
         "seashells": None,
+        "lighting": None,          # session LT1 — national, like the two above
     }
     PROSPECT_DEFAULT_RADIUS_MILES: int = 150
 

@@ -86,6 +86,29 @@ EXCLUSIONS: Tuple[Exclusion, ...] = (
                "sell your house fast"),
               "They buy property to flip and move the contents on. Whatever "
               "they do with an estate, they are not raising a paddle for it."),
+    # Session LT1. A buyer, not a seller, and still never prospected: a
+    # national chain lists a corporate switchboard or a store manager with no
+    # buying authority, and buys through a central office that does not read a
+    # text about Tuesday's auction. Every one of them is a landline or a dead
+    # end, and every one is $0.0025 to discover that.
+    #
+    # A trailing space closes a phrase at the end of a word, for the brands
+    # that are ordinary words: `target ` must not fire on "Targeted Lighting",
+    # `kirkland s ` must not fire on a store in Kirkland, WA. What is left is a
+    # deliberate over-match — "Elegance at Home", a local "Ferguson Lighting",
+    # "Bright Lumens Lighting" (`lumens ` is the riskiest: a common word in
+    # lighting names), "RH Electric Supply", "On Target Lighting" — and that is
+    # this matcher's cheap direction (see above): one missed store against a
+    # chain's switchboard on every send.
+    Exclusion("national_chain", "National chain",
+              ("lamps plus", "home depot", "lowe s ", "lowes ", "lumens ",
+               "ferguson ", "rh ", "restoration hardware", "pottery barn",
+               "wayfair", "crate barrel", "crate and barrel", "arhaus",
+               "kirkland s ", "kirklands ", "at home ", "homegoods", "ikea",
+               "walmart", "wal mart", "target ", "costco", "menards",
+               "floor decor", "floor and decor"),
+              "A national chain buys through a central office, and the number "
+              "on the listing is a store or a switchboard, not a buyer."),
 )
 
 _NON_WORD = re.compile(r"[^a-z0-9]+")

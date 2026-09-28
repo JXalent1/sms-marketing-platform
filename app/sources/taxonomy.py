@@ -70,6 +70,7 @@ from typing import Iterator, Optional, Tuple
 
 from app.core.config import settings
 from app.services import prospect_scoring
+from app.sources.metros import METRO_SWEEPS, Sweep   # noqa: F401 — re-exported
 
 # A group that does not state a radius inherits its category's. Distinct from
 # `None`, which is a stated radius meaning "national, distance does not
@@ -81,15 +82,6 @@ INHERIT = object()
 # radius rule is then applied to the results by distance, in `google_places.py`.
 # Written down because it looks like an arbitrary constant and is not.
 MAX_BIAS_RADIUS_METERS = 50_000.0
-
-
-@dataclass(frozen=True)
-class Sweep:
-    """Where one search is centred. `center=None` is a national search."""
-
-    name: str
-    label: str
-    center: Optional[Tuple[float, float]] = None
 
 
 def home_sweep() -> Sweep:
@@ -120,6 +112,10 @@ class TermGroup:
     # client's ordering, not a score: `decisions/009` puts shell wholesalers
     # first and demotes retail shell shops to fourth.
     priority: int = 2
+    # Searched only when named in `group_slugs`. A widen-the-net group exists
+    # so it can be reached for, and a plan built without naming groups (or by
+    # category) must not spend on it by default.
+    explicit_only: bool = False
 
 
 # ─── The taxonomy ───────────────────────────────────────────────────────────
@@ -309,6 +305,59 @@ GROUPS: Tuple[TermGroup, ...] = (
             "A shell shop buys inventory to stock its shelves — the shop is "
             "the customer here, not the supplier."),
     ),
+
+    # ─── Lighting: the 9/29 factory-fresh sale (session LT1) ────────────────
+    # 4,200+ boxed fixtures, lamps and decor. National, stated on every group
+    # rather than inherited, and swept across fifty metros because one national
+    # query stops at sixty results — see `metros.py`. A lighting wholesaler or
+    # distributor is a merchant and so a buyer, by `decisions/009`'s rule.
+
+    TermGroup(
+        slug="lighting_retail",
+        label="Independent lighting stores and showrooms",
+        category_slug="lighting",
+        priority=1,
+        radius_miles=None,
+        sweeps=METRO_SWEEPS,
+        terms=("lighting store", "lighting showroom", "light fixture store",
+               "chandelier store", "lamp store"),
+        buyer_rationale=(
+            "An independent lighting store stocks fixtures and lamps to sell "
+            "at margin. Boxed, factory-fresh inventory at auction is shelf "
+            "stock below distributor price, and it ships on a pallet."),
+    ),
+    TermGroup(
+        slug="lighting_trade",
+        label="Lighting wholesalers, distributors and supply houses",
+        category_slug="lighting",
+        priority=1,
+        radius_miles=None,
+        sweeps=METRO_SWEEPS,
+        terms=("lighting wholesaler", "lighting distributor", "lighting supply"),
+        buyer_rationale=(
+            "A lighting distributor is a merchant: it buys fixtures by the "
+            "case and resells to contractors and stores. A discounted lot of "
+            "new stock is inventory at its own margin — decisions/009's rule, "
+            "that a trader in the goods is a buyer."),
+    ),
+    TermGroup(
+        slug="lighting_decor",
+        label="Home decor stores that carry lighting",
+        category_slug="lighting",
+        # Third, and never run unless named: it widens the net if the first two
+        # come in under ~1,000 textable, and it is where a chain slips past the
+        # exclusion list, so it is a decision somebody makes on the numbers.
+        priority=3,
+        explicit_only=True,
+        radius_miles=None,
+        sweeps=METRO_SWEEPS,
+        terms=("home decor store", "furniture and lighting store",
+               "lamp and shade shop"),
+        buyer_rationale=(
+            "A decor store buys lamps, statues and wall art to fill its floor. "
+            "Mixed boxed lots are stock at a discount, and the owner of an "
+            "independent shop does his own buying."),
+    ),
 )
 
 
@@ -395,7 +444,9 @@ def searches(group_slugs=None, category_slug: str = None) -> Iterator[Search]:
     and seashells, both national, which is where the volume and the conversion
     are. Which sweep runs first is a scheduling decision and it is Jordan's.
     """
-    chosen = GROUPS
+    # A plan that does not name its groups leaves out the explicit-only ones;
+    # naming one is the only way in.
+    chosen = tuple(g for g in GROUPS if not g.explicit_only)
     if group_slugs is not None:
         wanted = tuple(group_slugs)
         chosen = tuple(group(slug) for slug in wanted)

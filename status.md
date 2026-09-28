@@ -5470,3 +5470,77 @@ One synchronous reviewer, 20 findings. What each changed:
 - **`tests/conftest.py`** blanks `LA_*` and points `BROWSER_PROFILE_ROOT` at a temp
   dir, on the Stripe precedent, so a developer's real `.env` can never register
   the job or write a profile into their home during the suite.
+
+## Module LT1 Part A — lighting buyers, national, for the 9/29 sale (appended by session LT1, 2026-09-27)
+
+**Done, pending Part B.** `bash agent/accept-LT1.sh` passes 1-11 with the gate
+green twice inside it; 964 tests. No paid call was made — Places and the lookup
+provider are fakes in every test, and the CLI runs in the accept script point at
+a scratch database with no key.
+
+- `app/sources/metros.py` — `METRO_SWEEPS`, the 50 largest US MSAs (Census
+  Vintage 2023), and `Sweep`, moved here so the taxonomy can import the list
+  without a cycle (`taxonomy.Sweep` is re-exported).
+- `taxonomy.py` — `lighting_retail` (p1), `lighting_trade` (p1),
+  `lighting_decor` (p3, **`explicit_only`**: absent from any plan that does not
+  name it, including a by-category plan). All three `radius_miles=None`, stated.
+  461 lines, so no `taxonomy_groups.py` split.
+- `exclusions.py` — `national_chain`, the nineteen chains. Brands that are
+  ordinary words end in a space (`target `, `rh `, `kirkland s `, `at home `,
+  `lumens `, `ferguson `) so they close at a word end; the remaining over-match
+  ("Elegance at Home", a local "Ferguson Lighting") is written next to the list
+  as this matcher's cheap direction.
+- `config.py` / `.env.example` — `"lighting": null` in the radius map.
+- `scripts/prospect_run.py` — `--groups` required, `--dry-run` | `--live`
+  required. Dry run: planned, already-searched (repeat window), to run,
+  worst-case requests (to-run x `GOOGLE_PLACES_MAX_PAGES`), used this month,
+  cap and room, cost beyond the free allowance via `RequestBudget.charged`
+  (capped and uncapped), lookup cap / spent / left, worst-case lookup spend.
+  Live refuses in one line on no key, on `PROSPECT_LOOKUP_PROVIDER=none`, **and
+  on a configured provider that fell back to the disabled one** — otherwise the
+  run pays Places for numbers it cannot screen. Log lines go through a
+  scrubbing formatter; an exception is one scrubbed sentence.
+
+### Spec departure — criterion 5 (recorded, not built around)
+
+The spec says a store found from two metros lands as "one prospect with two
+sightings". **On the same term it is one prospect and ONE sighting**:
+`prospect_sightings` is unique on `(prospect_id, source, search_term)` and the
+term is the bare term, not the ledger key. Two sightings happen when the two
+metros' searches used different terms. The property the criterion exists for —
+one prospect, no second dedup, no double score (`source_count` counts
+*sources*, so it stays 1) — holds in both, and both are tested. Changing the
+sighting key to include the sweep would split every lighting term into fifty
+for the per-term rejection flag (`PROSPECT_TERM_FLAG_SHARE`), which is out of
+scope and wrong.
+
+### Found while working (session LT1)
+
+- **The category radius key only reaches the score if a `lighting` Category
+  row exists — and none does, same as Seashells and Marine.**
+  `prospect_ingest._category_id_for_slug()` leaves an unknown slug
+  uncategorised (by design, P2), and `prospect_service.rescore()` reads the
+  radius through the *row's* slug, so an uncategorised prospect scores against
+  `PROSPECT_DEFAULT_RADIUS_MILES` (150): a lighting store more than 150 miles
+  from Fort Lauderdale gets 0 of the 15 distance points. Promotability is
+  unaffected (the gate is line type), queue order within lighting favours
+  South Florida by up to 15 points. Not fixed — scoring is out of this
+  session's scope. Creating a "Lighting" category (slug `lighting`) in the app
+  before the run would make the key take effect; that is Jordan's call, and
+  promote needs a category chosen anyway.
+- **Promote needs a category to exist.** `promote()` requires a
+  `category_id`; the queue lands lighting prospects uncategorised. Part B step
+  6 should pick or create one before promoting.
+- Two `--live` runs at once can each read the monthly meter before the other's
+  in-flight job commits its request count; overshoot is bounded by one job's
+  pages per concurrent run. Do not run it twice at once.
+- Reviewer, P2 code: a Places request is counted only after it returns, so a
+  read timeout Google billed is uncounted; a run killed by a signal (an SSH
+  drop) leaves a `running` job whose requests `spend_this_month()` never sees —
+  up to `GOOGLE_PLACES_MAX_PAGES` per kill. Bounded; run it under `tmux`.
+- `--live` cannot detect a lookup credential the carrier *rejects* without
+  making a paid call; it refuses on no provider, a fallen-back provider and a
+  cap with no room. Check the first page of results in the log before walking
+  away.
+- `deployment/app.service.template` carries an uncommitted edit from before
+  this session (L1's browser profile mode). Not LT1's; left alone.

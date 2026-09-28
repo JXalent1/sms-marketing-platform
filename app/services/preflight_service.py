@@ -120,7 +120,7 @@ def check_opt_out_language(body: str) -> dict:
                       "The message tells recipients how to stop.")
     return _check("opt_out_language", "Opt-out instruction", FAIL,
                   "No STOP instruction in the message. Add something like "
-                  "\"Reply STOP to opt out.\"")
+                  "\"Reply 2 to opt-out.\"")
 
 
 def check_brand_identified(body: str) -> dict:
