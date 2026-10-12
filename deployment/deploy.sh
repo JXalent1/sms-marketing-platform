@@ -123,6 +123,9 @@ run rsync -avz --delete \
 run rsync -avz requirements.txt alembic.ini "$SERVER:$REMOTE_DIR/"
 run rsync -avz --delete --exclude '__pycache__' alembic/ "$SERVER:$REMOTE_DIR/alembic/"
 run rsync -avz scripts/ "$SERVER:$REMOTE_DIR/scripts/"
+# tools/ holds bill_period.py, which is run on the box for back-billing; it was
+# never synced, so the first real back-bill (Oct 2026) found it missing.
+run rsync -avz --exclude '__pycache__' tools/ "$SERVER:$REMOTE_DIR/tools/"
 
 # ── 4. Back up, migrate, restart, verify ─────────────────────────────────────
 # Migrations run here, before the restart, and never from the app itself: the
