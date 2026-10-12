@@ -41,6 +41,14 @@ logger = logging.getLogger("sources.liveauctioneers")
 PORTAL_URL = "https://partners.liveauctioneers.com/house/{house_id}/bidders"
 OPTION = '[id^="react-select-"][id*="-option-"]'
 ALL_UPCOMING = "All Upcoming Auctions"
+# What the auction control is showing. With nothing upcoming, LA draws the label
+# as react-select's placeholder, not a singleValue (production, 11 Oct 2026),
+# and a second react-select on the page can come first — so every node is read.
+SHOWN = '[class*="singleValue"], [class*="placeholder"]'
+# The tab label with its count. Only an explicit "(0)" means nobody to read: a
+# respelled label parses as None, and None takes the normal path, which fails
+# loudly if the page really changed.
+_REGISTERED = re.compile(r"^Registered\s*\(\s*([\d,]+)\s*\)$")
 PROFILE_MARKERS = ("Member Since", "Card on File", "Bidder Analytics",
                    "Auctions Attended")
 # The portal's table size. The "X-Y of Z" total is divided by it for progress;
@@ -302,17 +310,40 @@ class LiveAuctioneersSource(AuctionScraperBase):
         """Select "All Upcoming Auctions" — the option node, never the text.
 
         `get_by_text(..., exact=True)` resolved to three nodes on LA's UI and
-        failed the scheduled job on 20 April.
+        failed the scheduled job on 20 April. A house with no upcoming sale
+        shows the label already, an empty menu and every tab at (0): a quiet
+        week, failed daily as a broken page until 11 Oct. `collect()` then
+        asks `nothing_to_read()`.
         """
         await self.navigate_to_bidders()
         try:
-            current = self.page.locator('[class*="singleValue"]').first
-            if (await current.inner_text(timeout=2000)).strip() == ALL_UPCOMING:
+            await self.page.locator(SHOWN).first.wait_for(state="attached", timeout=2000)
+            if ALL_UPCOMING in [" ".join(t.split()) for t in
+                                await self.page.locator(SHOWN).all_inner_texts()]:
                 return
         except Exception:                             # noqa: BLE001
             pass
-        await self._open_dropdown()
-        await self._pick(ALL_UPCOMING)
+        try:
+            await self._open_dropdown()
+            await self._pick(ALL_UPCOMING)
+        except RuntimeError:
+            # Both, or it is still a failure: a menu with options and no match
+            # is the page having changed, whatever the tab says.
+            if (await self.page.locator(f'{OPTION}, [role="option"]').count() == 0
+                    and await self.nothing_to_read()):
+                logger.info("[%s] the auction menu is empty and Registered reads "
+                            "(0)", self.platform)
+                return
+            raise
+
+    async def nothing_to_read(self) -> bool:
+        count = None
+        for line in _lines(await self._body_text()):
+            match = _REGISTERED.match(line)
+            if match:
+                count = int(match.group(1).replace(",", ""))
+                break
+        return count == 0
 
     async def go_to_registered_tab(self):
         await self.page.get_by_text("Registered").first.click()

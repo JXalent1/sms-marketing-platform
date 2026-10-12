@@ -25,6 +25,10 @@ Knobs, each for one criterion or one defect:
   - `broken_teardown` — `close()` and `stop()` raise; `hang_close` — `close()`
     never returns, for the per-step bound on the teardown.
   - `phones_hidden` — the platform stops printing the number in the panel.
+  - `page_state` — overrides the dropdown and the tabs: `selected`, `shown_as`
+    ("singleValue", "placeholder" or None), `options`, `tabs` (label -> count,
+    or None for a label printed with no count). `load_page_state("empty_upcoming")`
+    is the house with nothing upcoming, from the 11 Oct production screenshot.
 """
 
 import asyncio
@@ -39,6 +43,11 @@ PAGE_SIZE = 120
 # A ten-digit figure in every table row. The reference scraper's whole-body
 # phone regex read the first one of these as every bidder's phone.
 DISTRACTOR = "Paddle ref 3055550199"
+
+
+def load_page_state(name: str) -> dict:
+    with open(os.path.join(os.path.dirname(FIXTURE), f"{name}.json")) as fh:
+        return {k: v for k, v in json.load(fh).items() if not k.startswith("_")}
 
 
 def load_bidders() -> List[dict]:
@@ -107,14 +116,18 @@ class _Locator:
         if "option" in self._sel:
             opts = p.options if p.dropdown_open else []
             return [o for o in opts if self._has_text is None or self._has_text in o]
-        if "singleValue" in self._sel:
-            return [p.selected] if p.logged_in else []
+        if "singleValue" in self._sel or "placeholder" in self._sel:
+            shown = [k for k in ("singleValue", "placeholder") if k in self._sel]
+            return [p.selected] if p.logged_in and p.shown_as in shown else []
         if "control" in self._sel or "indicatorContainer" in self._sel:
             return ["control"] if p.logged_in else []
         return []
 
     async def count(self):
         return len(self._matches())
+
+    async def all_inner_texts(self):
+        return self._matches()
 
     async def is_visible(self, **kw):
         return bool(self._matches())
@@ -180,9 +193,14 @@ class FakePage:
     def __init__(self, portal):
         self.portal = portal
         self.bidders = portal.bidders
-        self.options = ["All Upcoming Auctions", "Oct 01, 2026 - Marine Sale"]
+        state = portal.page_state
+        self.options = state.get("options", ["All Upcoming Auctions",
+                                             "Oct 01, 2026 - Marine Sale"])
         self.logged_in = portal.logged_in
-        self.selected = "Oct 01, 2026 - Marine Sale"
+        self.selected = state.get("selected", "Oct 01, 2026 - Marine Sale")
+        self.shown_as = state.get("shown_as", "singleValue")
+        self.tabs = state.get("tabs", {"Pending": 0, "Approved": len(self.bidders),
+                                       "Registered": len(self.bidders)})
         self.dropdown_open = False
         self.on_registered = False
         self.page_no = 1
@@ -209,7 +227,8 @@ class FakePage:
     def _body(self) -> str:
         if not self.logged_in:
             return "Sign in\nUsername\nPassword"
-        lines = ["Bidders", self.selected, "Approved", "Registered"]
+        lines = ["Bidders", self.selected if self.shown_as else "Select..."]
+        lines += [t if n is None else f"{t} ({n})" for t, n in self.tabs.items()]
         for b in self.rows():
             lines += ["★", "☐", DISTRACTOR, b["name"], "Fort Lauderdale"]
         rows = self.rows()
@@ -247,7 +266,7 @@ class FakePage:
         pass
 
     async def wait_for_selector(self, selector, timeout=None):
-        if "react-select" in selector and self.dropdown_open:
+        if "react-select" in selector and self.dropdown_open and self.options:
             return
         if selector == "tbody tr" and self.rows():
             return
@@ -337,7 +356,10 @@ class Portal:
 
     def __init__(self, bidders=None, *, logged_in=True, hang_on=None, block=None,
                  login_fails=False, panel_lag=0, markers=True, broken_teardown=False,
-                 hang_close=False, phones_hidden=False):
+                 hang_close=False, phones_hidden=False, page_state=None):
+        self.page_state = dict(page_state or {})
+        if bidders is None:
+            bidders = self.page_state.pop("bidders", None)
         self.bidders = load_bidders() if bidders is None else bidders
         self.logged_in, self.hang_on, self.block = logged_in, hang_on, block
         self.login_fails, self.panel_lag, self.markers = login_fails, panel_lag, markers

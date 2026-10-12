@@ -34,6 +34,11 @@ The six the spec names, then the guards the port added on the way:
     per-step bound, opening a row by name, early drift detection, the
     all-phoneless failure, `incomplete`, the cross-run profile conflict, the
     misfire grace, and the named remedy for an unwritable profile directory.
+  - `E0`-`E6` the house with nothing upcoming (11 Oct 2026), which failed every
+    morning as a broken page. `E0` reverts the whole fix at once; `E1` reads
+    only the singleValue again; `E2` drops the empty-menu rescue; `E3` and `E4`
+    each drop one of its two conditions; `E5` stops `collect()` short-circuiting
+    on an empty house; `E6` reads an uncounted tab label as zero.
 
 ## Preconditions, before any patch
 
@@ -58,7 +63,7 @@ PY = sys.argv[2]
 REPO = pathlib.Path(__file__).resolve().parent.parent
 
 TARGETS = ["tests/test_bidder_source.py", "tests/test_bidder_scrape_runs.py",
-           "tests/test_migrations.py"]
+           "tests/test_bidder_empty_house.py", "tests/test_migrations.py"]
 
 LA = "app/sources/liveauctioneers.py"
 BASE = "app/sources/auction_scraper_base.py"
@@ -178,6 +183,32 @@ MUTATIONS = {
                "            coalesce=True,\n")],
     "S18 an unwritable profile directory fails with a bare PermissionError": [
         (SVC, "        _check_writable(source.profile_dir())\n", "")],
+    "E0 the whole empty-house fix reverted: singleValue only, no rescue, no "
+    "short-circuit": [
+        (LA, 'SHOWN = \'[class*="singleValue"], [class*="placeholder"]\'\n',
+             'SHOWN = \'[class*="singleValue"]\'\n'),
+        (LA, '            if (await self.page.locator(f\'{OPTION}, [role="option"]\').count() == 0\n                    and await self.nothing_to_read()):\n',
+             '            if False:\n'),
+        (BASE, '            if await self.nothing_to_read():\n                logger.info("[%s] the platform reports no registered bidders",\n',
+               '            if False:\n                logger.info("[%s] the platform reports no registered bidders",\n')],
+    "E1 the shown label is read from singleValue only — the placeholder that "
+    "production draws is invisible again": [
+        (LA, 'SHOWN = \'[class*="singleValue"], [class*="placeholder"]\'\n',
+             'SHOWN = \'[class*="singleValue"]\'\n')],
+    "E2 an empty menu is always a failure, whatever the tabs say": [
+        (LA, '            if (await self.page.locator(f\'{OPTION}, [role="option"]\').count() == 0\n                    and await self.nothing_to_read()):\n',
+             '            if False:\n')],
+    "E3 the rescue ignores the menu — options with no match pass at Registered (0)": [
+        (LA, "            if (await self.page.locator(f'{OPTION}, [role=\"option\"]').count() == 0\n",
+             "            if (True\n")],
+    "E4 the rescue ignores the tab — an empty menu alone is a quiet week": [
+        (LA, "                    and await self.nothing_to_read()):\n",
+             "                    and True):\n")],
+    "E5 collect() goes looking for the table on an empty house": [
+        (BASE, '            if await self.nothing_to_read():\n                logger.info("[%s] the platform reports no registered bidders",\n',
+               '            if False:\n                logger.info("[%s] the platform reports no registered bidders",\n')],
+    "E6 a tab label with no count is read as zero": [
+        (LA, "        return count == 0\n", "        return not count\n")],
     "S10 one number read for two names is filed as a repeat, not a conflict": [
         (SVC, "            if same:\n                run.repeats += 1\n",
               "            if True:\n                run.repeats += 1\n")],

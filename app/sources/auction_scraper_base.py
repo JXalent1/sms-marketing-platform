@@ -354,6 +354,13 @@ class AuctionScraperBase(ContactSource):
                 await self.select_all_upcoming()
             else:
                 await self.select_auction(auction_date)
+            # Nobody registered is a run of zero, not a failure — and it has to
+            # stop here, because the drift checks below cannot tell an empty
+            # list from a changed page, and treat both as the second.
+            if await self.nothing_to_read():
+                logger.info("[%s] the platform reports no registered bidders",
+                            self.platform)
+                return []
             await self.go_to_registered_tab()
             total_pages = await self.get_total_pages()
 
@@ -405,6 +412,12 @@ class AuctionScraperBase(ContactSource):
 
     async def select_all_upcoming(self):
         raise NotImplementedError
+
+    async def nothing_to_read(self) -> bool:
+        """True only when the page itself states that nobody is registered.
+        Never inferred from an absence: no rows is also what a changed page
+        looks like."""
+        return False
 
     async def go_to_registered_tab(self):
         raise NotImplementedError
