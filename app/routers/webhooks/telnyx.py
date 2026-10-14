@@ -15,6 +15,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.routers.webhooks.common import handle_inbound, record_delivery_status
+from app.services.auto_reply_guard import record_send_failure
 from app.sms.factory import get_provider
 import logging
 
@@ -37,15 +38,26 @@ async def telnyx_webhook(request: Request, db: Session = Depends(get_db)):
             from_number = payload.get("from", {}).get("phone_number", "")
             text = payload.get("text", "")
 
-            reply = handle_inbound(db, from_number, text)
-            if reply:
+            # The guard has already claimed (and committed) this reply when it
+            # allows one, so a retried webhook or a concurrent one for the same
+            # number finds the claim and is refused. Nothing else on this
+            # handler may send. See app/services/auto_reply_guard.py.
+            decision = handle_inbound(db, from_number, text)
+            if decision.allowed:
                 try:
-                    await get_provider().send(from_number, reply)
+                    result = await get_provider().send(from_number, decision.reply)
+                    if not result.success:
+                        record_send_failure(db, decision.log_id, result.error)
+                        logger.error(f"Auto-reply to {from_number} failed: {result.error}")
                 except Exception as e:
+                    record_send_failure(db, decision.log_id, type(e).__name__)
                     logger.error(f"Auto-reply to {from_number} failed: {e}")
 
             return JSONResponse({"status": "ok"})
 
+        # Delivery events record a status and nothing else. No reply decision,
+        # no provider: a carrier retrying one of these for days must cost
+        # nothing but a row update (incident 2026-10-09, finding 4).
         if event_type in DELIVERY_EVENTS:
             message_id = payload.get("id", "")
             to_info = payload.get("to") or [{}]

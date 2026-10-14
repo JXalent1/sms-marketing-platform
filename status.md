@@ -5544,3 +5544,92 @@ scope and wrong.
   away.
 - `deployment/app.service.template` carries an uncommitted edit from before
   this session (L1's browser profile mode). Not LT1's; left alone.
+
+## Module I1 — auto-reply loop guard (appended by session I1, 2026-10-14)
+
+**Done. Not deployed. No carrier key, no `.env`, no Settings UI touched; the
+`la-empty-state-wip` stash is untouched.** This is the work that has to land
+before the carrier API key is re-enabled. Incident 2026-10-09 to 10-12: our
+number looped with two auto-responders for three days (~114k outbound, $2,818).
+`bash agent/accept-I1.sh` passes criteria 1-7 plus an 8th mutation criterion
+(20 of 20 caught), with the gate green twice inside it and twice more on its own.
+
+- `app/services/auto_reply_guard.py` (new): every reply to an inbound text goes
+  through `claim()`. Its rules, in order: `automated_sender`, `no_sender`,
+  `invalid_sender`, `non_us_sender`, `blocked_number` (the first STOP
+  confirmation since the number's last START is exempt), `per_number_cap` (1
+  per `AUTO_REPLY_PER_NUMBER_HOURS`, across every kind), and `circuit_breaker`
+  (`AUTO_REPLY_HOURLY_CAP` in a rolling hour, ERROR in the log, the
+  `auto_reply_circuit_breaker` alert on `/health`, clears itself). The claim
+  is INSERTed first, which takes SQLite's write lock, then decided and
+  committed before the provider is called. A failed send keeps its `sent` row
+  and gets `reason = send_failed: …`, scrubbed.
+- `app/models/auto_reply_log.py` and migration `e9b4d2a7c613` (new table
+  only): it is indexed on `(phone, created_at)` and on `created_at`. One row
+  for every inbound that reached the reply decision, sent or suppressed.
+- `app/sms/compliance.py`: adds `AUTOMATED_SENDER_PHRASES` and
+  `is_automated_sender()`, which are pure, read at call time and match
+  unanchored (the comment explains why the matcher should over-match), plus the
+  breaker's `/health` wording, which carries no figures.
+- `common.handle_inbound()` still makes the blocklist writes (STOP blocks every
+  time) and returns a `ReplyDecision`. `telnyx.py` sends only when
+  `decision.allowed`; `twilio.py` returns `EMPTY_TWIML` when it is not.
+  Delivery events are untouched, and tests show they reach neither the guard
+  nor any provider.
+- `config.py` / `.env.example`: `AUTO_REPLY_PER_NUMBER_HOURS=24` (boot refuses
+  a value below 1) and `AUTO_REPLY_HOURLY_CAP=50` (0 is allowed and means no
+  auto-replies).
+
+### The fresh-context review
+
+One synchronous reviewer was asked the spec's question. Its finding was that
+**no unbounded path remains**: every way an inbound can cause a send is capped
+at 1 per number per day and 50 an hour in total, and delivery events have no
+route to a send. It then listed what is bounded but larger than intended:
+
+- **F1 (high), the webhooks are unauthenticated, and this predates I1.** A
+  forged `message.received` makes us reply at our cost (50 an hour, about
+  1,200 a day), trips the breaker, and lets a forged STOP or START edit the
+  blocklist. **Escalated: `decisions/015-…open.md`.** Fixing it needs a new
+  dependency, a carrier secret in `.env`, and a decision about inbound STOP
+  when the key is missing.
+- **F2 (medium), replies had no destination check. Fixed:** the
+  `invalid_sender` and `non_us_sender` rules, the latter under the existing
+  `SKIP_NON_US_NUMBERS`. This also closes **P3** (a `00`-prefixed spelling got
+  its own cap): those spellings now read as non-US and are refused.
+- **F3 (medium), the breaker limits the rate, not the total.** It allows 50 an
+  hour, every hour. **Not changed:** the spec says it "resets on its own", and
+  a daily cap or a latch is a commercial and operational call. Raised in
+  decisions/015.
+- **F4 (low/medium), `AUTO_REPLY_PER_NUMBER_HOURS=0` switched the per-number
+  cap off. Fixed:** pydantic `ge=1`, so the app refuses to boot.
+- **F5 (low), the windows run on wall-clock time,** so in the hour after the
+  spring-forward jump the breaker can admit up to 2x its cap. **Documented** in
+  the guard rather than giving this one table a second clock.
+- **P1, the Telnyx SDK retries sends with no idempotency key.** See the next
+  section.
+- **P2, the race safety relies on SQLite's single writer.** See the next
+  section.
+- **P6, START unblocks every kind of block.** See the next section.
+
+### Found while working (session I1)
+
+- **Auto-replies are still not written to `sms_messages`** (root-cause finding
+  6, out of scope by the spec). They now show in `auto_reply_log`, but not in
+  usage, reports or the pre-flight balance check.
+- **P1:** `app/sms/providers/telnyx.py:112` uses the SDK's default
+  `max_retries=2` with no idempotency key. A send the carrier accepted but
+  answered slowly can go out up to three times. This affects campaign sends
+  too. The call is also synchronous inside an `async` route. Outside I1's file
+  list, so not fixed.
+- **P2:** the claim's race safety relies on SQLite having one writer. On
+  Postgres the INSERT does not serialise readers, and `claim()` would need an
+  advisory lock or `SELECT … FOR UPDATE` keyed on the phone. The box is
+  SQLite.
+- **P6, before I1:** `unblock_number()` on START deletes `delivery_failure` and
+  `carrier_block` rows too, not just opt-outs. That is opt-out behaviour
+  (escalation item 5), so it is recorded in decisions/015 and not changed.
+- `import app.main` in development runs `alembic upgrade head` on
+  `data/app.db`. Doing that during this session migrated the local dev
+  database to `e9b4d2a7c613`. That database is local only, and the migration
+  is additive.

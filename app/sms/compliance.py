@@ -76,6 +76,43 @@ def default_auto_reply() -> str:
     return "\n".join(lines)
 
 
+# ─── Automated senders: never answer a machine ──────────────────────────────
+#
+# Incident 2026-10-09: two businesses' auto-responders texted "We do not monitor
+# text messages sent to this number" and we answered every one with the
+# Settings auto-reply. Each answer drew another, for three days: ~114k outbound,
+# $2,818. A machine that announces it is a machine gets no reply of any kind —
+# not the auto-reply, not a HELP or START confirmation. It is still logged.
+#
+# Unanchored, case-insensitive substrings, deliberately wide. Which way this
+# list fails decides its shape (the same question AUTO_BLOCK_ERROR_FRAGMENTS and
+# TRANSIENT_FAILURE_MARKERS answer above): a match causes a *refusal to act* —
+# one person who wrote "do not reply" misses a courtesy text — while a miss can
+# cost thousands of dollars a day. Over-match. Nothing here blocks a number.
+#
+# Read at call time, not compiled at import, so a test can empty it and prove
+# the per-number cap holds the loop on its own.
+AUTOMATED_SENDER_PHRASES = (
+    "do not monitor",
+    "not monitored",
+    "do not reply",
+    "no-reply",
+    "noreply",
+    "automated message",
+    "unable to receive",
+    "this number does not accept",
+    "cannot receive",
+    "auto-reply",
+    "autoreply",
+)
+
+
+def is_automated_sender(body: str) -> bool:
+    """Whether an inbound message reads as an auto-responder's."""
+    text = (body or "").casefold()
+    return any(phrase.casefold() in text for phrase in AUTOMATED_SENDER_PHRASES)
+
+
 # ─── Classifying a carrier failure ──────────────────────────────────────────
 #
 # Blocking a number is permanent and silent. A wrongly blocked buyer does not
@@ -124,11 +161,18 @@ CONFIGURATION_ERROR_MARKERS = ("has not been enabled for the region",)
 CONFIGURATION_ERROR_CODES = frozenset({"21408"})
 
 REGION_NOT_ENABLED = "region_not_enabled"
+AUTO_REPLY_BREAKER = "auto_reply_circuit_breaker"   # app/services/auto_reply_guard.py
 CONFIGURATION_ALERT_DETAIL = {
     REGION_NOT_ENABLED: (
         "A destination was refused because this messaging account is not "
         "enabled for its region. Nothing is wrong with the recipient — enable "
         "the region on the messaging account."
+    ),
+    # No figures: /health is unauthenticated, and the cap is ours to know.
+    AUTO_REPLY_BREAKER: (
+        "Automatic replies to inbound texts are paused: the hourly limit was "
+        "reached, which usually means a loop with another automated number. "
+        "They resume on their own once the hour clears."
     ),
 }
 

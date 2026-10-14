@@ -12,6 +12,7 @@ import os
 import time
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # The zone this product is built for, and the fallback when the setting is
@@ -336,6 +337,16 @@ class Settings(BaseSettings):
     # internet can post, and what it would write is the customer id we meter
     # this client's segments against. A guard that is switched off refuses.
     STRIPE_WEBHOOK_SECRET: str = ""
+
+    # ─── Inbound auto-replies (session I1) ──────────────────────────────────
+    # At most one reply of any kind per number in this many hours, and at most
+    # this many replies across all numbers in a rolling hour before every reply
+    # stops. Both exist because two auto-responders looped with ours for three
+    # days. See app/services/auto_reply_guard.py; raise neither without a reason.
+    # Refused at boot below 1 hour: 0 would turn the per-number cap off. A cap
+    # of 0 is allowed — it means "no auto-replies", the safe direction.
+    AUTO_REPLY_PER_NUMBER_HOURS: int = Field(24, ge=1)
+    AUTO_REPLY_HOURLY_CAP: int = Field(50, ge=0)
 
     # ─── Alerting ───────────────────────────────────────────────────────────
     ALERT_PHONE: str = ""                        # your number, for balance/scrape alerts

@@ -10,6 +10,8 @@ from app.models.campaign import Campaign
 from app.models.app_setting import get_setting, AUTO_REPLY_KEY
 from app.services.blocklist_service import block_number, unblock_number
 from app.services.monitoring_service import record_config_alert
+from app.services import auto_reply_guard
+from app.services.auto_reply_guard import ReplyDecision
 from app.sms import compliance
 from app.sms.compliance import classify_failure
 from app.sms.phone import scrub_provider_text
@@ -19,30 +21,38 @@ import logging
 logger = logging.getLogger("webhooks")
 
 
-def handle_inbound(db: Session, from_number: str, body: str) -> str:
-    """Process an inbound message and return the reply to send.
+def handle_inbound(db: Session, from_number: str, body: str) -> ReplyDecision:
+    """Process an inbound message and decide whether anything is sent back.
 
     STOP is persisted to our own blocklist, not just acknowledged. The carrier
     also keeps its own opt-out list, but that list does not come with you when
     you switch carriers — and the day you migrate, you would re-text every
-    person who ever opted out.
+    person who ever opted out. The blocklist writes happen here on every
+    inbound, whatever the reply decision is: a STOP blocks the number even when
+    its confirmation is suppressed.
+
+    The reply itself is only a *proposal* until `auto_reply_guard.claim()` has
+    ruled on it. This function used to return a reply for every inbound message
+    there is, and the webhook sent it — which is how our number spent three days
+    answering two auto-responders (incident 2026-10-09). Callers send
+    `decision.reply` only when `decision.allowed`.
     """
     kind = compliance.classify(body)
-    logger.info(f"Inbound from {from_number}: {kind} | {body[:60]!r}")
+    logger.info(f"Inbound from {from_number}: {kind} | {(body or '')[:60]!r}")
 
     if kind == "stop":
         block_number(db, from_number, reason="stop_keyword", source="webhook",
                      notes=f"Keyword: {(body or '').strip().upper()[:40]}")
-        return compliance.stop_confirmation()
-
-    if kind == "start":
+        reply = compliance.stop_confirmation()
+    elif kind == "start":
         unblock_number(db, from_number)
-        return compliance.start_confirmation()
+        reply = compliance.start_confirmation()
+    elif kind == "help":
+        reply = compliance.help_reply()
+    else:
+        reply = get_setting(db, AUTO_REPLY_KEY) or compliance.default_auto_reply()
 
-    if kind == "help":
-        return compliance.help_reply()
-
-    return get_setting(db, AUTO_REPLY_KEY) or compliance.default_auto_reply()
+    return auto_reply_guard.claim(db, from_number, body, kind, reply)
 
 
 def record_delivery_status(db: Session, message_id: str, status: str,

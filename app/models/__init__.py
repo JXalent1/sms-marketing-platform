@@ -15,8 +15,10 @@ from app.models.short_link import ShortLink, LinkClick
 from app.models.prospect import Prospect, ProspectSighting, ProspectRejection
 from app.models.scrape import ScrapeJob, PhoneLookup
 from app.models.bidder_profile import BidderProfile, BidderScrapeRun
+from app.models.auto_reply_log import AutoReplyLog
 
 __all__ = [
+    "AutoReplyLog",
     "BidderProfile",
     "BidderScrapeRun",
     "ShortLink",

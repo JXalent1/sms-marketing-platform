@@ -28,8 +28,12 @@ def _twiml(message: str) -> str:
 async def incoming_sms(request: Request, db: Session = Depends(get_db)):
     try:
         form = await request.form()
-        reply = handle_inbound(db, form.get("From", ""), form.get("Body", ""))
-        return Response(content=_twiml(reply), media_type="application/xml")
+        # The reply rides back inline as TwiML, so "suppressed" is an empty
+        # Response — Twilio sends nothing. The guard has already logged why.
+        decision = handle_inbound(db, form.get("From", ""), form.get("Body", ""))
+        if not decision.allowed:
+            return Response(content=EMPTY_TWIML, media_type="application/xml")
+        return Response(content=_twiml(decision.reply), media_type="application/xml")
     except Exception as e:
         logger.error(f"Twilio inbound error: {e}")
         return Response(content=EMPTY_TWIML, media_type="application/xml")
